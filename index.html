@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Verlet Spider — Panel V3.1</title>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+</head>
+<body>
+<h1>Verlet Spiderweb &mdash; 4 Legs &nbsp;|&nbsp; Panel V3.1</h1>
+<div class="layout">
+
+  <!-- LEFT PANEL -->
+  <div class="panel">
+    <div class="panel-title">Controls</div>
+
+    <div class="group-title">Web</div>
+    <div class="row">
+      <label>Web Radius <span id="lbl-webRadius">1.45</span></label>
+      <input type="range" id="sl-webRadius" min="0.5" max="2.2" step="0.05" value="1.45">
+    </div>
+    <div class="row">
+      <label>Radial Nodes <span id="lbl-webSegs">30</span></label>
+      <input type="range" id="sl-webSegs" min="8" max="50" step="1" value="30">
+    </div>
+    <div class="row">
+      <label>Rings <span id="lbl-webDepth">11</span></label>
+      <input type="range" id="sl-webDepth" min="3" max="18" step="1" value="11">
+    </div>
+    <div class="row">
+      <label>Web Stiffness <span id="lbl-webStiff">0.6</span></label>
+      <input type="range" id="sl-webStiff" min="0.1" max="1.0" step="0.05" value="0.6">
+    </div>
+    <button class="btn btn-secondary" id="btn-rebuild">&#x1f578; Rebuild Web</button>
+
+    <div class="divider"></div>
+    <div class="group-title">Spider Motion</div>
+    <div class="row">
+      <label>Move Speed <span id="lbl-moveSpeed">1.8</span></label>
+      <input type="range" id="sl-moveSpeed" min="0.3" max="6" step="0.1" value="1.8">
+    </div>
+    <div class="row">
+      <label>Step Speed <span id="lbl-stepSpeed">0.18</span></label>
+      <input type="range" id="sl-stepSpeed" min="0.04" max="0.5" step="0.01" value="0.18">
+    </div>
+    <div class="row">
+      <label>Step Threshold <span id="lbl-stepThresh">22</span></label>
+      <input type="range" id="sl-stepThresh" min="5" max="60" step="1" value="22">
+    </div>
+    <div class="row">
+      <label>Rest Threshold <span id="lbl-restThresh">50</span></label>
+      <input type="range" id="sl-restThresh" min="20" max="120" step="2" value="50">
+    </div>
+
+    <div class="divider"></div>
+    <div class="group-title">Leg Physics</div>
+    <div class="row">
+      <label>Leg Segment Stiffness <span id="lbl-legStiff">0.3</span></label>
+      <input type="range" id="sl-legStiff" min="0.05" max="1.0" step="0.05" value="0.3">
+    </div>
+    <div class="row">
+      <label>Joint Stiffness <span id="lbl-jointStiff">0.35</span></label>
+      <input type="range" id="sl-jointStiff" min="0.05" max="1.0" step="0.05" value="0.35">
+    </div>
+
+    <div class="divider"></div>
+    <button class="btn btn-secondary" id="btn-save">&#x1f4be; Save Settings</button>
+    <button class="btn btn-danger"    id="btn-reset">&#x1f504; Reset Defaults</button>
+    <div class="save-hint" id="save-hint"></div>
+
+    <div class="divider"></div>
+    <div class="group-title">Background & Audio</div>
+
+    <div class="row" style="flex-direction:row;align-items:center;gap:5px;margin-bottom:7px;">
+      <div class="bg-theme-dots" id="bg-theme-dots"></div>
+    </div>
+
+    <div class="row">
+      <label>Blur <span id="lbl-bgBlur">25%</span></label>
+      <input type="range" id="sl-bgBlur" min="20" max="200" step="5" value="25">
+    </div>
+    <div class="row">
+      <label>Wind <span id="lbl-bgWind">1.0</span></label>
+      <input type="range" id="sl-bgWind" min="0" max="4" step="0.1" value="1.0">
+    </div>
+    <div class="row">
+      <label>Rays <span id="lbl-bgRay">100%</span></label>
+      <input type="range" id="sl-bgRay" min="0" max="200" step="5" value="100">
+    </div>
+    <div class="row">
+      <label>Darken <span id="lbl-bgDarken">15%</span></label>
+      <input type="range" id="sl-bgDarken" min="0" max="100" step="5" value="15">
+    </div>
+    <div class="row">
+      <label>Purity <span id="lbl-bgPurity">140%</span></label>
+      <input type="range" id="sl-bgPurity" min="50" max="180" step="5" value="140">
+    </div>
+    <div class="row">
+      <label>Vertical Shift <span id="lbl-bgYOffset">13%</span></label>
+      <input type="range" id="sl-bgYOffset" min="-20" max="20" step="1" value="13">
+    </div>
+    <div class="row">
+      <label>Particles <span id="lbl-bgPart">24</span></label>
+      <input type="range" id="sl-bgPart" min="0" max="100" step="2" value="24">
+    </div>
+    <div class="row">
+      <label>Volume <span id="lbl-bgVol">50%</span></label>
+      <input type="range" id="sl-bgVol" min="0" max="100" step="1" value="50">
+    </div>
+    <button class="btn btn-secondary" id="bg-bgm-toggle">🔊 Music Toggle</button>
+  </div>
+
+  <!-- CENTER STAGE -->
+  <div class="stage">
+
+    <div class="screen-shell">
+      <div class="inventory-bar" id="inventory-bar">
+        <div class="inventory-slot" id="inv-boulder">
+          <canvas class="inventory-art" id="inv-boulder-art" width="48" height="48"></canvas>
+          <div class="inventory-count" id="inv-boulder-count">0</div>
+        </div>
+        <div class="inventory-slot" id="inv-bug">
+          <canvas class="inventory-art" id="inv-bug-art" width="48" height="48"></canvas>
+          <div class="inventory-count" id="inv-bug-count">0</div>
+        </div>
+        <div class="inventory-slot" id="inv-drop">
+          <canvas class="inventory-art" id="inv-drop-art" width="48" height="48"></canvas>
+          <div class="inventory-count" id="inv-drop-count">0</div>
+        </div>
+      </div>
+
+      <!-- Wave HUD -->
+      <div class="dbg-web" id="dbg-web"></div>
+      <div class="wave-bar" id="wave-bar" style="display:none">03:00</div>
+      <div class="score-bar" id="score-bar" style="display:none"></div>
+
+      <!-- Game Overlay -->
+      <div class="game-overlay" id="game-overlay">
+        <div class="overlay-card" id="overlay-card">
+          <!-- content injected by JS -->
+        </div>
+      </div>
+
+      <div class="collect-layer" id="collect-layer"></div>
+      <canvas id="scratch" style="width:450px;height:800px;"></canvas>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="panel">
+    <div class="panel-title">Spawns</div>
+    <div class="hint-text">Click a button to drop an object. It sticks to the web, then breaks free automatically.</div>
+
+    <div class="divider"></div>
+    <button class="btn btn-launch" id="btn-boulder">&#x1f41b; Caterpillar <span class="badge" id="cnt-boulder">0</span></button>
+    <div class="hint-text">Drops straight down fast. Breaks free after about 3 seconds.</div>
+
+    <button class="btn btn-launch" id="btn-bug">&#x1fab0; Fly <span class="badge" id="cnt-bug">0</span></button>
+    <div class="hint-text">Flies in from all directions. Breaks free after about 2 seconds.</div>
+
+    <button class="btn btn-launch" id="btn-drop">&#x1f343; Leaf <span class="badge" id="cnt-drop">0</span></button>
+    <div class="hint-text">Drifts down softly. Stays permanently and slows the spider.</div>
+
+    <div class="divider"></div>
+    <button class="btn btn-danger" id="btn-clearObj">&#x2715; Clear All</button>
+
+    <div class="divider"></div>
+    <div class="group-title">Stick Rules</div>
+    <div class="row">
+      <label>Min Penetration <span id="lbl-stickDelayMin">0.10</span></label>
+      <input type="range" id="sl-stickDelayMin" min="0" max="0.6" step="0.01" value="0.10">
+    </div>
+    <div class="row">
+      <label>Max Penetration <span id="lbl-stickDelayMax">0.45</span></label>
+      <input type="range" id="sl-stickDelayMax" min="0.05" max="0.95" step="0.01" value="0.45">
+    </div>
+    <div class="row">
+      <label>Catch Radius <span id="lbl-stickCatchRadius">18</span></label>
+      <input type="range" id="sl-stickCatchRadius" min="6" max="40" step="1" value="18">
+    </div>
+    <div class="row">
+      <label>Mid Bias <span id="lbl-stickMidBias">0.8</span></label>
+      <input type="range" id="sl-stickMidBias" min="0" max="2" step="0.1" value="0.8">
+    </div>
+    <div class="row">
+      <label>Candidate Memory <span id="lbl-stickHistory">40</span></label>
+      <input type="range" id="sl-stickHistory" min="5" max="120" step="1" value="40">
+    </div>
+
+    <div class="divider"></div>
+    <div class="group-title">Object Settings</div>
+    <div class="row">
+      <label>Caterpillar Gravity <span id="lbl-caterpillarGravity">2</span></label>
+      <input type="range" id="sl-caterpillarGravity" min="0.2" max="4" step="0.1" value="2">
+    </div>
+    <div class="row">
+      <label>Caterpillar Weight <span id="lbl-caterpillarWeight">5</span></label>
+      <input type="range" id="sl-caterpillarWeight" min="1" max="10" step="1" value="5">
+    </div>
+    <div class="row">
+      <label>Fly Weight <span id="lbl-flyWeight">3</span></label>
+      <input type="range" id="sl-flyWeight" min="1" max="10" step="1" value="3">
+    </div>
+    <div class="row">
+      <label>Leaf Weight <span id="lbl-leafWeight">1</span></label>
+      <input type="range" id="sl-leafWeight" min="1" max="10" step="1" value="1">
+    </div>
+    <div class="row">
+      <label>Caterpillar Release Sec <span id="lbl-caterpillarReleaseSec">3</span></label>
+      <input type="range" id="sl-caterpillarReleaseSec" min="0" max="10" step="0.5" value="3">
+    </div>
+    <div class="row">
+      <label>Fly Release Sec <span id="lbl-flyReleaseSec">2</span></label>
+      <input type="range" id="sl-flyReleaseSec" min="0" max="10" step="0.5" value="2">
+    </div>
+    <div class="row">
+      <label>Leaf Release Sec <span id="lbl-leafReleaseSec">0</span></label>
+      <input type="range" id="sl-leafReleaseSec" min="0" max="10" step="0.5" value="0">
+    </div>
+
+    <div class="divider"></div>
+    <div class="panel-title">Help</div>
+    <div class="hint-text">
+      Click the canvas: move the spider<br>
+      Drag a web node: disturb the web<br>
+      Settings update live. Web settings rebuild automatically.
+    </div>
+  </div>
+
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
