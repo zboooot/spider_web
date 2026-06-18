@@ -57,6 +57,26 @@ export function drawThrownObjects(ctx, thrownObjects) {
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     ctx.save(); ctx.globalAlpha = obj.alpha;
 
+    /* sticking 弹簧缩放：粘住瞬间压缩再弹回 */
+    var _springScale = 1.0;
+    if (obj.state === 'sticking') {
+      var _st = obj.stickT; /* 0→1 */
+      /* 树叶弹簧幅度减半：压缩到 0.86，弹回到 1.15 */
+      var _compress = obj.kind === 'drop' ? 0.14 : 0.28;
+      var _bounce   = obj.kind === 'drop' ? 0.29 : 0.58;
+      var _peak     = obj.kind === 'drop' ? 1.15 : 1.30;
+      var _drop2    = obj.kind === 'drop' ? 0.15 : 0.30;
+      if (_st < 0.35) {
+        _springScale = 1.0 - (_st / 0.35) * _compress;
+      } else if (_st < 0.65) {
+        var _t2 = (_st - 0.35) / 0.30;
+        _springScale = (1.0 - _compress) + _t2 * _bounce;
+      } else {
+        var _t3 = (_st - 0.65) / 0.35;
+        _springScale = _peak - _t3 * _drop2;
+      }
+    }
+
     /* wrapping 状态：颤抖 + 转动 */
     if (obj.state === 'wrapping') {
       var wt = obj.wrapT;
@@ -70,9 +90,16 @@ export function drawThrownObjects(ctx, thrownObjects) {
       obj._wrapAngle = 0;
     }
 
+    /* ── 打包状态：drop-shadow 绿色外发光描边 ── */
+    var _isWrapping = obj.state === 'wrapping';
+    var _wrapGlowFilter = _isWrapping
+      ? 'drop-shadow(0 0 2px #fff8e7) drop-shadow(0 0 6px #ffe8a0) drop-shadow(0 0 12px #ffd060) drop-shadow(0 0 18px #ffb83080)'
+      : '';
+
     /* ── 毛毛虫 ── */
     if (obj.kind === 'boulder') {
       ctx.save(); ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
       var drawAngle;
       if (obj.state === 'falling') drawAngle = obj.initAngle;
       else if (obj.state === 'sticking') drawAngle = obj.initAngle + (obj.stuckAngle - obj.initAngle) * obj.stickT;
@@ -83,7 +110,9 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormW = def.r * 6.3;  // 9.0 × 0.7
         var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
+        if (_isWrapping) ctx.filter = _wrapGlowFilter;
         ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
+        if (_isWrapping) ctx.filter = 'none';
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
         var waveScale = (obj.state === 'stuck' || obj.state === 'freeing') ? 1.0 : 0.12;
@@ -107,12 +136,15 @@ export function drawThrownObjects(ctx, thrownObjects) {
     /* ── 苍蝇 ── */
     else if (obj.kind === 'bug') {
       ctx.save(); ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
       ctx.rotate(obj.angle + Math.PI / 2 + (obj._wrapAngle || 0));
       var flyFrame = getAnimatedFlyImage(obj);
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flyH = def.r * 4.32;
         var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
+        if (_isWrapping) ctx.filter = _wrapGlowFilter;
         ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
+        if (_isWrapping) ctx.filter = 'none';
       } else {
         var r = def.r;
         var wFlapBase = (obj.state === 'stuck' || obj.state === 'freeing' || obj.state === 'wrapping') ? 0.65 * 0.30 : 0.65;
@@ -135,11 +167,15 @@ export function drawThrownObjects(ctx, thrownObjects) {
 
     /* ── 树叶 ── */
     else if (obj.kind === 'drop') {
-      ctx.save(); ctx.translate(px, py); ctx.rotate(obj.angle + (obj._wrapAngle || 0));
+      ctx.save(); ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
+      ctx.rotate(obj.angle + (obj._wrapAngle || 0));
       if (leafImg.complete && leafImg.naturalWidth > 0) {
         var leafW = def.r * 6.08;  // 3.8 × 1.6
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
+        if (_isWrapping) ctx.filter = _wrapGlowFilter;
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
+        if (_isWrapping) ctx.filter = 'none';
       } else {
         var r = def.r;
         ctx.beginPath();
@@ -162,31 +198,40 @@ export function drawThrownObjects(ctx, thrownObjects) {
       ctx.lineWidth = 2; ctx.stroke();
     }
 
-    /* wrapping silk thread */
-    if (obj.state === 'wrapping') {
-      var wt = obj.wrapT;
-      var startA = -Math.PI / 2;
-      ctx.beginPath();
-      ctx.arc(px, py, def.r * 1.6, startA, startA + wt * 2 * Math.PI);
-      ctx.strokeStyle = 'rgba(255,255,255,0.88)';
-      ctx.lineWidth = 2.2;
-      ctx.stroke();
-      if (wt > 0.4) {
-        var arc2 = ((wt - 0.4) / 0.6) * 2 * Math.PI;
-        ctx.beginPath();
-        ctx.arc(px, py, def.r * 1.2, startA, startA + arc2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.62)';
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
-      }
-      var tipAngle = startA + wt * 2 * Math.PI;
-      var tr = def.r * 1.6;
-      ctx.beginPath();
-      ctx.arc(px + Math.cos(tipAngle) * tr, py + Math.sin(tipAngle) * tr, 2.2, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      ctx.fill();
-    }
-
     ctx.restore();
+  }
+}
+
+/**
+ * 单独绘制打包圆圈进度（在蜘蛛层之后调用，确保在最上层）
+ */
+export function drawWrappingOverlay(ctx, thrownObjects) {
+  for (var oi = 0; oi < thrownObjects.length; oi++) {
+    var obj = thrownObjects[oi];
+    if (obj.state !== 'wrapping') continue;
+    var def = obj.def;
+    var px = obj.particle.pos.x, py = obj.particle.pos.y;
+    var wt = obj.wrapT;
+
+    var startA = -Math.PI / 2;
+    ctx.beginPath();
+    ctx.arc(px, py, def.r * 1.6, startA, startA + wt * 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    if (wt > 0.4) {
+      var arc2 = ((wt - 0.4) / 0.6) * 2 * Math.PI;
+      ctx.beginPath();
+      ctx.arc(px, py, def.r * 1.2, startA, startA + arc2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.62)';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+    var tipAngle = startA + wt * 2 * Math.PI;
+    var tr = def.r * 1.6;
+    ctx.beginPath();
+    ctx.arc(px + Math.cos(tipAngle) * tr, py + Math.sin(tipAngle) * tr, 2.2, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.fill();
   }
 }

@@ -19,6 +19,7 @@ export function VerletJS(width, height, canvas) {
   var _this = this;
 
   this.bounds = function (p) {
+    if (p.__isBug) return; /* 苍蝇不受边界约束，由环绕逻辑处理 */
     if (p.pos.y > this.height - 1) p.pos.y = this.height - 1;
     if (p.pos.x < 0) p.pos.x = 0;
     if (p.pos.x > this.width - 1) p.pos.x = this.width - 1;
@@ -131,7 +132,7 @@ VerletJS.prototype.draw = function () {
 };
 
 VerletJS.prototype.nearestEntity = function () {
-  var c, i, d2N = 0, entity = null, csN = null;
+  var c, i, d2N = 0, entity = null, csN = null, entityComp = null;
   for (c in this.composites) {
     var ps = this.composites[c].particles;
     for (i in ps) {
@@ -139,14 +140,24 @@ VerletJS.prototype.nearestEntity = function () {
       if (d2 <= this.selectionRadius * this.selectionRadius && (entity == null || d2 < d2N)) {
         entity = ps[i];
         csN = this.composites[c].constraints;
+        entityComp = this.composites[c];
         d2N = d2;
       }
     }
   }
+  if (!entity) return null;
+  /* 锚点不可拖 */
   for (i in csN) {
-    if (csN[i] instanceof PinConstraint && csN[i].a == entity) {
-      return null;
+    if (csN[i] instanceof PinConstraint && csN[i].a == entity) return null;
+  }
+  /* 网线粒子：只有断线头（连接数==1）可拖，完整节点（>=2）不可拖 */
+  if (entityComp && entityComp.__isWeb) {
+    var connCount = 0;
+    for (i in csN) {
+      if (csN[i] instanceof PinConstraint) continue;
+      if (csN[i].a === entity || csN[i].b === entity) connCount++;
     }
+    if (connCount >= 2) return null;
   }
   return entity;
 };

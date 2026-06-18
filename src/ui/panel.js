@@ -53,6 +53,15 @@ export function initPanel(P, DEFAULTS, callbacks) {
 
   document.getElementById('btn-rebuild').onclick = function () { callbacks.buildWeb(); };
 
+  /* Auto Play 开关 */
+  var autoPlayBtn = document.getElementById('btn-autoplay');
+  autoPlayBtn.addEventListener('click', function () {
+    var on = callbacks.toggleAutoPlay();
+    autoPlayBtn.textContent = on ? '🤖 Auto Play: ON' : '🤖 Auto Play: OFF';
+    autoPlayBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    autoPlayBtn.style.color = on ? '#2a5a2a' : '';
+  });
+
   document.getElementById('btn-save').onclick = function () {
     localStorage.setItem('spiderPanelParams', JSON.stringify(P));
     var h = document.getElementById('save-hint');

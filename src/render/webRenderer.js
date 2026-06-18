@@ -7,9 +7,12 @@ import { getNextPid } from '../systems/footSystem.js';
  * @param {Function} getThrownObjects - 获取投掷物体列表的函数
  * @param {Function} getWebBreakFlashes - 获取断裂闪光列表的函数
  * @param {Function} getBreakFrame - 获取全局帧计数的函数
+ * @param {Function} getBrokenEnds - 获取断线头粒子列表的函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame) {
+var _brokenEndFrame = 0; /* 全局帧计数，用于闪烁 */
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, getBrokenEnds) {
   spiderweb.drawParticles = function (ctx, comp) {
+    _brokenEndFrame++;
     var connected = {};
     for (var ci = 0; ci < comp.constraints.length; ci++) {
       var c = comp.constraints[ci];
@@ -25,6 +28,22 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       if (!connected[pid]) continue;
       ctx.beginPath(); ctx.arc(pt.pos.x, pt.pos.y, 1.3, 0, 2 * Math.PI);
       ctx.fillStyle = "rgba(220,220,220,0.55)"; ctx.fill();
+    }
+
+    /* ── 断线头闪烁圈 ── */
+    var brokenEnds = getBrokenEnds ? getBrokenEnds() : [];
+    if (brokenEnds.length > 0) {
+      var alpha = 0.35 + 0.65 * Math.abs(Math.sin(_brokenEndFrame * 0.07));
+      ctx.save();
+      ctx.strokeStyle = 'rgba(80,220,100,' + alpha.toFixed(2) + ')';
+      ctx.lineWidth = 1.2;
+      for (var bi = 0; bi < brokenEnds.length; bi++) {
+        var bp = brokenEnds[bi];
+        ctx.beginPath();
+        ctx.arc(bp.pos.x, bp.pos.y, 8.5, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   };
 

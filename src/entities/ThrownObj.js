@@ -75,7 +75,7 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   if (kind === 'boulder') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
-    this.initAngle = (Math.random() - 0.5) * Math.PI * 0.6;
+    this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
   } else if (kind === 'bug') {
     var edge = Math.floor(Math.random() * 4);
     if (edge === 0) { sx = -20; sy = H * 0.05 + Math.random() * H * 0.9; svx = 2.2 + Math.random() * 1.2; svy = (Math.random() - 0.5) * 2; }
@@ -110,6 +110,7 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.prevX = sx; this.prevY = sy;
   this.particle = new Particle(new Vec2(sx, sy));
   this.particle.lastPos.mutableSet(new Vec2(sx - svx, sy - svy));
+  if (kind === 'bug') this.particle.__isBug = true;
   this.comp = new Composite();
   this.comp.particles.push(this.particle);
   this.comp.drawParticles = function () { };
@@ -147,11 +148,7 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
   this.stuckOnConstraint = pt.c;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
-  if (this.kind === 'boulder') {
-    this.stuckAngle = Math.random() * Math.PI * 2;
-  } else {
-    this.stuckAngle = 0;
-  }
+  this.stuckAngle = this.initAngle; /* 粘住后保持下落时的初始角度 */
   this.state = 'sticking'; this.stickT = 0;
 
   /* 粘网冲击 */
@@ -220,6 +217,9 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame)
     this.penetrationDist = 0;
     this.released = true;
     this._releaseFrame = this.animT;
+    this._escapeCount = (this._escapeCount || 0) + 1; /* 挣脱次数累计 */
+    this._reStickDelay = 160 + Math.floor(Math.random() * 120); /* 乱飞多少帧后重新找网 */
+    this._reStickTimer = 0;
     var escapeAngle = Math.atan2(p.pos.y - H / 2, p.pos.x - W / 2) + (Math.random() - 0.5) * 1.2;
     var escapeSpeed = 4 + Math.random() * 2.5;
     this.baseVx = Math.cos(escapeAngle) * escapeSpeed;

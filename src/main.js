@@ -33,7 +33,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects } from './render/objectRenderer.js';
+import { drawThrownObjects, drawWrappingOverlay } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -184,6 +184,7 @@ window.onload = function () {
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
   var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
+  var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
 
   /* ── blink ── */
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240) };
@@ -217,7 +218,7 @@ window.onload = function () {
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; });
   }
 
   function buildSpider() {
@@ -263,6 +264,9 @@ window.onload = function () {
   var objCounts = { boulder: 0, bug: 0, drop: 0 };
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
+  var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
+  var autoPlay = false;     /* 自动寻路打包开关 */
+  var _autoPlayPause = 0;   /* 打包完成后的停顿帧计数（18帧≈0.3s） */
 
   var gameState = 'IDLE';
   var currentLevel = 0;
@@ -281,6 +285,11 @@ window.onload = function () {
   var webLossPct = 0;
   var webBreakFlashes = [];
   var _breakFrame = 0;
+  var _burstParticles = []; /* 打包完成放射粒子 */
+  var _webDisplayPct = 100;   /* 当前显示值 */
+  var _webTargetPct = 100;    /* 目标值 */
+  var _webRollTimer = 0;      /* 滚动帧计数 */
+  var _webRollFrom = 100;     /* 滚动起始值 */
 
   /* ── 爆发-冷却掉落状态机 ── */
   var spawnPhase = 'cooldown';
@@ -386,6 +395,7 @@ window.onload = function () {
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webLossPct = 0;
     webGridBuildIdx = 0; webGridInitCover = 0;
+    brokenEnds = [];
 
     /* ── 同步切换背景主题与BGM ── */
     P.bgTheme = n;
@@ -508,6 +518,30 @@ window.onload = function () {
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
     if (pct > webLossPct) webLossPct = pct;
+    /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
+    _refreshBrokenEnds();
+  }
+
+  function _refreshBrokenEnds() {
+    if (!spiderweb) return;
+    var _connMap = {};
+    for (var _ci = 0; _ci < spiderweb.constraints.length; _ci++) {
+      var _cc = spiderweb.constraints[_ci];
+      if (!(_cc instanceof DistanceConstraint)) continue;
+      var _pidA = _cc.a.__pid, _pidB = _cc.b.__pid;
+      if (_pidA) _connMap[_pidA] = (_connMap[_pidA] || 0) + 1;
+      if (_pidB) _connMap[_pidB] = (_connMap[_pidB] || 0) + 1;
+    }
+    var _newBroken = [], _newParticles = [];
+    for (var _pi = 0; _pi < spiderweb.particles.length; _pi++) {
+      var _pp = spiderweb.particles[_pi];
+      var _cnt = _pp.__pid ? (_connMap[_pp.__pid] || 0) : 0;
+      if (_cnt === 0) continue;          /* 孤立点：丢弃 */
+      _newParticles.push(_pp);
+      if (_cnt === 1) _newBroken.push(_pp); /* 断线头 */
+    }
+    spiderweb.particles = _newParticles;
+    brokenEnds = _newBroken;
   }
 
   function checkWebIntegrity() {
@@ -517,7 +551,7 @@ window.onload = function () {
       webWarmupFrames--;
       if (webWarmupFrames === 0) _buildWebGrid();
       var dbgEl = document.getElementById('dbg-web');
-      if (dbgEl) dbgEl.textContent = 'WEB 100%';
+      if (dbgEl) dbgEl.innerHTML = 'WEB <span id="dbg-web-num">100%</span>';
       return;
     }
     if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) continueWebGridBuild();
@@ -526,7 +560,41 @@ window.onload = function () {
       if (webScanPending === 0) _scanWebCells();
     }
     var dbgEl = document.getElementById('dbg-web');
-    if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';
+    if (dbgEl) {
+      var _newPct = Math.max(0, Math.round(100 - webLossPct * 2));
+      /* 新目标出现时启动滚动 */
+      if (_newPct !== _webTargetPct) {
+        _webRollFrom = _webDisplayPct;
+        _webTargetPct = _newPct;
+        _webRollTimer = 0;
+      }
+      /* 滚动过程：20帧内从旧值快速跳到新值，每帧更新一次显示 */
+      var _rollDur = 20;
+      if (_webRollTimer < _rollDur) {
+        _webRollTimer++;
+        /* 快速跳数：用 easeOut 让开头快、结尾慢 */
+        var _rollT = 1 - Math.pow(1 - _webRollTimer / _rollDur, 2);
+        _webDisplayPct = Math.round(_webRollFrom + (_webTargetPct - _webRollFrom) * _rollT);
+      } else {
+        _webDisplayPct = _webTargetPct;
+      }
+      var _numEl = document.getElementById('dbg-web-num');
+      if (!_numEl) {
+        dbgEl.innerHTML = 'WEB <span id="dbg-web-num">' + _webDisplayPct + '%</span>';
+        _numEl = document.getElementById('dbg-web-num');
+      } else {
+        var _showing = parseInt(_numEl.textContent);
+        if (_showing !== _webDisplayPct) {
+          _numEl.textContent = _webDisplayPct + '%';
+          /* 只在滚动开始时闪红一次 */
+          if (_webRollTimer === 1) {
+            _numEl.classList.remove('dbg-web-flash');
+            void _numEl.offsetWidth;
+            _numEl.classList.add('dbg-web-flash');
+          }
+        }
+      }
+    }
     if (webLossPct >= 50) showGameOver();
   }
 
@@ -538,8 +606,10 @@ window.onload = function () {
   }
 
   function spawnRandom() {
-    var kinds = ['boulder', 'bug', 'drop'];
-    launchObject(kinds[Math.floor(Math.random() * kinds.length)]);
+    /* bug 占 30% 的原概率再降到 30%，即约 10% 总概率 */
+    var r = Math.random();
+    var kind = r < 0.10 ? 'bug' : r < 0.55 ? 'boulder' : 'drop';
+    launchObject(kind);
   }
 
   function updateLevelSpawner() {
@@ -714,16 +784,42 @@ window.onload = function () {
             + Math.cos(obj.animT * obj.buzzFreqY * 2.1 + obj.buzzPhaseY) * obj.buzzAmp * 0.04
             + (Math.random() - 0.5) * 0.5;
           if (!obj.released && Math.random() < 0.018) { obj.baseVx = (Math.random() - 0.5) * 5; obj.baseVy = (Math.random() - 0.5) * 5; }
+
           p.pos.x += bx; p.pos.y += by;
           p.lastPos.x = p.pos.x - bx; p.lastPos.y = p.pos.y - by;
           obj.angle = Math.atan2(by, bx);
           obj.wingT += 0.55;
           if (!obj._buzzStarted) { obj._buzzStarted = true; audioEngine.startBugBuzz(oi); }
-          var offScreen = p.pos.x < -80 || p.pos.x > W + 80 || p.pos.y < -80 || p.pos.y > H + 80;
-          var timeout = obj.released && (obj.animT - obj._releaseFrame > 200);
-          if (offScreen || timeout) {
-            audioEngine.stopBugBuzz(oi);
-            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue;
+
+          /* 环绕穿越：飞出一侧从对面出现，轨迹不被阻挡 */
+          var _wrap = 100;
+          if (p.pos.x < -_wrap)   { p.pos.x += W + _wrap * 2; p.lastPos.x = p.pos.x - bx; }
+          if (p.pos.x > W + _wrap) { p.pos.x -= W + _wrap * 2; p.lastPos.x = p.pos.x - bx; }
+          if (p.pos.y < -_wrap)   { p.pos.y += H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
+          if (p.pos.y > H + _wrap) { p.pos.y -= H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
+          /* 挣脱后乱飞一段再重新粘网（无限循环，飞出屏幕才消失） */
+          if (obj.released) {
+            obj._reStickTimer = (obj._reStickTimer || 0) + 1;
+            if (obj._reStickTimer >= (obj._reStickDelay || 80)) {
+              /* 完全重置粘网状态，允许再次被网捕获 */
+              obj.released = false;
+              obj._reStickTimer = 0;
+              obj.enteredWebZone = false;
+              obj.hitHistory = [];
+              obj.penetrationDist = 0;
+              obj.stickDelay = 0;
+              /* 重置 stayFrames，下次粘住后有正常停留时间 */
+              obj.stayFrames = obj.def.stayFrames;
+              /* 保留原本随机飞行行为，只给 baseVx/baseVy 加一个微弱的网中心偏移
+                 让苍蝇自然地偏向网而不是直线冲过去 */
+              var _tcx = W * 0.3 + Math.random() * W * 0.4;
+              var _tcy = H * 0.3 + Math.random() * H * 0.4;
+              var _ddx = _tcx - p.pos.x, _ddy = _tcy - p.pos.y;
+              var _dd = Math.sqrt(_ddx * _ddx + _ddy * _ddy) || 1;
+              var _bias = 0.6 + Math.random() * 0.4; /* 微弱偏移，不覆盖随机性 */
+              obj.baseVx = (_ddx / _dd) * _bias + (Math.random() - 0.5) * 2.0;
+              obj.baseVy = (_ddy / _dd) * _bias + (Math.random() - 0.5) * 2.0;
+            }
           }
         } else {
           obj.angleVel += (Math.random() - 0.5) * obj.angleTurb;
@@ -756,7 +852,8 @@ window.onload = function () {
             var minDelay = P.stickDelayMin * outerR;
             var maxDelay = P.stickDelayMax * outerR;
             if (maxDelay < minDelay) maxDelay = minDelay;
-            obj.stickDelay = minDelay + Math.random() * (maxDelay - minDelay);
+            var _stickMult = (obj.kind === 'bug') ? 2.0 : 1.0;
+            obj.stickDelay = (minDelay + Math.random() * (maxDelay - minDelay)) * _stickMult;
           }
           obj.penetrationDist += stepLen;
           var newHits = collectPathHitCandidates(prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt);
@@ -788,7 +885,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'sticking') {
-        obj.stickT = Math.min(1, obj.stickT + 0.06);
+        obj.stickT = Math.min(1, obj.stickT + 0.078);
         var ease = obj.stickT < 0.5 ? 2 * obj.stickT * obj.stickT : -1 + (4 - 2 * obj.stickT) * obj.stickT;
         if (obj.cA) obj.cA.distance = obj.stickyFromA + (obj.stickyToA - obj.stickyFromA) * ease;
         if (obj.cB) obj.cB.distance = obj.stickyFromB + (obj.stickyToB - obj.stickyFromB) * ease;
@@ -840,6 +937,7 @@ window.onload = function () {
         if (obj.freeTimer > 28) {
           obj.release(spiderweb, webBreakFlashes, _breakFrame);
           webScanPending = 12;
+
         }
 
       } else if (obj.state === 'falling2') {
@@ -865,8 +963,27 @@ window.onload = function () {
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
+          if (autoPlay) _autoPlayPause = 24; /* 0.4秒停顿 */
           audioEngine.playCollectSound(obj.kind);
           playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT);
+          /* 放射粒子爆发 */
+          var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
+          var _colors = obj.kind === 'boulder' ? ['#ff9966','#ffcc88','#ffffff']
+                      : obj.kind === 'bug'     ? ['#88ddff','#aaffcc','#ffffff']
+                      :                         ['#aaffaa','#ffffaa','#ffffff'];
+          for (var _pi = 0; _pi < 14; _pi++) {
+            var _ang = (_pi / 14) * Math.PI * 2 + Math.random() * 0.3;
+            var _spd = 1.8 + Math.random() * 2.8;
+            _burstParticles.push({
+              x: _bx, y: _by,
+              vx: Math.cos(_ang) * _spd,
+              vy: Math.sin(_ang) * _spd,
+              life: 1.0,
+              decay: 0.045 + Math.random() * 0.025,
+              r: 2.2 + Math.random() * 2.0,
+              color: _colors[Math.floor(Math.random() * _colors.length)]
+            });
+          }
           beginCollectObject(obj);
         }
 
@@ -922,7 +1039,12 @@ window.onload = function () {
       STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
     },
     clearAllObjects: clearAllObjects,
-    launchObject: launchObject
+    launchObject: launchObject,
+    toggleAutoPlay: function () {
+      autoPlay = !autoPlay;
+      if (!autoPlay) target = null; /* 关闭时清除自动目标 */
+      return autoPlay;
+    }
   });
 
   /* ── 背景与音乐控制（左侧参数面板） ── */
@@ -1111,8 +1233,9 @@ window.onload = function () {
     /* ── 更新 & 绘制 Sylvan 背景（始终运行，包括IDLE） ── */
     _bgFrame++;
     updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
-    /* 移动端每 3 帧渲染一次背景（约 20fps），桌面端每帧渲染 */
-    if (!IS_MOBILE || _bgFrame % 3 === 0) {
+    /* 移动端每 3 帧、桌面端每 2 帧渲染一次背景，降低树叶重绘开销 */
+    var _bgInterval = IS_MOBILE ? 3 : 2;
+    if (_bgFrame % _bgInterval === 0) {
       renderSylvanBackground();
     }
 
@@ -1123,6 +1246,27 @@ window.onload = function () {
     }
 
     updateSamplePoints(samplePoints);
+
+    /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
+    if (_autoPlayPause > 0) { _autoPlayPause--; }
+    if (autoPlay && !wrappingTarget && _autoPlayPause <= 0) {
+      var _bestObj = null, _bestD2 = Infinity;
+      var _tx = spider.thorax.pos;
+      for (var _oi = 0; _oi < thrownObjects.length; _oi++) {
+        var _o = thrownObjects[_oi];
+        if (_o.state !== 'stuck') continue;
+        var _odx = _o.particle.pos.x - _tx.x, _ody = _o.particle.pos.y - _tx.y;
+        var _od2 = _odx * _odx + _ody * _ody;
+        if (_od2 < _bestD2) { _bestD2 = _od2; _bestObj = _o; }
+      }
+      if (_bestObj) {
+        _autoTarget.x = _bestObj.particle.pos.x;
+        _autoTarget.y = _bestObj.particle.pos.y;
+        target = _autoTarget;
+      } else {
+        target = null;
+      }
+    }
 
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
@@ -1194,6 +1338,27 @@ window.onload = function () {
     sim.draw();
     drawThrownObjects(sim.ctx, thrownObjects);
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
+    drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
+
+    /* 放射粒子：更新 + 绘制 */
+    if (_burstParticles.length > 0) {
+      var _ctx = sim.ctx;
+      for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
+        var _bp = _burstParticles[_bpi];
+        _bp.x += _bp.vx; _bp.y += _bp.vy;
+        _bp.vx *= 0.92; _bp.vy *= 0.92;
+        _bp.life -= _bp.decay;
+        if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
+        _ctx.save();
+        _ctx.globalAlpha = _bp.life;
+        _ctx.beginPath();
+        _ctx.arc(_bp.x, _bp.y, _bp.r * _bp.life, 0, 2 * Math.PI);
+        _ctx.fillStyle = _bp.color;
+        _ctx.fill();
+        _ctx.restore();
+      }
+    }
+
     requestAnimFrame(loop);
   };
   requestAnimFrame(loop);
