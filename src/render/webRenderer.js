@@ -1,5 +1,7 @@
 import { DistanceConstraint } from '../engine/constraints.js';
 import { getNextPid } from '../systems/footSystem.js';
+import { statsDc } from '../debug/renderStats.js';
+import { spatialIndex } from '../physics/SpatialIndexService.js';
 
 /**
  * 设置蜘蛛网的自定义绘制函数
@@ -14,6 +16,8 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     for (var ci = 0; ci < comp.constraints.length; ci++) {
       var c = comp.constraints[ci];
       if (!(c instanceof DistanceConstraint)) continue;
+      if (c.__webGlobal) continue;
+      if (c.__webId && !spatialIndex.isAliveId(c.__webId)) continue;
       var idA = c.a.__pid || (c.a.__pid = getNextPid());
       var idB = c.b.__pid || (c.b.__pid = getNextPid());
       connected[idA] = true;
@@ -25,6 +29,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       if (!connected[pid]) continue;
       ctx.beginPath(); ctx.arc(pt.pos.x, pt.pos.y, 1.3, 0, 2 * Math.PI);
       ctx.fillStyle = "rgba(220,220,220,0.55)"; ctx.fill();
+      statsDc('arc');
     }
   };
 
@@ -56,6 +61,8 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     for (var ci = 0; ci < n; ci++) {
       var cc = comp.constraints[ci];
       if (!(cc instanceof DistanceConstraint)) continue;
+      if (cc.__webGlobal) continue;
+      if (cc.__webId && !spatialIndex.isAliveId(cc.__webId)) continue;
       var pa_id = cc.a.__pid || (cc.a.__pid = getNextPid());
       var pb_id = cc.b.__pid || (cc.b.__pid = getNextPid());
       if (!pToCI[pa_id]) pToCI[pa_id] = [];
@@ -124,6 +131,8 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     for (var i = 0; i < n; i++) {
       var c = comp.constraints[i];
       if (c instanceof DistanceConstraint) {
+        if (c.__webGlobal) continue;
+        if (c.__webId && !spatialIndex.isAliveId(c.__webId)) continue;
         ctx.beginPath(); ctx.moveTo(c.a.pos.x, c.a.pos.y); ctx.lineTo(c.b.pos.x, c.b.pos.y);
         var d = dangerFinal[i] || 0;
         if (d > 0) {
@@ -159,7 +168,11 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
           ctx.strokeStyle = "rgba(230,230,230,0.55)"; ctx.lineWidth = 1.6;
         }
         ctx.stroke();
-      } else c.draw(ctx);
+        statsDc('line');
+      } else {
+        c.draw(ctx);
+        statsDc('line');
+      }
     }
   };
 }

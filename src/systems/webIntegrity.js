@@ -1,4 +1,5 @@
 import { DistanceConstraint } from '../engine/constraints.js';
+import { ptSegDistSq } from '../physics/CollisionMath.js';
 
 /**
  * 网完整性检测系统
@@ -60,6 +61,106 @@ export function scanWebCells(webGridList, spiderweb, coverD) {
     if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) covered++;
   }
   return covered;
+}
+
+/** 建网时分批扫描（warmup） */
+export const WEB_BUILD_BATCH = 50;
+
+/**
+ * 断丝后运行时重扫：每帧最多 batchSize 格，worst-case 比较次数 ≈ batchSize × 约束数
+ * Phase A 目标：≤5000 次/帧 → batchSize=7（660 约束时约 4620）
+ */
+export const WEB_RESCAN_BATCH = 7;
+
+/**
+ * 分批扫描格子，返回本批覆盖数与下一索引
+ * @returns {{ covered: number, nextIdx: number, done: boolean }}
+ */
+/**
+ * 通过 Spatial Index 判断格点是否被覆盖（Phase B）
+ */
+export function cellCoveredSpatial(gx, gy, spatialIndex, queryBuf, coverD) {
+  if (!spatialIndex) return false;
+  var d2 = coverD * coverD;
+  var count = spatialIndex.queryAABB(gx - coverD, gx + coverD, gy - coverD, gy + coverD, queryBuf);
+  for (var i = 0; i < count; i++) {
+    var c = spatialIndex.getConstraint(queryBuf[i]);
+    if (!c) continue;
+    if (ptSegDistSq(gx, gy, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) return true;
+  }
+  return false;
+}
+
+/**
+ * 断丝后标记受影响完整度格（线段 AABB 外扩 coverD）
+ */
+export function markDirtyCellsFromSegment(ax, ay, bx, by, pad, webGridList) {
+  var minX = (ax < bx ? ax : bx) - pad;
+  var maxX = (ax > bx ? ax : bx) + pad;
+  var minY = (ay < by ? ay : by) - pad;
+  var maxY = (ay > by ? ay : by) + pad;
+  return markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList);
+}
+
+/**
+ * 矩形区域批量标记 dirty 格（AoE 断丝等）
+ */
+export function markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList) {
+  var dirty = [];
+  if (!webGridList || !webGridList.length) return dirty;
+  for (var k = 0; k < webGridList.length; k++) {
+    var g = webGridList[k];
+    if (g.x >= minX && g.x <= maxX && g.y >= minY && g.y <= maxY) dirty.push(k);
+  }
+  return dirty;
+}
+
+/**
+ * 处理 dirty 格队列（每帧最多 batchSize 个）
+ * @returns {{ done: boolean, comparisons: number }}
+ */
+export function tickDirtyCells(state, spatialIndex, queryBuf, coverD, batchSize) {
+  var dirty = state.dirtyIndices;
+  if (!dirty.length || !state.webGridList) return { done: true, comparisons: 0 };
+  var comparisons = 0;
+  var processed = 0;
+  while (processed < batchSize && dirty.length) {
+    var idx = dirty.shift();
+    if (state.dirtyFlags) state.dirtyFlags[idx] = 0;
+    var g = state.webGridList[idx];
+    var was = state.cellCovered[idx];
+    var count = spatialIndex.queryAABB(
+      g.x - coverD, g.x + coverD, g.y - coverD, g.y + coverD, queryBuf
+    );
+    comparisons += count;
+    var now = false;
+    var d2 = coverD * coverD;
+    for (var i = 0; i < count; i++) {
+      var c = spatialIndex.getConstraint(queryBuf[i]);
+      if (!c) continue;
+      comparisons++;
+      if (ptSegDistSq(g.x, g.y, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) {
+        now = true;
+        break;
+      }
+    }
+    state.cellCovered[idx] = now;
+    if (was && !now) state.coveredCount--;
+    else if (!was && now) state.coveredCount++;
+  }
+  return { done: dirty.length === 0, comparisons: comparisons };
+}
+
+export function scanWebCellsBatch(webGridList, spiderweb, coverD, startIdx, batchSize) {
+  if (!webGridList || webGridList.length === 0) {
+    return { covered: 0, nextIdx: 0, done: true };
+  }
+  var covered = 0;
+  var end = Math.min(startIdx + batchSize, webGridList.length);
+  for (var k = startIdx; k < end; k++) {
+    if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) covered++;
+  }
+  return { covered: covered, nextIdx: end, done: end >= webGridList.length };
 }
 
 /**

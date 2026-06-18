@@ -1,4 +1,5 @@
 import { DistanceConstraint } from '../engine/constraints.js';
+import { statsDc } from '../debug/renderStats.js';
 import popoHeadUrl from '../assets/popo.png';
 import popoBlinkUrl from '../assets/popo_blink.png';
 import popoPackUrl from '../assets/popo_pack.png';
@@ -122,6 +123,7 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       ctx.strokeStyle = '#0c0c0c';
       ctx.lineWidth = 4.6;
       ctx.stroke();
+      statsDc('stroke');
 
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
@@ -139,6 +141,7 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       ctx.strokeStyle = '#1b1b1b';
       ctx.lineWidth = 2.5;
       ctx.stroke();
+      statsDc('stroke');
       ctx.restore();
     }
 
@@ -155,6 +158,7 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       var imgCX = ax + fnx * 4;
       var imgCY = ay + fny * 4;
       ctx.drawImage(headFrame, imgCX - imgW * 0.5, imgCY - imgH * 0.5, imgW, imgH);
+      statsDc('image');
     }
   };
 

@@ -12,17 +12,25 @@ import { ThrownObj, clearObjectConstraints } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
-  findStepTarget, liftFoot, landFoot, triggerStep
+  liftFoot, landFoot, triggerStep
 } from './systems/footSystem.js';
 
 import {
   getWebOuterR, inWebZone, radialRatioAt,
-  collectPathHitCandidates, chooseStickCandidate
+  collectPathHitCandidates, collectPathHitCandidatesSpatial, chooseStickCandidate,
+  mergeStickHits, stickHitScratch
 } from './systems/stickSystem.js';
 
 import {
-  buildWebGridList, cellCovered, scanWebCells
+  buildWebGridList, cellCovered, cellCoveredSpatial,
+  markDirtyCellsFromSegment, markDirtyRegionFromAABB, tickDirtyCells,
+  scanWebCellsBatch, WEB_BUILD_BATCH, WEB_RESCAN_BATCH
 } from './systems/webIntegrity.js';
+
+import {
+  spatialIndex, spatialQueryBuf,
+  assignWebConstraintIds, resetWebConstraintIds
+} from './physics/SpatialIndexService.js';
 
 import {
   LEVEL_CONFIGS, GAME_DURATION, SCORE_MULT,
@@ -50,6 +58,11 @@ import {
 
 import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX } from './ui/overlay.js';
 import { initPanel } from './ui/panel.js';
+
+import {
+  statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel
+} from './debug/renderStats.js';
+import { getBgEntityCounts } from './render/sylvanBackground.js';
 
 /* ── requestAnimFrame polyfill ── */
 var requestAnimFrame = window.requestAnimationFrame
@@ -81,6 +94,8 @@ window.onload = function () {
     bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3
   };
   var P = Object.assign({}, DEFAULTS);
+  var USE_LEGACY_COLLISION = /(?:^|[?&])legacy=1/.test(location.search)
+    || !!(P.useLegacyCollision);
   try {
     var saved = JSON.parse(localStorage.getItem('spiderPanelParams') || '{}');
     Object.assign(P, saved);
@@ -163,10 +178,9 @@ window.onload = function () {
 
   /* ── 解锁音频上下文（浏览器自动播放安全策略） ── */
   function _unlockAudio() {
-    try {
-      var ac = audioEngine.getAC();
-      if (ac && ac.state === 'suspended') ac.resume();
-    } catch (e) {}
+    audioEngine.unlockAudio(function () {
+      if (P.bgMusicOn) audioEngine.playLevelBGM(P.bgTheme || 0);
+    });
     window.removeEventListener('click', _unlockAudio);
     window.removeEventListener('touchstart', _unlockAudio);
     window.removeEventListener('keydown', _unlockAudio);
@@ -174,11 +188,6 @@ window.onload = function () {
   window.addEventListener('click', _unlockAudio);
   window.addEventListener('touchstart', _unlockAudio);
   window.addEventListener('keydown', _unlockAudio);
-
-  /* ── 默认开启 BGM（可从已保存背景参数恢复） ── */
-  setTimeout(function () {
-    if (P.bgMusicOn) audioEngine.playLevelBGM(P.bgTheme || 0);
-  }, 500);
 
   /* runtime refs */
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
@@ -212,11 +221,15 @@ window.onload = function () {
     var ocx = (ov.cx != null) ? ov.cx : cx;
     var ocy = (ov.cy != null) ? ov.cy : cy;
     var pStep = ov.pinStep || 4;
+    resetWebConstraintIds();
     spiderweb = createSpiderweb(sim, new Vec2(ocx, ocy), rad, segs, depth, P.webStiff, pStep);
+    sim.gravityComposite = spiderweb;
     webCx = ocx; webCy = ocy; webRad = rad;
+    assignWebConstraintIds(spiderweb);
+    spatialIndex.syncAliveFromWeb(spiderweb);
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
-    samplePoints = getWebSamplePoints(spiderweb, 4);
+    samplePoints = USE_LEGACY_COLLISION ? getWebSamplePoints(spiderweb, 4) : [];
     setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; });
   }
 
@@ -245,8 +258,15 @@ window.onload = function () {
       };
     });
     setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
-    setTimeout(function () { triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(2, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 60);
-    setTimeout(function () { triggerStep(1, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(3, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 210);
+    var _spatialOpts = USE_LEGACY_COLLISION ? null : { index: spatialIndex, queryBuf: spatialQueryBuf };
+    setTimeout(function () {
+      triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+      triggerStep(2, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+    }, 60);
+    setTimeout(function () {
+      triggerStep(1, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+      triggerStep(3, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+    }, 210);
   }
 
   /* initial build */
@@ -255,6 +275,29 @@ window.onload = function () {
 
   /* ── overlay init ── */
   initOverlay();
+
+  var updateStatsPanel = statsBindPanel(document.getElementById('stats-panel'));
+
+  function countSimStats(physicsIters) {
+    var particles = 0;
+    var webC = 0;
+    var spiderC = 0;
+    for (var ci = 0; ci < sim.composites.length; ci++) {
+      var comp = sim.composites[ci];
+      particles += comp.particles.length;
+      if (comp === spiderweb) webC = comp.constraints.length;
+      else if (comp === spider) spiderC = comp.constraints.length;
+    }
+    statsSetScene({
+      verletParticles: particles,
+      webConstraints: webC,
+      spiderConstraints: spiderC,
+      preyActive: thrownObjects.length,
+      physicsIters: physicsIters,
+      dpr: dpr
+    });
+    statsSetScene(getBgEntityCounts());
+  }
 
   /* ================================================================
      THROWN OBJECTS & GAME STATE
@@ -277,7 +320,16 @@ window.onload = function () {
   var webInitCells = 1;
   var webGridList = null;
   var webWarmupFrames = 0;
-  var webScanPending = 0;
+  var webRescanActive = false;
+  var webRescanIdx = 0;
+  var webRescanCover = 0;
+  var webIntegrityState = {
+    webGridList: null,
+    cellCovered: null,
+    coveredCount: 0,
+    dirtyIndices: [],
+    dirtyFlags: null
+  };
   var webLossPct = 0;
   var webBreakFlashes = [];
   var _breakFrame = 0;
@@ -386,7 +438,13 @@ window.onload = function () {
     document.getElementById('wave-bar').style.display = 'block';
     levelTimer = 0;
     webWarmupFrames = 90;
-    webGridList = null; webInitCells = 1; webScanPending = 0; webLossPct = 0;
+    webGridList = null; webInitCells = 1; webRescanActive = false; webRescanIdx = 0;
+    webRescanCover = 0; webLossPct = 0;
+    webIntegrityState.webGridList = null;
+    webIntegrityState.cellCovered = null;
+    webIntegrityState.coveredCount = 0;
+    webIntegrityState.dirtyIndices = [];
+    webIntegrityState.dirtyFlags = null;
     webGridBuildIdx = 0; webGridInitCover = 0;
 
     /* ── 同步切换背景主题与BGM ── */
@@ -486,33 +544,118 @@ window.onload = function () {
   }
 
   /* ── Web integrity ── */
+  function _spatialBounds() {
+    var pad = webRad * 1.1;
+    return {
+      minX: webCx - pad, minY: webCy - pad,
+      maxX: webCx + pad, maxY: webCy + pad
+    };
+  }
+
+  function rebuildSpatialIndex() {
+    if (USE_LEGACY_COLLISION || !spiderweb) return;
+    spatialIndex.build(spiderweb, _spatialBounds());
+  }
+
+  function _markDirtyAABB(minX, minY, maxX, maxY) {
+    if (!webGridList) return;
+    var dirty = markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList);
+    for (var di = 0; di < dirty.length; di++) _markDirtyCell(dirty[di]);
+  }
+
+  function _spatialOpts() {
+    return USE_LEGACY_COLLISION ? null : {
+      index: spatialIndex,
+      queryBuf: spatialQueryBuf,
+      markDirtyAABB: _markDirtyAABB
+    };
+  }
+
+  function _constraintAlive(c) {
+    return !c.__webId || spatialIndex.isAliveId(c.__webId);
+  }
+
   function _buildWebGrid() {
     webGridList = buildWebGridList(webCx, webCy, webRad, webGridStep);
     webGridBuildIdx = 0;
     webGridInitCover = 0;
     webInitCells = 1;
+    webIntegrityState.webGridList = webGridList;
+    webIntegrityState.cellCovered = new Uint8Array(webGridList.length);
+    webIntegrityState.dirtyFlags = new Uint8Array(webGridList.length);
+    webIntegrityState.coveredCount = 0;
+    webIntegrityState.dirtyIndices = [];
   }
 
   function continueWebGridBuild() {
     if (!webGridList || webGridBuildIdx >= webGridList.length) return;
-    var batchSize = 50;
-    var end = Math.min(webGridBuildIdx + batchSize, webGridList.length);
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    var end = Math.min(webGridBuildIdx + WEB_BUILD_BATCH, webGridList.length);
     for (var k = webGridBuildIdx; k < end; k++) {
-      if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD)) webGridInitCover++;
+      var cov;
+      if (USE_LEGACY_COLLISION) {
+        cov = cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD);
+      } else {
+        cov = cellCoveredSpatial(webGridList[k].x, webGridList[k].y, spatialIndex, spatialQueryBuf, webGridCoverD);
+      }
+      webIntegrityState.cellCovered[k] = cov ? 1 : 0;
+      if (cov) webGridInitCover++;
     }
     webGridBuildIdx = end;
     if (webGridBuildIdx >= webGridList.length) {
       webInitCells = webGridInitCover || 1;
+      webIntegrityState.coveredCount = webGridInitCover;
     }
   }
 
-  function _scanWebCells() {
-    if (!webGridList || webGridList.length === 0) return;
-    var covered = scanWebCells(webGridList, spiderweb, webGridCoverD);
+  function _markDirtyCell(idx) {
+    if (!webIntegrityState.dirtyFlags || idx < 0) return;
+    if (!webIntegrityState.dirtyFlags[idx]) {
+      webIntegrityState.dirtyFlags[idx] = 1;
+      webIntegrityState.dirtyIndices.push(idx);
+    }
+  }
+
+  function _onWebSegmentBroken(c, opts) {
+    if (!c) return;
+    if (c.__webId) spatialIndex.removeConstraint(c.__webId);
+    if (USE_LEGACY_COLLISION) {
+      _queueWebRescan();
+      return;
+    }
+    if (opts && opts.skipDirty) return;
+    if (!webGridList) return;
+    var dirty = markDirtyCellsFromSegment(
+      c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y, webGridCoverD, webGridList
+    );
+    for (var di = 0; di < dirty.length; di++) _markDirtyCell(dirty[di]);
+  }
+
+  function _queueWebRescan() {
+    webRescanActive = true;
+    webRescanIdx = 0;
+    webRescanCover = 0;
+  }
+
+  function _applyWebCover(covered) {
+    if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
     if (pct > webLossPct) webLossPct = pct;
+  }
+
+  function tickWebRescan() {
+    if (!webRescanActive || !webGridList) return;
+    var batch = scanWebCellsBatch(
+      webGridList, spiderweb, webGridCoverD, webRescanIdx, WEB_RESCAN_BATCH
+    );
+    webRescanCover += batch.covered;
+    webRescanIdx = batch.nextIdx;
+    if (batch.done) {
+      webRescanActive = false;
+      _applyWebCover(webRescanCover);
+    }
   }
 
   function checkWebIntegrity() {
@@ -526,9 +669,15 @@ window.onload = function () {
       return;
     }
     if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) continueWebGridBuild();
-    if (webScanPending > 0) {
-      webScanPending--;
-      if (webScanPending === 0) _scanWebCells();
+    if (USE_LEGACY_COLLISION) {
+      if (webRescanActive) tickWebRescan();
+    } else if (webIntegrityState.dirtyIndices.length) {
+      rebuildSpatialIndex();
+      webIntegrityState.webGridList = webGridList;
+      var dirtyResult = tickDirtyCells(
+        webIntegrityState, spatialIndex, spatialQueryBuf, webGridCoverD, WEB_RESCAN_BATCH
+      );
+      if (dirtyResult.done) _applyWebCover(webIntegrityState.coveredCount);
     }
     var dbgEl = document.getElementById('dbg-web');
     if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';
@@ -708,8 +857,17 @@ window.onload = function () {
   function _inWebZone(x, y) { return inWebZone(x, y, W, H, P.webRadius * WEB_SCALE); }
   function _getWebOuterR() { return getWebOuterR(W, H, P.webRadius * WEB_SCALE); }
 
-  /* ── updateThrownObjects ── */
-  function updateThrownObjects() {
+  function captureThrownStickPrev() {
+    for (var oi = 0; oi < thrownObjects.length; oi++) {
+      var obj = thrownObjects[oi];
+      if (!obj || !obj.particle || obj.state !== 'falling') continue;
+      obj._stickPrevX = obj.particle.pos.x;
+      obj._stickPrevY = obj.particle.pos.y;
+    }
+  }
+
+  /* ── updateThrownObjects：运动积分（粘网查询在 physics+build 之后） ── */
+  function integrateThrownObjects() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
       if (!obj || !obj.def) continue;
@@ -717,8 +875,6 @@ window.onload = function () {
       obj.animT++;
 
       if (obj.state === 'falling') {
-        var prevX = p.pos.x, prevY = p.pos.y;
-
         if (obj.kind === 'boulder') {
           obj.segT += 0.22;
           var bGrav = obj.grav * 2.6;
@@ -760,46 +916,6 @@ window.onload = function () {
           p.pos.x += obj.vx; p.pos.y += obj.vy;
           p.lastPos.x = p.pos.x - obj.vx; p.lastPos.y = p.pos.y - obj.vy;
           if (p.pos.y > H + 60) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
-        }
-
-        /* C方案粘网 */
-        var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
-        var stepLen = Math.sqrt(stepDx * stepDx + stepDy * stepDy);
-
-        if (!obj.released && (_inWebZone(p.pos.x, p.pos.y) || obj.enteredWebZone)) {
-          if (!obj.enteredWebZone) {
-            obj.enteredWebZone = true;
-            obj.penetrationDist = 0;
-            obj.hitHistory = [];
-            var outerR = _getWebOuterR();
-            var minDelay = P.stickDelayMin * outerR;
-            var maxDelay = P.stickDelayMax * outerR;
-            if (maxDelay < minDelay) maxDelay = minDelay;
-            obj.stickDelay = minDelay + Math.random() * (maxDelay - minDelay);
-          }
-          obj.penetrationDist += stepLen;
-          var newHits = collectPathHitCandidates(prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt);
-          for (var hi = 0; hi < newHits.length; hi++) {
-            newHits[hi].penetration = obj.penetrationDist;
-            var last = obj.hitHistory.length ? obj.hitHistory[obj.hitHistory.length - 1] : null;
-            if (last) {
-              var dxh = last.x - newHits[hi].x, dyh = last.y - newHits[hi].y;
-              if (dxh * dxh + dyh * dyh < 16) continue;
-            }
-            obj.hitHistory.push(newHits[hi]);
-          }
-          if (obj.hitHistory.length > P.stickHistory) {
-            obj.hitHistory.splice(0, obj.hitHistory.length - P.stickHistory);
-          }
-          if (obj.penetrationDist >= obj.stickDelay && obj.hitHistory.length) {
-            var chosen = chooseStickCandidate(obj.hitHistory, spiderweb, P.stickMidBias);
-            if (chosen) obj.stickToPoint(chosen, spiderweb);
-          }
-          if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
-            obj.enteredWebZone = false;
-            obj.penetrationDist = 0;
-            obj.hitHistory = [];
-          }
         }
 
         if (obj.kind !== 'bug' && p.pos.y > H + 60) {
@@ -857,8 +973,7 @@ window.onload = function () {
         p.pos.x += (Math.random() - 0.5) * thrash;
         p.pos.y += (Math.random() - 0.5) * (thrash * 0.6);
         if (obj.freeTimer > 28) {
-          obj.release(spiderweb, webBreakFlashes, _breakFrame);
-          webScanPending = 12;
+          obj.release(spiderweb, webBreakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts());
         }
 
       } else if (obj.state === 'falling2') {
@@ -928,6 +1043,106 @@ window.onload = function () {
           thrownObjects.splice(oi, 1);
           updateBadge(obj.kind, -1);
         }
+      }
+    }
+  }
+
+  /* ── 粘网查询（physics + spatial build 之后） ── */
+  function queryThrownStick() {
+    for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
+      var obj = thrownObjects[oi];
+      if (!obj || !obj.def || obj.state !== 'falling' || obj.released) continue;
+      var p = obj.particle;
+      var prevX = obj._stickPrevX, prevY = obj._stickPrevY;
+      var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
+      var stepLen = Math.sqrt(stepDx * stepDx + stepDy * stepDy);
+
+      if (!_inWebZone(p.pos.x, p.pos.y) && !obj.enteredWebZone) continue;
+
+      if (!obj.enteredWebZone) {
+        obj.enteredWebZone = true;
+        obj.penetrationDist = 0;
+        obj.hitHistory = [];
+        obj._hitHistoryCount = 0;
+        var outerR = _getWebOuterR();
+        var minDelay = P.stickDelayMin * outerR;
+        var maxDelay = P.stickDelayMax * outerR;
+        if (maxDelay < minDelay) maxDelay = minDelay;
+        obj.stickDelay = minDelay + Math.random() * (maxDelay - minDelay);
+      }
+      obj.penetrationDist += stepLen;
+
+      if (USE_LEGACY_COLLISION) {
+        var legacyHits = collectPathHitCandidates(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt
+        );
+        for (var lhi = 0; lhi < legacyHits.length; lhi++) {
+          legacyHits[lhi].penetration = obj.penetrationDist;
+          var lastL = obj._hitHistoryCount ? obj.hitHistory[obj._hitHistoryCount - 1] : null;
+          if (lastL) {
+            var dxl = lastL.x - legacyHits[lhi].x, dyl = lastL.y - legacyHits[lhi].y;
+            if (dxl * dxl + dyl * dyl < 16) continue;
+          }
+          if (!obj.hitHistory[obj._hitHistoryCount]) obj.hitHistory[obj._hitHistoryCount] = {};
+          var ls = obj.hitHistory[obj._hitHistoryCount++];
+          Object.assign(ls, legacyHits[lhi]);
+        }
+        if (obj._hitHistoryCount > P.stickHistory) {
+          var ldrop = obj._hitHistoryCount - P.stickHistory;
+          for (var li = 0; li < P.stickHistory; li++) obj.hitHistory[li] = obj.hitHistory[li + ldrop];
+          obj._hitHistoryCount = P.stickHistory;
+        }
+      } else {
+        var newCount = collectPathHitCandidatesSpatial(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius,
+          spatialIndex, spatialQueryBuf, stickHitScratch, _radialRatioAt
+        );
+        obj._hitHistoryCount = mergeStickHits(
+          obj.hitHistory, obj._hitHistoryCount, stickHitScratch, newCount,
+          obj.penetrationDist, P.stickHistory
+        );
+      }
+
+      if (obj.penetrationDist >= obj.stickDelay && obj._hitHistoryCount) {
+        var pick = chooseStickCandidate(
+          obj.hitHistory, obj._hitHistoryCount,
+          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, P.stickMidBias
+        );
+        obj._hitHistoryCount = pick.count;
+        if (pick.candidate) {
+          obj.stickToPoint(pick.candidate, spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+        }
+      }
+      if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
+        obj.enteredWebZone = false;
+        obj.penetrationDist = 0;
+        obj._hitHistoryCount = 0;
+      }
+    }
+  }
+
+  function _resyncFootParticles() {
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (!fs || !fs.particle) continue;
+      fs.particle.pos.mutableSet(fs.current);
+      fs.particle.lastPos.mutableSet(fs.current);
+    }
+  }
+
+  function updateFootTriggers() {
+    var spatialOpts = _spatialOpts();
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (fs.stepping || fs.cooldown > 0) continue;
+      var drift2 = fs.current.dist2(spider.thorax.pos);
+      var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
+      var ps = partner && partner.stepping;
+      if (ps) continue;
+      if (target && drift2 > STEP_THRESH * STEP_THRESH) {
+        triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, spatialOpts);
+      } else if (!target && drift2 > REST_THRESH * REST_THRESH) {
+        triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, spatialOpts);
       }
     }
   }
@@ -1117,6 +1332,8 @@ window.onload = function () {
   var _lastTimestamp = 0;
   var _bgFrame = 0;
   var loop = function (timestamp) {
+    statsBeginFrame();
+
     /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
     var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
@@ -1137,11 +1354,14 @@ window.onload = function () {
 
     if (gameState === 'IDLE' || gameState === 'GAME_OVER') {
       updateLevelTimer();
+      countSimStats(0);
+      statsEndFrame(timestamp);
+      updateStatsPanel();
       requestAnimFrame(loop);
       return;
     }
 
-    updateSamplePoints(samplePoints);
+    captureThrownStickPrev();
 
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
@@ -1180,39 +1400,62 @@ window.onload = function () {
           landFoot(fs, spider);
         }
       } else {
-        if (fs.landedNode) { fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y; }
-        else if (fs.landedSeg) { var sp = fs.landedSeg; fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t; fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t; }
-        if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
-        var drift2 = fs.current.dist2(spider.thorax.pos);
-        var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
-        var ps = partner && partner.stepping;
-        if (!ps) {
-          if (target && drift2 > STEP_THRESH * STEP_THRESH) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
-          else if (!target && drift2 > REST_THRESH * REST_THRESH) triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
+        if (fs.landedNode) {
+          if (fs.landedNode.pos) {
+            fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y;
+          } else fs.landedNode = null;
+        } else if (fs.landedSeg) {
+          var sp = fs.landedSeg;
+          if (sp.pa && sp.pb && sp.pa.pos && sp.pb.pos) {
+            fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t;
+            fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t;
+          } else fs.landedSeg = null;
         }
+        if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
       }
     }
 
+    integrateThrownObjects();
+
+    /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
+    var physicsIters = 11;
+    countSimStats(physicsIters);
+    sim.frame(
+      physicsIters,
+      USE_LEGACY_COLLISION ? null : _constraintAlive
+    );
+    _resyncFootParticles();
+
+    if (USE_LEGACY_COLLISION) updateSamplePoints(samplePoints);
+    else rebuildSpatialIndex();
+
+    updateFootTriggers();
+
     /* 断网红闪帧计数 */
     _breakFrame++;
-    if (webBreakFlashes.length > 0)
-      webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+    if (webBreakFlashes.length > 0) {
+      var flashWrite = 0;
+      for (var fwi = 0; fwi < webBreakFlashes.length; fwi++) {
+        if (_breakFrame - webBreakFlashes[fwi].t < 20) webBreakFlashes[flashWrite++] = webBreakFlashes[fwi];
+      }
+      webBreakFlashes.length = flashWrite;
+    }
 
     /* wave system */
     updateLevelTimer();
     updateLevelSpawner();
     checkWebIntegrity();
 
-    /* thrown objects */
+    queryThrownStick();
     tryCollectObjects();
-    updateThrownObjects();
     if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
 
     updateBlink();
-    sim.frame(16);   // 约束迭代次数固定，保持物理稳定性
     sim.draw();
     drawThrownObjects(sim.ctx, thrownObjects);
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
+    statsEndFrame(timestamp);
+    updateStatsPanel();
     requestAnimFrame(loop);
   };
   requestAnimFrame(loop);

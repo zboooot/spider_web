@@ -57,6 +57,9 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.penetrationDist = 0;
   this.stickDelay = 0;
   this.hitHistory = [];
+  this._hitHistoryCount = 0;
+  this._stickPrevX = 0;
+  this._stickPrevY = 0;
   this.released = false;
   this.collectT = 0;
   this.collectDur = 24;
@@ -130,9 +133,14 @@ export function clearObjectConstraints(obj) {
   }
 }
 
-ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
+ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   if (!pt) return false;
-  if (spiderweb.constraints.indexOf(pt.c) === -1) return false;
+  if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
+    var sid = pt.constraintId != null ? pt.constraintId : (pt.c && pt.c.__webId);
+    if (!sid || !aliveCheck.isAliveId(sid)) return false;
+    if (!pt.c) pt.c = aliveCheck.getConstraint(sid);
+    if (!pt.c) return false;
+  } else if (spiderweb.constraints.indexOf(pt.c) === -1) return false;
   var p = this.particle;
   var dA = p.pos.dist(pt.c.a.pos);
   var dB = p.pos.dist(pt.c.b.pos);
@@ -168,12 +176,13 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
   return true;
 };
 
-ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame) {
+ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame, onBreakSegment, spatialOpts) {
   var p = this.particle;
   var currentVx = p.pos.x - p.lastPos.x;
   var currentVy = p.pos.y - p.lastPos.y;
   clearObjectConstraints(this);
   audioEngine.playSfxEscape();
+  var useBitmap = spatialOpts && spatialOpts.index;
 
   if (this.stuckOnConstraint) {
     var bc = this.stuckOnConstraint;
@@ -184,29 +193,60 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame)
         t: _breakFrame
       });
     }
-    var wi = spiderweb.constraints.indexOf(bc);
-    if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+    if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false } : null);
+    if (useBitmap) {
+      if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
+    } else {
+      var wi = spiderweb.constraints.indexOf(bc);
+      if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+    }
     this.stuckOnConstraint = null;
   }
 
   /* 毛毛虫额外破坏 */
   if (this.kind === 'boulder') {
-    var bpx = p.pos.x, bpy = p.pos.y, breakR2 = 32 * 32;
-    var removed = [];
-    spiderweb.constraints = spiderweb.constraints.filter(function (c) {
-      if (!(c instanceof DistanceConstraint)) return true;
-      var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
-      var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
-      var keep = (ax * ax + ay * ay > breakR2) || (bx2 * bx2 + by2 * by2 > breakR2);
-      if (!keep) removed.push(c);
-      return keep;
-    });
-    for (var ri = 0; ri < removed.length; ri++) {
-      webBreakFlashes.push({
-        ax: removed[ri].a.pos.x, ay: removed[ri].a.pos.y,
-        bx: removed[ri].b.pos.x, by: removed[ri].b.pos.y,
-        t: _breakFrame
+    var bpx = p.pos.x, bpy = p.pos.y, breakR = 32, breakR2 = breakR * breakR;
+    if (useBitmap) {
+      var idx = spatialOpts.index;
+      var cs = spiderweb.constraints;
+      for (var bi = 0; bi < cs.length; bi++) {
+        var c = cs[bi];
+        if (!(c instanceof DistanceConstraint)) continue;
+        if (c.__webGlobal) continue;
+        if (!c.__webId || !idx.isAliveId(c.__webId)) continue;
+        var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
+        var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
+        var keep = (ax * ax + ay * ay > breakR2) || (bx2 * bx2 + by2 * by2 > breakR2);
+        if (keep) continue;
+        idx.removeConstraint(c.__webId);
+        if (onBreakSegment) onBreakSegment(c, { skipDirty: true });
+        webBreakFlashes.push({
+          ax: c.a.pos.x, ay: c.a.pos.y,
+          bx: c.b.pos.x, by: c.b.pos.y,
+          t: _breakFrame
+        });
+      }
+      if (spatialOpts.markDirtyAABB) {
+        spatialOpts.markDirtyAABB(bpx - breakR, bpy - breakR, bpx + breakR, bpy + breakR);
+      }
+    } else {
+      var removed = [];
+      spiderweb.constraints = spiderweb.constraints.filter(function (c) {
+        if (!(c instanceof DistanceConstraint)) return true;
+        var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
+        var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
+        var keep = (ax * ax + ay * ay > breakR2) || (bx2 * bx2 + by2 * by2 > breakR2);
+        if (!keep) removed.push(c);
+        return keep;
       });
+      for (var ri = 0; ri < removed.length; ri++) {
+        if (onBreakSegment) onBreakSegment(removed[ri]);
+        webBreakFlashes.push({
+          ax: removed[ri].a.pos.x, ay: removed[ri].a.pos.y,
+          bx: removed[ri].b.pos.x, by: removed[ri].b.pos.y,
+          t: _breakFrame
+        });
+      }
     }
   }
 
@@ -217,6 +257,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame)
     this.grav = 0;
     this.enteredWebZone = false;
     this.hitHistory = [];
+    this._hitHistoryCount = 0;
     this.penetrationDist = 0;
     this.released = true;
     this._releaseFrame = this.animT;

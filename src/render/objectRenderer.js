@@ -6,6 +6,7 @@ import worm00Url from '../assets/worm00.png';
 import worm01Url from '../assets/worm01.png';
 import worm02Url from '../assets/worm02.png';
 import leafUrl from '../assets/leaf.png';
+import { statsDc } from '../debug/renderStats.js';
 
 var flyImg = new Image();
 flyImg.src = flyUrl;
@@ -84,6 +85,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var wormW = def.r * 6.3;  // 9.0 × 0.7
         var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
         ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
+        statsDc('image');
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
         var waveScale = (obj.state === 'stuck' || obj.state === 'freeing') ? 1.0 : 0.12;
@@ -94,12 +96,14 @@ export function drawThrownObjects(ctx, thrownObjects) {
           ctx.beginPath(); ctx.arc(wave, sy2, segR, 0, 2 * Math.PI);
           ctx.fillStyle = 'rgb(' + rv + ',20,20)'; ctx.fill();
           ctx.strokeStyle = 'rgba(80,0,0,0.45)'; ctx.lineWidth = 0.7; ctx.stroke();
+          statsDc('arc', 2);
         }
         var headY = -(segs - 1) * gap * 0.5 - gap * 0.15;
         var headWave = Math.sin(obj.segT + segs * 1.0) * 2.5 * waveScale;
         ctx.beginPath(); ctx.arc(headWave, headY, segR * 1.2, 0, 2 * Math.PI);
         ctx.fillStyle = '#b81010'; ctx.fill();
         ctx.strokeStyle = 'rgba(80,0,0,0.55)'; ctx.lineWidth = 0.8; ctx.stroke();
+        statsDc('arc', 2);
       }
       ctx.restore();
     }
@@ -113,6 +117,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var flyH = def.r * 4.32;
         var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
         ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
+        statsDc('image');
       } else {
         var r = def.r;
         var wFlapBase = (obj.state === 'stuck' || obj.state === 'freeing' || obj.state === 'wrapping') ? 0.65 * 0.30 : 0.65;
@@ -121,14 +126,17 @@ export function drawThrownObjects(ctx, thrownObjects) {
         ctx.beginPath(); ctx.ellipse(-r * 1.6, -r * 0.2, r * 1.55, r * 0.52, Math.PI * 0.08, 0, 2 * Math.PI);
         ctx.fillStyle = 'rgba(160,210,255,0.72)'; ctx.fill();
         ctx.strokeStyle = 'rgba(60,100,180,0.55)'; ctx.lineWidth = 0.9; ctx.stroke();
+        statsDc('quad', 2);
         ctx.restore();
         ctx.save(); ctx.rotate(wFlap);
         ctx.beginPath(); ctx.ellipse(r * 1.6, -r * 0.2, r * 1.55, r * 0.52, -Math.PI * 0.08, 0, 2 * Math.PI);
         ctx.fillStyle = 'rgba(160,210,255,0.72)'; ctx.fill();
         ctx.strokeStyle = 'rgba(60,100,180,0.55)'; ctx.lineWidth = 0.9; ctx.stroke();
+        statsDc('quad', 2);
         ctx.restore();
         ctx.beginPath(); ctx.ellipse(0, 0, r * 0.55, r, 0, 0, 2 * Math.PI);
         ctx.fillStyle = '#3a3a2a'; ctx.fill();
+        statsDc('quad');
       }
       ctx.restore();
     }
@@ -140,6 +148,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var leafW = def.r * 6.08;  // 3.8 × 1.6
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
+        statsDc('image');
       } else {
         var r = def.r;
         ctx.beginPath();
@@ -150,6 +159,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var lg = ctx.createLinearGradient(-r, 0, r, 0);
         lg.addColorStop(0, '#3a7a25'); lg.addColorStop(0.5, '#5aaa35'); lg.addColorStop(1, '#3a7a25');
         ctx.fillStyle = lg; ctx.fill();
+        statsDc('quad');
       }
       ctx.restore();
     }
@@ -160,6 +170,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       ctx.beginPath(); ctx.arc(px, py, flashR, 0, 2 * Math.PI);
       ctx.strokeStyle = 'rgba(180,220,140,' + (0.55 * (1 - obj.stickT)) + ')';
       ctx.lineWidth = 2; ctx.stroke();
+      statsDc('stroke');
     }
 
     /* wrapping silk thread */
@@ -171,6 +182,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       ctx.strokeStyle = 'rgba(255,255,255,0.88)';
       ctx.lineWidth = 2.2;
       ctx.stroke();
+      statsDc('stroke');
       if (wt > 0.4) {
         var arc2 = ((wt - 0.4) / 0.6) * 2 * Math.PI;
         ctx.beginPath();
@@ -178,6 +190,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         ctx.strokeStyle = 'rgba(255,255,255,0.62)';
         ctx.lineWidth = 1.6;
         ctx.stroke();
+        statsDc('stroke');
       }
       var tipAngle = startA + wt * 2 * Math.PI;
       var tr = def.r * 1.6;
@@ -185,6 +198,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       ctx.arc(px + Math.cos(tipAngle) * tr, py + Math.sin(tipAngle) * tr, 2.2, 0, 2 * Math.PI);
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.fill();
+      statsDc('arc');
     }
 
     ctx.restore();

@@ -3,6 +3,8 @@
  * 完全程序化生成，零外部文件依赖
  */
 
+import { statsDc, statsAddBgLeaves, statsSetScene } from '../debug/renderStats.js';
+
 /* ── 5套主题配置 ── */
 export var THEMES = [
   {
@@ -210,6 +212,7 @@ Bokeh.prototype.draw = function (ctx) {
     ctx.closePath();
     ctx.fillStyle = activeTheme.motesColor; ctx.fill();
     ctx.strokeStyle = activeTheme.highlightColor; ctx.lineWidth = 0.5; ctx.stroke();
+    statsDc('quad', 2);
 
   } else if (this.type === 'pollen') {
     ctx.translate(this.x, this.y); ctx.rotate(this.rotation);
@@ -225,6 +228,7 @@ Bokeh.prototype.draw = function (ctx) {
     }
     ctx.beginPath(); ctx.arc(0, 0, 0.9, 0, Math.PI * 2);
     ctx.fillStyle = activeTheme.accent; ctx.fill();
+    statsDc('line', this.numFilaments + 1);
 
   } else if (this.type === 'glint') {
     ctx.translate(this.x, this.y); ctx.rotate(this.rotation);
@@ -236,6 +240,7 @@ Bokeh.prototype.draw = function (ctx) {
     var glow = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius * 0.8);
     glow.addColorStop(0, 'rgba(255,255,255,0.35)'); glow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, this.radius * 0.8, 0, Math.PI * 2); ctx.fill();
+    statsDc('quad', 2);
   }
   ctx.restore();
 };
@@ -325,6 +330,7 @@ Joint.prototype.update = function (px, py, parentAngle, wind) {
 Joint.prototype.draw = function (ctx, sx, sy, ex, ey, worldAngle, thickness, barkColor) {
   ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
   ctx.strokeStyle = barkColor; ctx.lineWidth = thickness; ctx.lineCap = 'round'; ctx.stroke();
+  statsDc('line');
 
   for (var li = 0; li < this.leaves.length; li++) {
     var leaf = this.leaves[li];
@@ -342,6 +348,7 @@ Joint.prototype.draw = function (ctx, sx, sy, ex, ey, worldAngle, thickness, bar
       ctx.quadraticCurveTo(s * 0.5, s * 0.25, s * 0.45, s * 0.15); ctx.lineTo(s * 0.45, s * 0.4);
       ctx.quadraticCurveTo(s * 0.3, s * 0.45, 0, 0);
       ctx.closePath(); ctx.fillStyle = leaf.color; ctx.fill();
+      statsDc('quad'); statsAddBgLeaves(1);
 
     } else if (activeTheme.leafShape === 'jacaranda') {
       ctx.beginPath();
@@ -351,6 +358,7 @@ Joint.prototype.draw = function (ctx, sx, sy, ex, ey, worldAngle, thickness, bar
       ctx.quadraticCurveTo(s, s * 0.25, s * 0.9, s * 0.15);
       ctx.bezierCurveTo(s * 0.65, s * 0.2, s * 0.3, s * 0.3, 0, 0);
       ctx.closePath(); ctx.fillStyle = leaf.color; ctx.fill();
+      statsDc('quad'); statsAddBgLeaves(1);
 
     } else if (activeTheme.leafShape === 'sakura') {
       ctx.beginPath();
@@ -359,6 +367,7 @@ Joint.prototype.draw = function (ctx, sx, sy, ex, ey, worldAngle, thickness, bar
       ctx.lineTo(s * 0.82, 0); ctx.lineTo(s * 0.9, s * 0.1);
       ctx.bezierCurveTo(s * 0.75, s * 0.35, s * 0.25, s * 0.5, 0, 0);
       ctx.closePath(); ctx.fillStyle = leaf.color; ctx.fill();
+      statsDc('quad'); statsAddBgLeaves(1);
 
     } else if (activeTheme.leafShape === 'spruce') {
       ctx.strokeStyle = leaf.color; ctx.lineWidth = 0.8;
@@ -367,11 +376,14 @@ Joint.prototype.draw = function (ctx, sx, sy, ex, ey, worldAngle, thickness, bar
         ctx.beginPath(); ctx.moveTo(0, 0);
         ctx.lineTo(Math.cos(na) * s * 1.1, Math.sin(na) * s * 1.1);
         ctx.stroke();
+        statsDc('line');
       }
+      statsAddBgLeaves(1);
     } else {
       ctx.beginPath();
       ctx.moveTo(0, 0); ctx.quadraticCurveTo(s / 2, -s / 3, s, 0); ctx.quadraticCurveTo(s / 2, s / 3, 0, 0);
       ctx.closePath(); ctx.fillStyle = leaf.color; ctx.fill();
+      statsDc('quad'); statsAddBgLeaves(1);
     }
     ctx.restore();
   }
@@ -440,6 +452,7 @@ LightRay.prototype.draw = function (ctx) {
   ctx.fillStyle = gr;
   ctx.beginPath(); ctx.moveTo(p1x, p1y); ctx.lineTo(p2x, p2y); ctx.lineTo(p3x, p3y); ctx.lineTo(p4x, p4y);
   ctx.closePath(); ctx.fill();
+  statsDc('quad');
   ctx.restore();
 };
 
@@ -653,17 +666,30 @@ export function updateSylvanBackground(windSpeed, isMouseDown, smoothDrag, mx, m
 /* ══════════════════════════════════════════
    每帧绘制（主循环调用，在 sim.draw() 之前）
 ══════════════════════════════════════════ */
+export function getBgEntityCounts() {
+  return {
+    bgTrees: treesDeep.length + treesMid.length,
+    bgRays: lightRays.length,
+    bgBokeh: bokehParticles.length
+  };
+}
+
 export function renderSylvanBackground() {
+  statsSetScene(Object.assign({ bgRendered: true }, getBgEntityCounts()));
+
   // 深景深：远处树木轮廓
   ctxs.deep.clearRect(0, 0, _W, _H);
+  statsDc('clear');
   for (var i = 0; i < treesDeep.length; i++) treesDeep[i].draw(ctxs.deep);
 
   // 中景：先树枝、后光束，乘法混合才能作用在已有像素上
   ctxs.mid.clearRect(0, 0, _W, _H);
+  statsDc('clear');
   for (var i = 0; i < treesMid.length; i++) treesMid[i].draw(ctxs.mid);
   for (var i = 0; i < lightRays.length; i++) lightRays[i].draw(ctxs.mid);
 
   // 近景：孢子光斑
   ctxs.fg.clearRect(0, 0, _W, _H);
+  statsDc('clear');
   for (var i = 0; i < bokehParticles.length; i++) bokehParticles[i].draw(ctxs.fg);
 }
