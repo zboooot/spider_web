@@ -25,7 +25,7 @@ import {
 } from './systems/webIntegrity.js';
 
 import {
-  LEVEL_CONFIGS, GAME_DURATION, SCORE_MULT,
+  LEVEL_CONFIGS, SCORE_MULT,
   calcWaveScore, getLevelCfg, framesToTime
 } from './systems/levelSystem.js';
 
@@ -300,7 +300,7 @@ window.onload = function () {
   showOverlay(
     '<div class="overlay-title">SPIDER WEB</div>'
     + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
-    + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Survive for 3 minutes. If the web breaks, you lose.</div>'
+    + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
     + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
   );
   document.getElementById('btn-start-game').onclick = startGameFromBeginning;
@@ -345,7 +345,6 @@ window.onload = function () {
     var scoreBarEl = document.getElementById('score-bar');
     if (scoreTxtEl) scoreTxtEl.textContent = '0';
     if (scoreBarEl) scoreBarEl.style.display = 'none';
-    document.getElementById('wave-bar').style.display = 'block';
     webOverride = {
       segs: 20 + Math.floor(Math.random() * 18),
       depth: 8 + Math.floor(Math.random() * 7),
@@ -383,7 +382,6 @@ window.onload = function () {
     });
     gameState = 'LEVEL_ACTIVE';
     hideOverlay();
-    document.getElementById('wave-bar').style.display = 'block';
     levelTimer = 0;
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webLossPct = 0;
@@ -417,7 +415,6 @@ window.onload = function () {
     gameState = 'LEVEL_RESULT';
     audioEngine.playSfxSuccess();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
     var nextNum = currentLevel + 2;
     showOverlay(
       '<div class="overlay-title">Wave Complete</div>'
@@ -449,7 +446,6 @@ window.onload = function () {
     gameState = 'SUCCESS';
     audioEngine.playSfxSuccess();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
     showOverlay(
       '<div class="overlay-title">All Waves Clear</div>'
       + '<div class="overlay-subtitle">The web survived the full run.</div>'
@@ -465,11 +461,10 @@ window.onload = function () {
     gameState = 'GAME_OVER';
     audioEngine.playSfxGameOver();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
     var timeUsed = framesToTime(gameFrames);
     showOverlay(
       '<div class="overlay-title">Web Broken</div>'
-      + '<div class="overlay-subtitle">Survived ' + timeUsed + '</div>'
+      + '<div class="overlay-subtitle">Survived&nbsp;' + timeUsed + '</div>'
       + '<button class="overlay-btn" id="btn-retry" style="margin-bottom:8px">Try Again</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-f">Restart</button>'
     );
@@ -540,20 +535,6 @@ window.onload = function () {
     if (gameState === 'IDLE' || gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     levelTimer++;
     gameFrames++;
-    var remaining = Math.max(0, GAME_DURATION - gameFrames);
-    var rs = Math.ceil(remaining / 60);
-    var rm = Math.floor(rs / 60); var rsec = rs % 60;
-    var cntStr = rm + ':' + (rsec < 10 ? '0' : '') + rsec;
-    if (gameState === 'LEVEL_ACTIVE') {
-      document.getElementById('wave-bar').textContent = cntStr;
-      if (gameFrames >= GAME_DURATION) endLevel();
-      return;
-    }
-    if (gameState === 'LEVEL_RESULT') {
-      document.getElementById('wave-bar').textContent = cntStr;
-      if (gameFrames >= GAME_DURATION) { endLevel(); return; }
-      return;
-    }
   }
 
   function spawnRandom() {
