@@ -1,11 +1,11 @@
-import flyUrl from '../assets/fly.png';
-import fly01Url from '../assets/fly01.png';
-import fly02Url from '../assets/fly02.png';
-import wormUrl from '../assets/worm.png';
-import worm00Url from '../assets/worm00.png';
-import worm01Url from '../assets/worm01.png';
-import worm02Url from '../assets/worm02.png';
-import leafUrl from '../assets/leaf.png';
+import { flyUrl } from '../assets_b64/fly.js';
+import { fly01Url } from '../assets_b64/fly01.js';
+import { fly02Url } from '../assets_b64/fly02.js';
+import { wormUrl } from '../assets_b64/worm.js';
+import { worm00Url } from '../assets_b64/worm00.js';
+import { worm01Url } from '../assets_b64/worm01.js';
+import { worm02Url } from '../assets_b64/worm02.js';
+import { leafUrl } from '../assets_b64/leaf.js';
 
 var flyImg = new Image();
 flyImg.src = flyUrl;

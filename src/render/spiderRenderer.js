@@ -1,7 +1,7 @@
 import { DistanceConstraint } from '../engine/constraints.js';
-import popoHeadUrl from '../assets/popo.png';
-import popoBlinkUrl from '../assets/popo_blink.png';
-import popoPackUrl from '../assets/popo_pack.png';
+import { popoUrl as popoHeadUrl } from '../assets_b64/popo.js';
+import { popo_blinkUrl as popoBlinkUrl } from '../assets_b64/popo_blink.js';
+import { popo_packUrl as popoPackUrl } from '../assets_b64/popo_pack.js';
 
 var popoHeadImg = new Image();
 popoHeadImg.src = popoHeadUrl;

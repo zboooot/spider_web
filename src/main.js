@@ -1,6 +1,4 @@
 /* Version: V3.2 — Sylvan Background + Procedural BGM */
-import './style.css';
-
 import { Vec2 } from './engine/Vec2.js';
 import { DistanceConstraint } from './engine/constraints.js';
 import { Composite } from './engine/Composite.js';

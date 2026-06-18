@@ -1,6 +1,6 @@
-import flyUrl from '../assets/fly.png';
-import wormUrl from '../assets/worm.png';
-import leafUrl from '../assets/leaf.png';
+import { flyUrl } from '../assets_b64/fly.js';
+import { wormUrl } from '../assets_b64/worm.js';
+import { leafUrl } from '../assets_b64/leaf.js';
 
 var flyImg = new Image();
 flyImg.src = flyUrl;
