@@ -106,7 +106,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormW = def.r * 6.3;  // 9.0 × 0.7
         var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
-        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
@@ -138,7 +138,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flyH = def.r * 4.32;
         var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
-        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
@@ -169,7 +169,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (leafImg.complete && leafImg.naturalWidth > 0) {
         var leafW = def.r * 6.08;  // 3.8 × 1.6
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
-        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
@@ -184,14 +184,6 @@ export function drawThrownObjects(ctx, thrownObjects) {
         ctx.fillStyle = lg; ctx.fill();
       }
       ctx.restore();
-    }
-
-    /* sticking ring flash */
-    if (obj.state === 'sticking') {
-      var flashR = def.r + (1 - obj.stickT) * 18;
-      ctx.beginPath(); ctx.arc(px, py, flashR, 0, 2 * Math.PI);
-      ctx.strokeStyle = 'rgba(180,220,140,' + (0.55 * (1 - obj.stickT)) + ')';
-      ctx.lineWidth = 2; ctx.stroke();
     }
 
     ctx.restore();

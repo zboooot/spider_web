@@ -767,7 +767,6 @@ window.onload = function () {
       var obj = thrownObjects[oi];
       if (!obj || !obj.def) continue;
       var def = obj.def, p = obj.particle;
-      obj.animT++;
 
       if (obj.state === 'falling') {
         var prevX = p.pos.x, prevY = p.pos.y;
@@ -1341,6 +1340,11 @@ window.onload = function () {
       _breakFrame++;
       if (webBreakFlashes.length > 0)
         webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+    }
+
+    /* animT 始终更新，保持动画时间轴连续（不受子弹时间影响） */
+    for (var _ai = 0; _ai < thrownObjects.length; _ai++) {
+      if (thrownObjects[_ai]) thrownObjects[_ai].animT++;
     }
 
     /* wave system + 投掷物更新：子弹时间时全部冻结 */
