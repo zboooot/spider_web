@@ -128,6 +128,23 @@ export function applyBgPresentation() {
   if (darkenEl) darkenEl.style.opacity = String(bgConfig.darken);
 }
 
+/* 暗角层：子弹时间时叠加四角变暗效果 */
+export function applyBgVignette(active) {
+  var vigEl = document.getElementById('sylvan-bg-vignette');
+  if (!vigEl) {
+    vigEl = document.createElement('div');
+    vigEl.id = 'sylvan-bg-vignette';
+    vigEl.style.cssText = [
+      'position:absolute', 'inset:0', 'z-index:7', 'pointer-events:none',
+      'opacity:0', 'transition:opacity 0.3s ease',
+      'background:radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.85) 100%)'
+    ].join(';');
+    var wrap = document.getElementById('sylvan-bg-wrap');
+    if (wrap) wrap.appendChild(vigEl);
+  }
+  vigEl.style.opacity = active ? '1' : '0';
+}
+
 export function setBgParticleCount(n) {
   bgConfig.particleCount = n;
   if (n > bokehParticles.length) {

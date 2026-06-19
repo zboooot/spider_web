@@ -44,6 +44,7 @@ import {
   bgConfig,
   applyBgBlur,
   applyBgPresentation,
+  applyBgVignette,
   setBgParticleCount,
   THEMES as BG_THEMES
 } from './render/sylvanBackground.js';
@@ -286,6 +287,7 @@ window.onload = function () {
   var webBreakFlashes = [];
   var _breakFrame = 0;
   var _burstParticles = []; /* 打包完成放射粒子 */
+  var _currentTimeScale = 1.0; /* 子弹时间：供 updateThrownObjects 使用 */
   var _webDisplayPct = 100;   /* 当前显示值 */
   var _webTargetPct = 100;    /* 目标值 */
   var _webRollTimer = 0;      /* 滚动帧计数 */
@@ -771,8 +773,8 @@ window.onload = function () {
         var prevX = p.pos.x, prevY = p.pos.y;
 
         if (obj.kind === 'boulder') {
-          obj.segT += 0.22;
-          var bGrav = obj.grav * 2.6;
+          obj.segT += 0.22 * _currentTimeScale;
+          var bGrav = obj.grav * 2.6 * _currentTimeScale;
           p.pos.y += bGrav;
           p.lastPos.x = p.pos.x;
           p.lastPos.y = p.pos.y - bGrav;
@@ -785,10 +787,11 @@ window.onload = function () {
             + (Math.random() - 0.5) * 0.5;
           if (!obj.released && Math.random() < 0.018) { obj.baseVx = (Math.random() - 0.5) * 5; obj.baseVy = (Math.random() - 0.5) * 5; }
 
-          p.pos.x += bx; p.pos.y += by;
-          p.lastPos.x = p.pos.x - bx; p.lastPos.y = p.pos.y - by;
-          obj.angle = Math.atan2(by, bx);
-          obj.wingT += 0.55;
+          var _bxs = bx * _currentTimeScale, _bys = by * _currentTimeScale;
+          p.pos.x += _bxs; p.pos.y += _bys;
+          p.lastPos.x = p.pos.x - _bxs; p.lastPos.y = p.pos.y - _bys;
+          obj.angle = Math.atan2(_bys, _bxs);
+          obj.wingT += 0.55 * _currentTimeScale;
           if (!obj._buzzStarted) { obj._buzzStarted = true; audioEngine.startBugBuzz(oi); }
 
           /* 环绕穿越：飞出一侧从对面出现，轨迹不被阻挡 */
@@ -834,8 +837,9 @@ window.onload = function () {
           obj.vx *= obj.drag; obj.vy *= obj.drag;
           var spd = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
           if (spd > 0.8) { obj.vx = obj.vx / spd * 0.8; obj.vy = obj.vy / spd * 0.8; }
-          p.pos.x += obj.vx; p.pos.y += obj.vy;
-          p.lastPos.x = p.pos.x - obj.vx; p.lastPos.y = p.pos.y - obj.vy;
+          var _lvx = obj.vx * _currentTimeScale, _lvy = obj.vy * _currentTimeScale;
+          p.pos.x += _lvx; p.pos.y += _lvy;
+          p.lastPos.x = p.pos.x - _lvx; p.lastPos.y = p.pos.y - _lvy;
           if (p.pos.y > H + 60) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
         }
 
@@ -885,7 +889,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'sticking') {
-        obj.stickT = Math.min(1, obj.stickT + 0.078);
+        obj.stickT = Math.min(1, obj.stickT + 0.078 * _currentTimeScale);
         var ease = obj.stickT < 0.5 ? 2 * obj.stickT * obj.stickT : -1 + (4 - 2 * obj.stickT) * obj.stickT;
         if (obj.cA) obj.cA.distance = obj.stickyFromA + (obj.stickyToA - obj.stickyFromA) * ease;
         if (obj.cB) obj.cB.distance = obj.stickyFromB + (obj.stickyToB - obj.stickyFromB) * ease;
@@ -959,7 +963,7 @@ window.onload = function () {
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
-        obj.wrapT = Math.min(1, obj.wrapT + 1 / obj.wrapDur);
+        obj.wrapT = Math.min(1, obj.wrapT + (1 / obj.wrapDur) * _currentTimeScale);
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
@@ -1003,7 +1007,7 @@ window.onload = function () {
           scale = 1.05 + holdT * 0.42 + pulse;
           opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
         } else {
-          obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
+          obj.travelT = Math.min(1, obj.travelT + (1 / obj.collectDur) * _currentTimeScale);
           var easeIn = obj.travelT * obj.travelT * obj.travelT;
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
@@ -1219,24 +1223,38 @@ window.onload = function () {
   ================================================================ */
   var _lastTimestamp = 0;
   var _bgFrame = 0;
+  var _wasBulletTime = false;
   var loop = function (timestamp) {
     /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
     var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
-    /* timeScale: 60fps=1.0, 30fps=2.0, 120fps=0.5 — 让游戏逻辑速度与帧率解耦 */
-    var timeScale = delta / 16.67;
+
+    /* ── 子弹时间检测：拖拽断线头时进入 ── */
+    var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isWebParticle);
+    /* timeScale: 正常=帧率补偿，子弹时间=0.15 */
+    var timeScale = _isBulletTime ? 0.0 : delta / 16.67;
+    _currentTimeScale = timeScale;
+
+    /* ── 背景变暗切换（只在状态变化时调用一次） ── */
+    if (_isBulletTime !== _wasBulletTime) {
+      _wasBulletTime = _isBulletTime;
+      bgConfig.darken = _isBulletTime ? 0.72 : P.bgDarken / 100;
+      applyBgPresentation();
+      applyBgVignette(_isBulletTime);
+    }
 
     /* ── 弹性拖拽平滑阻尼 (每帧约逼近10%) ── */
     _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * 0.1;
     _smoothDrag.y += (_dragOffset.y - _smoothDrag.y) * 0.1;
 
-    /* ── 更新 & 绘制 Sylvan 背景（始终运行，包括IDLE） ── */
-    _bgFrame++;
-    updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
-    /* 移动端每 3 帧、桌面端每 2 帧渲染一次背景，降低树叶重绘开销 */
-    var _bgInterval = IS_MOBILE ? 3 : 2;
-    if (_bgFrame % _bgInterval === 0) {
-      renderSylvanBackground();
+    /* ── 更新 & 绘制 Sylvan 背景（子弹时间时冻结背景动画） ── */
+    if (!_isBulletTime) {
+      _bgFrame++;
+      updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
+      var _bgInterval = IS_MOBILE ? 3 : 2;
+      if (_bgFrame % _bgInterval === 0) {
+        renderSylvanBackground();
+      }
     }
 
     if (gameState === 'IDLE' || gameState === 'GAME_OVER') {
@@ -1293,7 +1311,7 @@ window.onload = function () {
       var fs = footState[fi];
       if (fs.cooldown > 0) fs.cooldown--;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED);
+        fs.t = Math.min(1, fs.t + STEP_SPEED * (_isBulletTime ? 0 : 1));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
@@ -1318,20 +1336,22 @@ window.onload = function () {
       }
     }
 
-    /* 断网红闪帧计数 */
-    _breakFrame++;
-    if (webBreakFlashes.length > 0)
-      webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+    /* 断网红闪帧计数（子弹时间时暂停计数，避免红闪提前消失） */
+    if (!_isBulletTime) {
+      _breakFrame++;
+      if (webBreakFlashes.length > 0)
+        webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+    }
 
-    /* wave system */
-    updateLevelTimer();
-    updateLevelSpawner();
-    checkWebIntegrity();
-
-    /* thrown objects */
-    tryCollectObjects();
-    updateThrownObjects();
-    if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
+    /* wave system + 投掷物更新：子弹时间时全部冻结 */
+    if (!_isBulletTime) {
+      updateLevelTimer();
+      updateLevelSpawner();
+      checkWebIntegrity();
+      tryCollectObjects();
+      updateThrownObjects();
+      if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
+    }
 
     updateBlink();
     sim.frame(16);   // 约束迭代次数固定，保持物理稳定性

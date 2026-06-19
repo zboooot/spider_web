@@ -90,11 +90,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
       obj._wrapAngle = 0;
     }
 
-    /* ── 打包状态：drop-shadow 绿色外发光描边 ── */
     var _isWrapping = obj.state === 'wrapping';
-    var _wrapGlowFilter = _isWrapping
-      ? 'drop-shadow(0 0 2px #fff8e7) drop-shadow(0 0 6px #ffe8a0) drop-shadow(0 0 12px #ffd060) drop-shadow(0 0 18px #ffb83080)'
-      : '';
 
     /* ── 毛毛虫 ── */
     if (obj.kind === 'boulder') {
@@ -110,9 +106,9 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormW = def.r * 6.3;  // 9.0 × 0.7
         var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
-        if (_isWrapping) ctx.filter = _wrapGlowFilter;
+        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
-        if (_isWrapping) ctx.filter = 'none';
+        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
         var waveScale = (obj.state === 'stuck' || obj.state === 'freeing') ? 1.0 : 0.12;
@@ -142,9 +138,9 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flyH = def.r * 4.32;
         var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
-        if (_isWrapping) ctx.filter = _wrapGlowFilter;
+        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
-        if (_isWrapping) ctx.filter = 'none';
+        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var r = def.r;
         var wFlapBase = (obj.state === 'stuck' || obj.state === 'freeing' || obj.state === 'wrapping') ? 0.65 * 0.30 : 0.65;
@@ -173,9 +169,9 @@ export function drawThrownObjects(ctx, thrownObjects) {
       if (leafImg.complete && leafImg.naturalWidth > 0) {
         var leafW = def.r * 6.08;  // 3.8 × 1.6
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
-        if (_isWrapping) ctx.filter = _wrapGlowFilter;
+        if (_isWrapping) { ctx.shadowBlur = 14; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
-        if (_isWrapping) ctx.filter = 'none';
+        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var r = def.r;
         ctx.beginPath();

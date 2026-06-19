@@ -158,6 +158,9 @@ VerletJS.prototype.nearestEntity = function () {
       if (csN[i].a === entity || csN[i].b === entity) connCount++;
     }
     if (connCount >= 2) return null;
+    entity.__isWebParticle = true; /* 标记断线头粒子，供子弹时间检测 */
+  } else {
+    entity.__isWebParticle = false;
   }
   return entity;
 };
