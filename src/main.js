@@ -888,7 +888,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'sticking') {
-        obj.stickT = Math.min(1, obj.stickT + 0.078 * _currentTimeScale);
+        obj.stickT = Math.min(1, obj.stickT + (_currentTimeScale === 0 ? 0 : 0.078));
         var ease = obj.stickT < 0.5 ? 2 * obj.stickT * obj.stickT : -1 + (4 - 2 * obj.stickT) * obj.stickT;
         if (obj.cA) obj.cA.distance = obj.stickyFromA + (obj.stickyToA - obj.stickyFromA) * ease;
         if (obj.cB) obj.cB.distance = obj.stickyFromB + (obj.stickyToB - obj.stickyFromB) * ease;
@@ -962,7 +962,7 @@ window.onload = function () {
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
-        obj.wrapT = Math.min(1, obj.wrapT + (1 / obj.wrapDur) * _currentTimeScale);
+        obj.wrapT = Math.min(1, obj.wrapT + (_currentTimeScale === 0 ? 0 : 1 / obj.wrapDur));
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
@@ -1006,7 +1006,7 @@ window.onload = function () {
           scale = 1.05 + holdT * 0.42 + pulse;
           opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
         } else {
-          obj.travelT = Math.min(1, obj.travelT + (1 / obj.collectDur) * _currentTimeScale);
+          obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
           var easeIn = obj.travelT * obj.travelT * obj.travelT;
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
@@ -1293,9 +1293,9 @@ window.onload = function () {
     } else if (target) {
       var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > arriveThreshold) {
+      if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
-        var scaledSpeed = moveSpeed * timeScale;
+        var scaledSpeed = moveSpeed; /* 固定步长，不受帧率影响 */
         var nx = (dx / dist) * scaledSpeed, ny = (dy / dist) * scaledSpeed;
         moveDir = new Vec2(dx / dist, dy / dist);
         for (var p = 0; p < spider.particles.length; p++) {
@@ -1342,9 +1342,11 @@ window.onload = function () {
         webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
     }
 
-    /* animT 始终更新，保持动画时间轴连续（不受子弹时间影响） */
-    for (var _ai = 0; _ai < thrownObjects.length; _ai++) {
-      if (thrownObjects[_ai]) thrownObjects[_ai].animT++;
+    /* animT：子弹时间时冻结，其他时候每帧 +1 保持动画连续 */
+    if (!_isBulletTime) {
+      for (var _ai = 0; _ai < thrownObjects.length; _ai++) {
+        if (thrownObjects[_ai]) thrownObjects[_ai].animT++;
+      }
     }
 
     /* wave system + 投掷物更新：子弹时间时全部冻结 */

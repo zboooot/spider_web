@@ -82,9 +82,9 @@ export function drawThrownObjects(ctx, thrownObjects) {
       var wt = obj.wrapT;
       var at = obj.animT;
       var tremble = wt * 3.5;
-      px += Math.sin(at * 1.9) * tremble + Math.cos(at * 3.1) * tremble * 0.5;
-      py += Math.cos(at * 2.2) * tremble * 0.8 + Math.sin(at * 3.7) * tremble * 0.3;
-      var wrapAngle = Math.sin(at * 0.85 + wt * 10) * 0.31 * wt;
+      px += Math.sin(at * 0.95) * tremble + Math.cos(at * 1.55) * tremble * 0.5;
+      py += Math.cos(at * 1.1) * tremble * 0.8 + Math.sin(at * 1.85) * tremble * 0.3;
+      var wrapAngle = Math.sin(at * 0.425 + wt * 10) * 0.31 * wt;
       obj._wrapAngle = wrapAngle;
     } else {
       obj._wrapAngle = 0;
