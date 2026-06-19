@@ -19,7 +19,7 @@ import {
 } from './systems/stickSystem.js';
 
 import {
-  buildWebGridList, cellCovered, scanWebCells
+  buildWebGridList, cellCovered, scanWebCells, createBudgetScanner
 } from './systems/webIntegrity.js';
 
 import {
@@ -67,7 +67,7 @@ window.onload = function () {
   /* ── params ── */
   var DEFAULTS = {
     webRadius: 1.45, webSegs: 30, webDepth: 11, webStiff: 0.6,
-    moveSpeed: 1.8, stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
+    moveSpeed: 2.4, stepSpeed: 0.22, stepThresh: 20, restThresh: 50,
     legStiff: 0.3, jointStiff: 0.35,
     stickDelayMin: 0.10, stickDelayMax: 0.45, stickCatchRadius: 18,
     stickMidBias: 0.8, stickHistory: 40,
@@ -179,9 +179,17 @@ window.onload = function () {
   }, 500);
 
   /* runtime refs */
+  var _webDrawApi = null;
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
-  var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
+  var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 22;
+  var _targetMarker = { x: 0, y: 0, age: 0, active: false };
+  var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
+  var _locomotionState = 'ACTIVE';
+  var _lockedTopologyVersion = 0;
+  var _gaitCursor = 0;
+  var _gaitOrderIdle = [0, 2, 1, 3];
+  var _gaitOrderMove = [0, 3, 1, 2];
 
   /* ── blink ── */
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240) };
@@ -215,15 +223,16 @@ window.onload = function () {
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; });
+    _webDrawApi = setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return _logicalTimeMs; });
   }
 
   function buildSpider() {
     if (spider) { var si = sim.composites.indexOf(spider); if (si !== -1) sim.composites.splice(si, 1); }
-    spider = createSpider(sim, new Vec2(cx, cy), { legStiff: P.legStiff, jointStiff: P.jointStiff });
-    spider.thorax.pos.mutableSet(new Vec2(cx, cy)); spider.thorax.lastPos.mutableSet(new Vec2(cx, cy));
-    spider.head.pos.mutableSet(new Vec2(cx, cy - 6)); spider.head.lastPos.mutableSet(new Vec2(cx, cy - 6));
-    spider.abdomen.pos.mutableSet(new Vec2(cx, cy + 12)); spider.abdomen.lastPos.mutableSet(new Vec2(cx, cy + 12));
+    var spawnFromY = cy - 110;
+    spider = createSpider(sim, new Vec2(cx, spawnFromY), { legStiff: P.legStiff, jointStiff: P.jointStiff });
+    spider.thorax.pos.mutableSet(new Vec2(cx, spawnFromY)); spider.thorax.lastPos.mutableSet(new Vec2(cx, spawnFromY));
+    spider.head.pos.mutableSet(new Vec2(cx, spawnFromY - 6)); spider.head.lastPos.mutableSet(new Vec2(cx, spawnFromY - 6));
+    spider.abdomen.pos.mutableSet(new Vec2(cx, spawnFromY + 12)); spider.abdomen.lastPos.mutableSet(new Vec2(cx, spawnFromY + 12));
     legConstraintCount = spider.constraints.length;
     STEP_SPEED = P.stepSpeed; STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
     footState = spider.legs.map(function (lp, idx) {
@@ -233,18 +242,132 @@ window.onload = function () {
         new Vec2(15, 4),
         new Vec2(-15, 4)
       ];
-      var ip = new Vec2(cx + footOffsets[idx].x, cy + footOffsets[idx].y);
+      var ip = new Vec2(cx + footOffsets[idx].x, spawnFromY + footOffsets[idx].y);
       lp.pos.mutableSet(ip); lp.lastPos.mutableSet(ip);
       return {
         particle: lp, current: new Vec2(ip.x, ip.y), from: new Vec2(ip.x, ip.y),
         targetPos: new Vec2(ip.x, ip.y), targetStepPoint: null,
         landedNode: null, landedSeg: null, constraintA: null, constraintB: null,
-        stepping: false, t: 1, cooldown: idx * 6
+        stepping: false, t: 1, cooldown: 999, holdFrames: 0, phase: [0, 0.5, 0.5, 0][idx] || 0
       };
     });
+    _spawnAnim.active = true;
+    _spawnAnim.t = 0;
+    _spawnAnim.fromY = spawnFromY;
+    _spawnAnim.toY = cy;
+    _spawnAnim.duration = 52;
+    _locomotionState = 'SPAWNING';
+    _lockedTopologyVersion = 0;
+    _gaitCursor = 0;
     setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
-    setTimeout(function () { triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(2, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 60);
-    setTimeout(function () { triggerStep(1, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(3, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 210);
+  }
+
+  function _isFootFootholdValid(fs) {
+    if (!spiderweb) return false;
+    var wcs = spiderweb.constraints;
+    if (fs.landedNode) {
+      for (var wi = 0; wi < wcs.length; wi++) {
+        var wc = wcs[wi];
+        if (!(wc instanceof DistanceConstraint)) continue;
+        if (wc.a === fs.landedNode || wc.b === fs.landedNode) return true;
+      }
+      return false;
+    }
+    if (fs.landedSeg) {
+      var pa = fs.landedSeg.pa, pb = fs.landedSeg.pb;
+      if (!pa || !pb) return false;
+      var paAlive = false, pbAlive = false;
+      for (var wi2 = 0; wi2 < wcs.length; wi2++) {
+        var wc2 = wcs[wi2];
+        if (!(wc2 instanceof DistanceConstraint)) continue;
+        if (wc2.a === pa || wc2.b === pa) paAlive = true;
+        if (wc2.a === pb || wc2.b === pb) pbAlive = true;
+        if (paAlive && pbAlive) return true;
+      }
+    }
+    return false;
+  }
+
+  function _shouldLockIdle() {
+    if (_spawnAnim.active || target || wrappingTarget || !spider || !footState.length) return false;
+    var lockR2 = Math.max(18, REST_THRESH - 8);
+    lockR2 *= lockR2;
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (fs.stepping || fs.cooldown > 0 || fs.holdFrames > 0) return false;
+      if (!(fs.landedNode || fs.landedSeg)) return false;
+      if (!_isFootFootholdValid(fs)) return false;
+      if (fs.current.dist2(spider.thorax.pos) > lockR2) return false;
+    }
+    return true;
+  }
+
+  function _shouldUnlockIdle() {
+    if (_spawnAnim.active || target || wrappingTarget || !spider) return true;
+    if ((spiderweb._topologyVersion || 0) !== _lockedTopologyVersion) return true;
+    var unlockR2 = (REST_THRESH + 8) * (REST_THRESH + 8);
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (fs.stepping) return true;
+      if (!_isFootFootholdValid(fs)) return true;
+      if (fs.current.dist2(spider.thorax.pos) > unlockR2) return true;
+    }
+    return false;
+  }
+
+  function _drawTargetMarker(ctx) {
+    if (!_targetMarker.active) return;
+    var ARRIVE_AGE = 18;
+    var ALIVE_AGE = 72;
+    _targetMarker.age++;
+    if (!target && _targetMarker.age > ARRIVE_AGE) { _targetMarker.active = false; return; }
+    var mx = _targetMarker.x, my = _targetMarker.y;
+    var age = _targetMarker.age;
+    var alpha, r;
+    if (target) {
+      var inT = Math.min(1, age / 10);
+      var ease = 1 - Math.pow(1 - inT, 3);
+      r = 6 + (1 - ease) * 10;
+      alpha = 0.55 * ease;
+    } else {
+      var outT = Math.min(1, (age - ARRIVE_AGE) / 14);
+      r = 6 + outT * 8;
+      alpha = 0.55 * (1 - outT * outT);
+      if (alpha <= 0) { _targetMarker.active = false; return; }
+    }
+    var pulse = Math.sin(age * 0.32) * 0.18 + 0.82;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(mx, my, r * pulse, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(mx, my, r * pulse * 0.36, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function _slotDistanceInOrder(legIndex, order, cursor) {
+    for (var oi = 0; oi < order.length; oi++) {
+      if (order[(cursor + oi) % order.length] === legIndex) return oi;
+    }
+    return order.length;
+  }
+
+  function _isPhaseEligible(legIndex, fs, moving, swingCount, emergencyStep) {
+    if (emergencyStep) return true;
+    var order = moving ? _gaitOrderMove : _gaitOrderIdle;
+    var slotDist = _slotDistanceInOrder(legIndex, order, _gaitCursor);
+    if (slotDist === 0) return true;
+    if (moving) {
+      if (slotDist <= 1) return true;
+      if (swingCount === 0 && slotDist <= 2) return true;
+    }
+    if ((fs.phase || 0) >= 0.9) return true;
+    return false;
   }
 
   /* initial build */
@@ -290,6 +413,7 @@ window.onload = function () {
   var levelCollected = { boulder: 0, bug: 0, drop: 0 };
   var webGridBuildIdx = 0;
   var webGridInitCover = 0;
+  var _budgetScanner = createBudgetScanner(30);
 
   /* helper: getLevelCfg with current difficulty */
   function getCfg(n) { return getLevelCfg(n, difficultyLevel); }
@@ -308,6 +432,7 @@ window.onload = function () {
     if (wrappingTarget !== null) return;
     var r = canvas.getBoundingClientRect();
     target = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
   });
 
   /* tap to move (iOS / mobile) — touchend with no drag */
@@ -327,6 +452,7 @@ window.onload = function () {
       if (Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
         var r = canvas.getBoundingClientRect();
         target = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
+        _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
       }
     }
   }, { passive: true });
@@ -386,6 +512,7 @@ window.onload = function () {
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webLossPct = 0;
     webGridBuildIdx = 0; webGridInitCover = 0;
+    _budgetScanner.reset();
 
     /* ── 同步切换背景主题与BGM ── */
     P.bgTheme = n;
@@ -507,6 +634,17 @@ window.onload = function () {
   function _scanWebCells() {
     if (!webGridList || webGridList.length === 0) return;
     var covered = scanWebCells(webGridList, spiderweb, webGridCoverD);
+    _budgetScanner.reset();
+    var loss = 1 - covered / webInitCells;
+    if (loss < 0) loss = 0;
+    var pct = Math.round(loss * 100);
+    if (pct > webLossPct) webLossPct = pct;
+  }
+
+  function _tickBudgetScan() {
+    if (!webGridList || webGridList.length === 0) return;
+    var covered = _budgetScanner.tick(webGridList, spiderweb, webGridCoverD);
+    if (covered === 0) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
@@ -527,6 +665,8 @@ window.onload = function () {
     if (webScanPending > 0) {
       webScanPending--;
       if (webScanPending === 0) _scanWebCells();
+    } else {
+      _tickBudgetScan();
     }
     var dbgEl = document.getElementById('dbg-web');
     if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';
@@ -856,6 +996,12 @@ window.onload = function () {
         p.pos.y += (Math.random() - 0.5) * (thrash * 0.6);
         if (obj.freeTimer > 28) {
           obj.release(spiderweb, webBreakFlashes, _breakFrame);
+          spiderweb._topologyVersion = (spiderweb._topologyVersion || 0) + 1;
+          if (_webDrawApi) {
+            for (var _fi = 0; _fi < webBreakFlashes.length; _fi++) {
+              if (!webBreakFlashes[_fi].affectedCI) _webDrawApi.annotateFlash(webBreakFlashes[_fi]);
+            }
+          }
           webScanPending = 12;
         }
 
@@ -1114,12 +1260,17 @@ window.onload = function () {
   ================================================================ */
   var _lastTimestamp = 0;
   var _bgFrame = 0;
+  var _logicalTimeMs = 0;
+  var _adaptIter = 16;
   var loop = function (timestamp) {
     /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
     var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
+    _logicalTimeMs += delta;
     /* timeScale: 60fps=1.0, 30fps=2.0, 120fps=0.5 — 让游戏逻辑速度与帧率解耦 */
     var timeScale = delta / 16.67;
+    var targetIter = delta <= 20 ? 16 : delta <= 33 ? 12 : 8;
+    _adaptIter = _adaptIter > targetIter ? _adaptIter - 1 : targetIter;
 
     /* ── 弹性拖拽平滑阻尼 (每帧约逼近10%) ── */
     _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * 0.1;
@@ -1141,12 +1292,43 @@ window.onload = function () {
 
     updateSamplePoints(samplePoints);
 
+    /* spawn descent animation */
+    if (_spawnAnim.active && spider) {
+      _spawnAnim.t = Math.min(1, _spawnAnim.t + 1 / _spawnAnim.duration);
+      var easeOut = 1 - Math.pow(1 - _spawnAnim.t, 3);
+      var spawnY = _spawnAnim.fromY + (_spawnAnim.toY - _spawnAnim.fromY) * easeOut;
+      var spawnDY = spawnY - spider.thorax.pos.y;
+      for (var spi = 0; spi < spider.particles.length; spi++) {
+        spider.particles[spi].pos.y += spawnDY;
+        spider.particles[spi].lastPos.y += spawnDY;
+      }
+      for (var sfi = 0; sfi < footState.length; sfi++) {
+        footState[sfi].current.y += spawnDY;
+        footState[sfi].particle.pos.y += spawnDY;
+        footState[sfi].particle.lastPos.y += spawnDY;
+      }
+      if (_spawnAnim.t >= 1) {
+        _spawnAnim.active = false;
+        _locomotionState = 'ACTIVE';
+        for (var sfi2 = 0; sfi2 < footState.length; sfi2++) footState[sfi2].cooldown = sfi2 * 5;
+        triggerStep(0, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+        triggerStep(2, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+        setTimeout(function () {
+          if (footState) {
+            triggerStep(1, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+            triggerStep(3, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+          }
+        }, 180);
+      }
+    }
+
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
     var moving = false; moveDir = null;
     if (isWrapping) {
       target = null;
     } else if (target) {
+      _locomotionState = 'ACTIVE';
       var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold) {
@@ -1161,10 +1343,22 @@ window.onload = function () {
       } else target = null;
     }
 
+    if (_locomotionState === 'IDLE_LOCKED' && _shouldUnlockIdle()) {
+      _locomotionState = 'ACTIVE';
+    }
+
     /* feet */
+    var swingCount = 0;
+    for (var _si = 0; _si < footState.length; _si++) if (footState[_si].stepping) swingCount++;
+    var maxSwing = target ? 2 : 1;
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       if (fs.cooldown > 0) fs.cooldown--;
+      if (fs.holdFrames > 0) fs.holdFrames--;
+      if (!fs.stepping && _locomotionState !== 'IDLE_LOCKED' && !_spawnAnim.active) {
+        var phaseRate = target ? 0.18 : 0.08;
+        fs.phase = Math.min(1.4, (fs.phase || 0) + phaseRate * timeScale);
+      }
       if (fs.stepping) {
         fs.t = Math.min(1, fs.t + STEP_SPEED);
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
@@ -1175,7 +1369,7 @@ window.onload = function () {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
           fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
           fs.stepping = false;
-          landFoot(fs, spider);
+          landFoot(fs, spider, spiderweb);
         }
       } else {
         if (fs.landedNode) { fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y; }
@@ -1184,17 +1378,39 @@ window.onload = function () {
         var drift2 = fs.current.dist2(spider.thorax.pos);
         var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
         var ps = partner && partner.stepping;
-        if (!ps) {
-          if (target && drift2 > STEP_THRESH * STEP_THRESH) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
-          else if (!target && drift2 > REST_THRESH * REST_THRESH) triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
+        if (!ps && swingCount < maxSwing && !_spawnAnim.active && fs.holdFrames <= 0 && _locomotionState !== 'IDLE_LOCKED') {
+          var movingNeedStep = target && drift2 > STEP_THRESH * STEP_THRESH;
+          var idleNeedStep = !target && drift2 > REST_THRESH * REST_THRESH;
+          var needStep = movingNeedStep || idleNeedStep;
+          if (needStep) {
+            var emergencyStep = drift2 > (target ? STEP_THRESH * STEP_THRESH * 1.8 : REST_THRESH * REST_THRESH * 1.35);
+            var phaseOk = _isPhaseEligible(fi, fs, !!target, swingCount, emergencyStep);
+            if (phaseOk) {
+              if (movingNeedStep) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
+              else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, Math.max(18, REST_THRESH - 6), true);
+              if (fs.stepping) {
+                fs.phase = 0;
+                _gaitCursor = (_gaitCursor + 1) % _gaitOrderIdle.length;
+                swingCount++;
+              }
+            }
+          }
         }
       }
     }
 
+    if (_locomotionState !== 'IDLE_LOCKED' && _shouldLockIdle()) {
+      _locomotionState = 'IDLE_LOCKED';
+      _lockedTopologyVersion = spiderweb._topologyVersion || 0;
+    }
+
     /* 断网红闪帧计数 */
     _breakFrame++;
-    if (webBreakFlashes.length > 0)
-      webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+    if (webBreakFlashes.length > 0) {
+      for (var _wfi = webBreakFlashes.length - 1; _wfi >= 0; _wfi--) {
+        if (_breakFrame - webBreakFlashes[_wfi].t >= 20) webBreakFlashes.splice(_wfi, 1);
+      }
+    }
 
     /* wave system */
     updateLevelTimer();
@@ -1207,8 +1423,9 @@ window.onload = function () {
     if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
 
     updateBlink();
-    sim.frame(16);   // 约束迭代次数固定，保持物理稳定性
+    sim.frame(_adaptIter);
     sim.draw();
+    _drawTargetMarker(sim.ctx);
     drawThrownObjects(sim.ctx, thrownObjects);
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
     requestAnimFrame(loop);

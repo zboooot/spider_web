@@ -12,6 +12,7 @@ export function DistanceConstraint(a, b, stiffness, distance) {
 
 DistanceConstraint.prototype.relax = function (sc) {
   var n = this.a.pos.sub(this.b.pos), m = n.length2();
+  if (m < 1e-9) return;
   n.mutableScale(((this.distance * this.distance - m) / m) * this.stiffness * sc);
   this.a.pos.mutableAdd(n);
   this.b.pos.mutableSub(n);

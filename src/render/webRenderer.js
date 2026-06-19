@@ -8,34 +8,35 @@ import { getNextPid } from '../systems/footSystem.js';
  * @param {Function} getWebBreakFlashes - 获取断裂闪光列表的函数
  * @param {Function} getBreakFrame - 获取全局帧计数的函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame) {
-  spiderweb.drawParticles = function (ctx, comp) {
-    var connected = {};
-    for (var ci = 0; ci < comp.constraints.length; ci++) {
-      var c = comp.constraints[ci];
-      if (!(c instanceof DistanceConstraint)) continue;
-      var idA = c.a.__pid || (c.a.__pid = getNextPid());
-      var idB = c.b.__pid || (c.b.__pid = getNextPid());
-      connected[idA] = true;
-      connected[idB] = true;
-    }
-    for (var i in comp.particles) {
-      var pt = comp.particles[i];
-      var pid = pt.__pid || (pt.__pid = getNextPid());
-      if (!connected[pid]) continue;
-      ctx.beginPath(); ctx.arc(pt.pos.x, pt.pos.y, 1.3, 0, 2 * Math.PI);
-      ctx.fillStyle = "rgba(220,220,220,0.55)"; ctx.fill();
-    }
-  };
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, getLogicalTime) {
+  var _adjCacheVersion = -1;
+  var _adjCache = {};
 
-  spiderweb.drawConstraints = function (ctx, comp) {
-    var now = Date.now();
+  function _getAdjCache(comp) {
+    var ver = comp._topologyVersion || 0;
+    if (ver === _adjCacheVersion) return _adjCache;
+    var cache = {};
     var n = comp.constraints.length;
-    var thrownObjects = getThrownObjects();
-    var webBreakFlashes = getWebBreakFlashes();
-    var _breakFrame = getBreakFrame();
+    for (var ci = 0; ci < n; ci++) {
+      var cc = comp.constraints[ci];
+      if (!(cc instanceof DistanceConstraint)) continue;
+      var pa_id = cc.a.__pid || (cc.a.__pid = getNextPid());
+      var pb_id = cc.b.__pid || (cc.b.__pid = getNextPid());
+      if (!cache[pa_id]) cache[pa_id] = [];
+      if (!cache[pb_id]) cache[pb_id] = [];
+      cache[pa_id].push(ci);
+      cache[pb_id].push(ci);
+    }
+    _adjCache = cache;
+    _adjCacheVersion = ver;
+    return _adjCache;
+  }
 
-    /* Step A：计算直接危险度 */
+  var _dangerVersion = -1;
+  var _dangerRawCache = {};
+  var _dangerFinalCache = {};
+
+  function _rebuildDanger(comp, thrownObjects, pToCI) {
     var dangerRaw = {};
     for (var ti = 0; ti < thrownObjects.length; ti++) {
       var obj = thrownObjects[ti];
@@ -44,27 +45,10 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         var ci2 = comp.constraints.indexOf(obj.stuckOnConstraint);
         if (ci2 === -1) continue;
         var ramp = Math.max(0, obj.stayFrames - 72);
-        var danger = 0;
-        if (obj.state === 'freeing') danger = 1;
-        else if (obj.stayTimer > ramp) danger = 1;
-        if (danger > 0) dangerRaw[ci2] = 1;
+        var active = (obj.state === 'freeing') || (obj.stayTimer > ramp);
+        if (active) dangerRaw[ci2] = 1;
       }
     }
-
-    /* Step B：粒子→约束邻接表 */
-    var pToCI = {};
-    for (var ci = 0; ci < n; ci++) {
-      var cc = comp.constraints[ci];
-      if (!(cc instanceof DistanceConstraint)) continue;
-      var pa_id = cc.a.__pid || (cc.a.__pid = getNextPid());
-      var pb_id = cc.b.__pid || (cc.b.__pid = getNextPid());
-      if (!pToCI[pa_id]) pToCI[pa_id] = [];
-      if (!pToCI[pb_id]) pToCI[pb_id] = [];
-      pToCI[pa_id].push(ci);
-      pToCI[pb_id].push(ci);
-    }
-
-    /* Step C：BFS 扩散 2 层 */
     var dangerFinal = {};
     for (var ci in dangerRaw) {
       var d0 = dangerRaw[ci];
@@ -92,43 +76,79 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         }
       }
     }
+    _dangerRawCache = dangerRaw;
+    _dangerFinalCache = dangerFinal;
+  }
 
-    /* Step D-pre：断裂红闪 */
+  function _getDangerVersion(thrownObjects) {
+    var v = 0;
+    for (var ti = 0; ti < thrownObjects.length; ti++) {
+      var obj = thrownObjects[ti];
+      if (obj.kind === 'drop') continue;
+      if (obj.state === 'stuck') v += obj.stayTimer * 31 + 1;
+      else if (obj.state === 'freeing') v += 99999;
+    }
+    return v;
+  }
+
+  spiderweb.drawParticles = function (ctx, comp) {
+    var connected = {};
+    for (var ci = 0; ci < comp.constraints.length; ci++) {
+      var c = comp.constraints[ci];
+      if (!(c instanceof DistanceConstraint)) continue;
+      var idA = c.a.__pid || (c.a.__pid = getNextPid());
+      var idB = c.b.__pid || (c.b.__pid = getNextPid());
+      connected[idA] = true;
+      connected[idB] = true;
+    }
+    for (var i in comp.particles) {
+      var pt = comp.particles[i];
+      var pid = pt.__pid || (pt.__pid = getNextPid());
+      if (!connected[pid]) continue;
+      ctx.beginPath(); ctx.arc(pt.pos.x, pt.pos.y, 1.3, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(220,220,220,0.55)"; ctx.fill();
+    }
+  };
+
+  spiderweb.drawConstraints = function (ctx, comp) {
+    var now = getLogicalTime ? getLogicalTime() : Date.now();
+    var n = comp.constraints.length;
+    var thrownObjects = getThrownObjects();
+    var webBreakFlashes = getWebBreakFlashes();
+    var _breakFrame = getBreakFrame();
+
+    var pToCI = _getAdjCache(comp);
+
+    var dv = _getDangerVersion(thrownObjects);
+    var topoVer = comp._topologyVersion || 0;
+    if (dv !== _dangerVersion || topoVer !== _adjCacheVersion) {
+      _rebuildDanger(comp, thrownObjects, pToCI);
+      _dangerVersion = dv;
+    }
+    var dangerRaw = _dangerRawCache;
+    var dangerFinal = _dangerFinalCache;
+
+    var flashDangerSet = {};
     if (webBreakFlashes.length > 0) {
-      for (var ci3 = 0; ci3 < n; ci3++) {
-        var cfl = comp.constraints[ci3];
-        if (!(cfl instanceof DistanceConstraint)) continue;
-        var mcx = (cfl.a.pos.x + cfl.b.pos.x) * 0.5;
-        var mcy = (cfl.a.pos.y + cfl.b.pos.y) * 0.5;
-        var bestFlash = 0;
-        for (var fi3 = 0; fi3 < webBreakFlashes.length; fi3++) {
-          var bf = webBreakFlashes[fi3];
-          var fbcx = (bf.ax + bf.bx) * 0.5, fbcy = (bf.ay + bf.by) * 0.5;
-          var dist = Math.sqrt((mcx - fbcx) * (mcx - fbcx) + (mcy - fbcy) * (mcy - fbcy));
-          var hopDist = 3;
-          var hop = dist / hopDist;
-          if (hop > 0.3) continue;
-          var age = _breakFrame - bf.t;
-          if (age > 18) continue;
-          var flash = 0.42;
-          if (flash > bestFlash) bestFlash = flash;
-        }
-        if (bestFlash > 0) {
-          if (!dangerFinal[ci3] || dangerFinal[ci3] < bestFlash)
-            dangerFinal[ci3] = bestFlash;
+      for (var fi3 = 0; fi3 < webBreakFlashes.length; fi3++) {
+        var bf = webBreakFlashes[fi3];
+        var age = _breakFrame - bf.t;
+        if (age > 18) continue;
+        var aci = bf.affectedCI;
+        if (aci) {
+          for (var ai = 0; ai < aci.length; ai++) flashDangerSet[aci[ai]] = 0.42;
         }
       }
     }
 
-    /* Step D：绘制 */
     for (var i = 0; i < n; i++) {
       var c = comp.constraints[i];
       if (c instanceof DistanceConstraint) {
         ctx.beginPath(); ctx.moveTo(c.a.pos.x, c.a.pos.y); ctx.lineTo(c.b.pos.x, c.b.pos.y);
-        var d = dangerFinal[i] || 0;
+        var d = dangerFinal[i] || flashDangerSet[i] || 0;
         if (d > 0) {
           var isDirect = !!(dangerRaw[i]);
-          var isBreakFlash = !isDirect && d > 0;
+          var isBreakFlash = !isDirect && flashDangerSet[i] > 0;
           var strokeR, strokeG, strokeB, strokeA, strokeW;
 
           if (isBreakFlash) {
@@ -160,6 +180,24 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         }
         ctx.stroke();
       } else c.draw(ctx);
+    }
+  };
+
+  return {
+    annotateFlash: function (bf) {
+      var cs = spiderweb.constraints;
+      var hopDist = 3, maxHop = 0.3;
+      var fcx = (bf.ax + bf.bx) * 0.5, fcy = (bf.ay + bf.by) * 0.5;
+      var affected = [];
+      for (var ci = 0; ci < cs.length; ci++) {
+        var c = cs[ci];
+        if (!(c instanceof DistanceConstraint)) continue;
+        var mcx = (c.a.pos.x + c.b.pos.x) * 0.5;
+        var mcy = (c.a.pos.y + c.b.pos.y) * 0.5;
+        var dist = Math.sqrt((mcx - fcx) * (mcx - fcx) + (mcy - fcy) * (mcy - fcy));
+        if (dist / hopDist <= maxHop) affected.push(ci);
+      }
+      bf.affectedCI = affected;
     }
   };
 }

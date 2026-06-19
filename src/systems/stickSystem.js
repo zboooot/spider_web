@@ -37,23 +37,32 @@ export function collectPathHitCandidates(px0, py0, px1, py1, catchR, spiderweb, 
   var hits = [];
   var motDx = px1 - px0, motDy = py1 - py0;
   var motLen = Math.sqrt(motDx * motDx + motDy * motDy) || 0.001;
+  var samples = motLen < 4 ? 2 : motLen < 12 ? 4 : 8;
+  var catchR2 = catchR * catchR;
+  var minPx = Math.min(px0, px1) - catchR, maxPx = Math.max(px0, px1) + catchR;
+  var minPy = Math.min(py0, py1) - catchR, maxPy = Math.max(py0, py1) + catchR;
+  var motLenSq = motLen * motLen;
   var constraints = spiderweb.constraints;
   for (var j = 0; j < constraints.length; j++) {
     var c = constraints[j];
     if (!(c instanceof DistanceConstraint)) continue;
-    for (var si = 0; si <= 8; si++) {
-      var t = si / 8;
-      var wx = c.a.pos.x + (c.b.pos.x - c.a.pos.x) * t;
-      var wy = c.a.pos.y + (c.b.pos.y - c.a.pos.y) * t;
-      var proj = ((wx - px0) * motDx + (wy - py0) * motDy) / (motLen * motLen);
-      proj = Math.max(0, Math.min(1, proj));
+    var ax = c.a.pos.x, ay = c.a.pos.y, bx = c.b.pos.x, by = c.b.pos.y;
+    if (Math.max(ax, bx) < minPx || Math.min(ax, bx) > maxPx) continue;
+    if (Math.max(ay, by) < minPy || Math.min(ay, by) > maxPy) continue;
+    for (var si = 0; si <= samples; si++) {
+      var t = si / samples;
+      var wx = ax + (bx - ax) * t;
+      var wy = ay + (by - ay) * t;
+      var proj = ((wx - px0) * motDx + (wy - py0) * motDy) / motLenSq;
+      proj = proj < 0 ? 0 : proj > 1 ? 1 : proj;
       var footX = px0 + proj * motDx, footY = py0 + proj * motDy;
-      var d = Math.sqrt((wx - footX) * (wx - footX) + (wy - footY) * (wy - footY));
-      if (d > catchR) continue;
+      var ddx = wx - footX, ddy = wy - footY;
+      var d2 = ddx * ddx + ddy * ddy;
+      if (d2 > catchR2) continue;
       hits.push({
         c: c, t: t, x: wx, y: wy,
         radial: radialRatioFn(wx, wy),
-        dist: d
+        dist: Math.sqrt(d2)
       });
     }
   }

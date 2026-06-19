@@ -51,7 +51,7 @@ export function buildWebGridList(webCx, webCy, webRad, gridStep) {
 }
 
 /**
- * 扫描当前有效格子数
+ * 扫描当前有效格子数（全量，仅供初始化或紧急触发使用）
  */
 export function scanWebCells(webGridList, spiderweb, coverD) {
   if (!webGridList || webGridList.length === 0) return 0;
@@ -60,6 +60,45 @@ export function scanWebCells(webGridList, spiderweb, coverD) {
     if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) covered++;
   }
   return covered;
+}
+
+/**
+ * 预算扫描器：每帧只扫描 quotaPerFrame 个格子，
+ * 返回当前已知覆盖格子数（滚动累积，一轮扫完更新 lastFullCovered）
+ */
+export function createBudgetScanner(quotaPerFrame) {
+  var _cursor = 0;
+  var _partialCovered = 0;
+  var _lastFullCovered = 0;
+  var _quota = quotaPerFrame || 30;
+
+  return {
+    setQuota: function (q) { _quota = q; },
+
+    reset: function () {
+      _cursor = 0;
+      _partialCovered = 0;
+      _lastFullCovered = 0;
+    },
+
+    tick: function (webGridList, spiderweb, coverD) {
+      if (!webGridList || webGridList.length === 0) return _lastFullCovered;
+      var total = webGridList.length;
+      var end = Math.min(_cursor + _quota, total);
+      for (var k = _cursor; k < end; k++) {
+        if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) _partialCovered++;
+      }
+      _cursor = end;
+      if (_cursor >= total) {
+        _lastFullCovered = _partialCovered;
+        _cursor = 0;
+        _partialCovered = 0;
+      }
+      return _lastFullCovered;
+    },
+
+    getLastFullCovered: function () { return _lastFullCovered; }
+  };
 }
 
 /**

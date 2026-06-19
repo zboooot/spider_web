@@ -61,6 +61,7 @@ Vec2.prototype.dist2 = function (v) {
 
 Vec2.prototype.normal = function () {
   var m = Math.sqrt(this.x * this.x + this.y * this.y);
+  if (m < 1e-9) return new Vec2(0, 0);
   return new Vec2(this.x / m, this.y / m);
 };
 
