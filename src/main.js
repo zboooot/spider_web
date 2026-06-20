@@ -362,7 +362,7 @@ window.onload = function () {
       radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
       cx: cx + (Math.random() - 0.5) * 40,
       cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 3 + Math.floor(Math.random() * 4)
+      pinStep: 4
     };
     buildWeb(); buildSpider();
     startLevel(0);
@@ -447,7 +447,7 @@ window.onload = function () {
       radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
       cx: cx + (Math.random() - 0.5) * 40,
       cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 3 + Math.floor(Math.random() * 4)
+      pinStep: 4
     };
     buildWeb(); buildSpider();
     startLevel(currentLevel + 1);
