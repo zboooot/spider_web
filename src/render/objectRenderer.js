@@ -31,6 +31,29 @@ worm02Img.src = worm02Url;
 var leafImg = new Image();
 leafImg.src = leafUrl;
 
+var _priorityFlashCanvas = document.createElement('canvas');
+var _priorityFlashCtx = _priorityFlashCanvas.getContext('2d');
+
+function drawPriorityImage(ctx, img, x, y, w, h, pulse) {
+  var pw = Math.max(1, Math.ceil(w));
+  var ph = Math.max(1, Math.ceil(h));
+  if (_priorityFlashCanvas.width !== pw || _priorityFlashCanvas.height !== ph) {
+    _priorityFlashCanvas.width = pw;
+    _priorityFlashCanvas.height = ph;
+  } else {
+    _priorityFlashCtx.clearRect(0, 0, pw, ph);
+  }
+  _priorityFlashCtx.clearRect(0, 0, pw, ph);
+  _priorityFlashCtx.drawImage(img, 0, 0, pw, ph);
+  _priorityFlashCtx.globalCompositeOperation = 'source-atop';
+  _priorityFlashCtx.globalAlpha = 0.45 * pulse;
+  _priorityFlashCtx.fillStyle = '#ffffff';
+  _priorityFlashCtx.fillRect(0, 0, pw, ph);
+  _priorityFlashCtx.globalAlpha = 1;
+  _priorityFlashCtx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(_priorityFlashCanvas, x, y, w, h);
+}
+
 function getAnimatedFlyImage(obj) {
   if (obj.state === 'falling' || obj.state === 'freeing') {
     return (Math.floor(obj.animT / 6) % 2 === 0) ? fly01Img : fly02Img;
@@ -51,11 +74,23 @@ function getAnimatedWormImage(obj) {
 /**
  * 投掷物体绘制
  */
-export function drawThrownObjects(ctx, thrownObjects) {
+export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi], def = obj.def;
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     ctx.save(); ctx.globalAlpha = obj.alpha;
+    var _isPriorityTarget = !!(priorityTarget && priorityTarget.type === 'object' && priorityTarget.obj === obj);
+    var _priorityPulse = _isPriorityTarget ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
+
+    function applyPriorityFlashRect(localCtx, x, y, w, h) {
+      if (!_isPriorityTarget) return;
+      localCtx.save();
+      localCtx.globalCompositeOperation = 'source-atop';
+      localCtx.globalAlpha = 0.45 * _priorityPulse;
+      localCtx.fillStyle = '#ffffff';
+      localCtx.fillRect(x, y, w, h);
+      localCtx.restore();
+    }
 
     /* sticking 弹簧缩放：粘住瞬间压缩再弹回 */
     var _springScale = 1.0;
@@ -108,6 +143,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
+        if (_isPriorityTarget) drawPriorityImage(ctx, wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH, _priorityPulse);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
@@ -125,6 +161,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         ctx.beginPath(); ctx.arc(headWave, headY, segR * 1.2, 0, 2 * Math.PI);
         ctx.fillStyle = '#b81010'; ctx.fill();
         ctx.strokeStyle = 'rgba(80,0,0,0.55)'; ctx.lineWidth = 0.8; ctx.stroke();
+        applyPriorityFlashRect(ctx, -def.r * 3.4, -def.r * 3.4, def.r * 6.8, def.r * 6.8);
       }
       ctx.restore();
     }
@@ -140,6 +177,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
+        if (_isPriorityTarget) drawPriorityImage(ctx, flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH, _priorityPulse);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var r = def.r;
@@ -157,6 +195,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         ctx.restore();
         ctx.beginPath(); ctx.ellipse(0, 0, r * 0.55, r, 0, 0, 2 * Math.PI);
         ctx.fillStyle = '#3a3a2a'; ctx.fill();
+        applyPriorityFlashRect(ctx, -r * 3.4, -r * 2.2, r * 6.8, r * 4.4);
       }
       ctx.restore();
     }
@@ -171,6 +210,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
+        if (_isPriorityTarget) drawPriorityImage(ctx, leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH, _priorityPulse);
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       } else {
         var r = def.r;
@@ -182,6 +222,7 @@ export function drawThrownObjects(ctx, thrownObjects) {
         var lg = ctx.createLinearGradient(-r, 0, r, 0);
         lg.addColorStop(0, '#3a7a25'); lg.addColorStop(0.5, '#5aaa35'); lg.addColorStop(1, '#3a7a25');
         ctx.fillStyle = lg; ctx.fill();
+        applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.8);
       }
       ctx.restore();
     }

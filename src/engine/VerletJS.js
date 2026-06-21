@@ -161,6 +161,7 @@ VerletJS.prototype.nearestEntity = function () {
     entity.__isWebParticle = true; /* 标记断线头粒子，供子弹时间检测 */
   } else {
     entity.__isWebParticle = false;
+    return null; /* 玩家不允许拖拽蜘蛛或其他非网实体 */
   }
   return entity;
 };

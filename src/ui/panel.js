@@ -55,11 +55,15 @@ export function initPanel(P, DEFAULTS, callbacks) {
 
   /* Auto Play 开关 */
   var autoPlayBtn = document.getElementById('btn-autoplay');
-  autoPlayBtn.addEventListener('click', function () {
-    var on = callbacks.toggleAutoPlay();
+  function renderAutoPlayBtn(on) {
     autoPlayBtn.textContent = on ? '🤖 Auto Play: ON' : '🤖 Auto Play: OFF';
     autoPlayBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
     autoPlayBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderAutoPlayBtn(callbacks.isAutoPlayOn());
+  autoPlayBtn.addEventListener('click', function () {
+    var on = callbacks.toggleAutoPlay();
+    renderAutoPlayBtn(on);
   });
 
   document.getElementById('btn-save').onclick = function () {
@@ -78,6 +82,8 @@ export function initPanel(P, DEFAULTS, callbacks) {
       if (el) { el.value = P[key]; lbl.textContent = P[key]; }
     });
     callbacks.onMotionChange();
+    callbacks.setAutoPlay(true);
+    renderAutoPlayBtn(true);
     callbacks.clearAllObjects();
     callbacks.buildWeb();
     callbacks.buildSpider();

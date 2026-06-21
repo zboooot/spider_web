@@ -265,9 +265,11 @@ window.onload = function () {
   var objCounts = { boulder: 0, bug: 0, drop: 0 };
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
+  var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
+  var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
-  var autoPlay = false;     /* 自动寻路打包开关 */
-  var _autoPlayPause = 0;   /* 打包完成后的停顿帧计数（18帧≈0.3s） */
+  var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
+  var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
 
   var gameState = 'IDLE';
   var currentLevel = 0;
@@ -292,6 +294,7 @@ window.onload = function () {
   var _webTargetPct = 100;    /* 目标值 */
   var _webRollTimer = 0;      /* 滚动帧计数 */
   var _webRollFrom = 100;     /* 滚动起始值 */
+  var silkResource = 0;
 
   /* ── 爆发-冷却掉落状态机 ── */
   var spawnPhase = 'cooldown';
@@ -307,6 +310,11 @@ window.onload = function () {
   /* helper: getLevelCfg with current difficulty */
   function getCfg(n) { return getLevelCfg(n, difficultyLevel); }
 
+  function refreshSilkHUD() {
+    var el = document.getElementById('silk-count');
+    if (el) el.textContent = String(silkResource);
+  }
+
   /* ── show IDLE start screen ── */
   showOverlay(
     '<div class="overlay-title">SPIDER WEB</div>'
@@ -316,11 +324,65 @@ window.onload = function () {
   );
   document.getElementById('btn-start-game').onclick = startGameFromBeginning;
 
+  function pickObjectAt(x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 16;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return obj;
+    }
+    return null;
+  }
+
+  function setPriorityTarget(x, y) {
+    var picked = pickObjectAt(x, y);
+    if (picked) {
+      userPriorityTarget = { type: 'object', obj: picked };
+      return;
+    }
+    /* 点目标只允许落在当前仍有网线覆盖的区域；网外或破洞无效 */
+    if (!spiderweb || !cellCovered(x, y, spiderweb, webGridCoverD)) return;
+    userPriorityTarget = { type: 'point', point: new Vec2(x, y) };
+  }
+
+  function setPriorityTargetFromClient(clientX, clientY) {
+    var r = canvas.getBoundingClientRect();
+    setPriorityTarget((clientX - r.left) * (W / r.width), (clientY - r.top) * (H / r.height));
+  }
+
+  function clearPriorityTarget() {
+    userPriorityTarget = null;
+  }
+
+  function isTargetObjectChaseable(obj) {
+    return !!(obj && thrownObjects.indexOf(obj) !== -1 && obj.state === 'stuck');
+  }
+
+  function pauseAndClearCurrentTarget() {
+    target = null;
+    autoChaseTarget = null;
+    _autoPlayPause = 30; /* 0.5秒停顿 */
+  }
+
+  function getActivePriorityObject() {
+    if (!userPriorityTarget || userPriorityTarget.type !== 'object') return null;
+    var obj = userPriorityTarget.obj;
+    return isTargetObjectChaseable(obj) ? obj : null;
+  }
+
   /* click to move (desktop) */
   canvas.addEventListener('click', function (e) {
-    if (wrappingTarget !== null) return;
-    var r = canvas.getBoundingClientRect();
-    target = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    e.stopPropagation();
+    setPriorityTargetFromClient(e.clientX, e.clientY);
+  });
+
+  /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
+  screenShellEl.addEventListener('click', function (e) {
+    if (e.target === canvas) return;
+    if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay')) return;
+    setPriorityTargetFromClient(e.clientX, e.clientY);
   });
 
   /* tap to move (iOS / mobile) — touchend with no drag */
@@ -332,22 +394,41 @@ window.onload = function () {
     }
   }, { passive: true });
   canvas.addEventListener('touchend', function (e) {
-    if (wrappingTarget !== null) return;
     if (e.changedTouches.length === 1) {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
       if (Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
-        var r = canvas.getBoundingClientRect();
-        target = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
+        setPriorityTargetFromClient(t.clientX, t.clientY);
       }
     }
   }, { passive: true });
 
   /* ── Game flow functions ── */
+  function createWebOverrideForLevel(levelIndex) {
+    var maxLevel = Math.max(1, LEVEL_CONFIGS.length - 1);
+    var phase = Math.max(0, Math.min(1, levelIndex / maxLevel));
+    /* 复杂度随关卡递增：辐射数、圈数、半径逐步增加，只保留少量随机抖动 */
+    var segsBase = 20 + Math.round(phase * 14);   /* 20 -> 34 */
+    var depthBase = 8 + Math.round(phase * 7);    /* 8 -> 15 */
+    var radiusBase = 1.22 + phase * 0.28;         /* 1.22 -> 1.50 */
+    return {
+      segs: segsBase + Math.floor(Math.random() * 3),
+      depth: depthBase + Math.floor(Math.random() * 2),
+      radius: Math.round(Math.min(W, H) / 2 * (radiusBase + Math.random() * 0.08) * WEB_SCALE),
+      cx: cx + (Math.random() - 0.5) * 24,
+      cy: cy + (Math.random() - 0.5) * 24,
+      pinStep: 4
+    };
+  }
+
   function startGame() {
     wrappingTarget = null;
     target = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    silkResource = 0;
+    refreshSilkHUD();
     totalScore = 0;
     currentLevel = 0;
     gameFrames = 0;
@@ -356,14 +437,7 @@ window.onload = function () {
     var scoreBarEl = document.getElementById('score-bar');
     if (scoreTxtEl) scoreTxtEl.textContent = '0';
     if (scoreBarEl) scoreBarEl.style.display = 'none';
-    webOverride = {
-      segs: 20 + Math.floor(Math.random() * 18),
-      depth: 8 + Math.floor(Math.random() * 7),
-      radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
-      cx: cx + (Math.random() - 0.5) * 40,
-      cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 4
-    };
+    webOverride = createWebOverrideForLevel(0);
     buildWeb(); buildSpider();
     startLevel(0);
   }
@@ -376,6 +450,8 @@ window.onload = function () {
   function startLevel(n) {
     wrappingTarget = null;
     target = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
     currentLevel = n;
     levelTimer = 0;
     levelScored = false;
@@ -441,14 +517,7 @@ window.onload = function () {
 
   function resetWebAndStartNextLevel() {
     gameFrames = 0;
-    webOverride = {
-      segs: 20 + Math.floor(Math.random() * 18),
-      depth: 8 + Math.floor(Math.random() * 7),
-      radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
-      cx: cx + (Math.random() - 0.5) * 40,
-      cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 4
-    };
+    webOverride = createWebOverrideForLevel(currentLevel + 1);
     buildWeb(); buildSpider();
     startLevel(currentLevel + 1);
   }
@@ -552,8 +621,8 @@ window.onload = function () {
     if (webWarmupFrames > 0) {
       webWarmupFrames--;
       if (webWarmupFrames === 0) _buildWebGrid();
-      var dbgEl = document.getElementById('dbg-web');
-      if (dbgEl) dbgEl.innerHTML = 'WEB <span id="dbg-web-num">100%</span>';
+      var warmNumEl = document.getElementById('dbg-web-num');
+      if (warmNumEl) warmNumEl.textContent = '100';
       return;
     }
     if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) continueWebGridBuild();
@@ -561,39 +630,29 @@ window.onload = function () {
       webScanPending--;
       if (webScanPending === 0) _scanWebCells();
     }
-    var dbgEl = document.getElementById('dbg-web');
-    if (dbgEl) {
-      var _newPct = Math.max(0, Math.round(100 - webLossPct * 2));
-      /* 新目标出现时启动滚动 */
-      if (_newPct !== _webTargetPct) {
-        _webRollFrom = _webDisplayPct;
-        _webTargetPct = _newPct;
-        _webRollTimer = 0;
-      }
-      /* 滚动过程：20帧内从旧值快速跳到新值，每帧更新一次显示 */
-      var _rollDur = 20;
-      if (_webRollTimer < _rollDur) {
-        _webRollTimer++;
-        /* 快速跳数：用 easeOut 让开头快、结尾慢 */
-        var _rollT = 1 - Math.pow(1 - _webRollTimer / _rollDur, 2);
-        _webDisplayPct = Math.round(_webRollFrom + (_webTargetPct - _webRollFrom) * _rollT);
-      } else {
-        _webDisplayPct = _webTargetPct;
-      }
-      var _numEl = document.getElementById('dbg-web-num');
-      if (!_numEl) {
-        dbgEl.innerHTML = 'WEB <span id="dbg-web-num">' + _webDisplayPct + '%</span>';
-        _numEl = document.getElementById('dbg-web-num');
-      } else {
-        var _showing = parseInt(_numEl.textContent);
-        if (_showing !== _webDisplayPct) {
-          _numEl.textContent = _webDisplayPct + '%';
-          /* 只在滚动开始时闪红一次 */
-          if (_webRollTimer === 1) {
-            _numEl.classList.remove('dbg-web-flash');
-            void _numEl.offsetWidth;
-            _numEl.classList.add('dbg-web-flash');
-          }
+    var _newPct = Math.max(0, Math.round(100 - webLossPct * 2));
+    if (_newPct !== _webTargetPct) {
+      _webRollFrom = _webDisplayPct;
+      _webTargetPct = _newPct;
+      _webRollTimer = 0;
+    }
+    var _rollDur = 20;
+    if (_webRollTimer < _rollDur) {
+      _webRollTimer++;
+      var _rollT = 1 - Math.pow(1 - _webRollTimer / _rollDur, 2);
+      _webDisplayPct = Math.round(_webRollFrom + (_webTargetPct - _webRollFrom) * _rollT);
+    } else {
+      _webDisplayPct = _webTargetPct;
+    }
+    var _numEl = document.getElementById('dbg-web-num');
+    if (_numEl) {
+      var _showing = parseInt(_numEl.textContent, 10);
+      if (_showing !== _webDisplayPct) {
+        _numEl.textContent = String(_webDisplayPct);
+        if (_webRollTimer === 1) {
+          _numEl.classList.remove('dbg-web-flash');
+          void _numEl.offsetWidth;
+          _numEl.classList.add('dbg-web-flash');
         }
       }
     }
@@ -657,6 +716,8 @@ window.onload = function () {
 
   function clearAllObjects() {
     wrappingTarget = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
     audioEngine.stopAllBugBuzz();
     thrownObjects.forEach(function (o) {
       if (o.collectEl && o.collectEl.parentNode) o.collectEl.parentNode.removeChild(o.collectEl);
@@ -674,6 +735,8 @@ window.onload = function () {
     inventoryCounts[kind] = Math.max(0, inventoryCounts[kind] + delta);
     if (gameState === 'LEVEL_ACTIVE' && delta > 0) {
       levelCollected[kind]++;
+      silkResource += (SCORE_MULT[kind] || 1) * delta;
+      refreshSilkHUD();
       refreshWaveHUD(kind, gameState, getCfg, currentLevel, levelCollected);
       pendingLevelCheck = true;
     } else {
@@ -737,15 +800,25 @@ window.onload = function () {
     obj.wrapDur = obj.def.wrapDur;
     obj.particle.lastPos.mutableSet(obj.particle.pos);
     wrappingTarget = obj;
+    if (autoChaseTarget === obj) autoChaseTarget = null;
+    if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
+      clearPriorityTarget();
+    }
     target = null;
   }
 
   function tryCollectObjects() {
     if (wrappingTarget !== null) return;
+    var priorityObj = getActivePriorityObject();
+    if (userPriorityTarget) {
+      if (userPriorityTarget.type === 'point') return;
+      if (!priorityObj) { clearPriorityTarget(); pauseAndClearCurrentTarget(); return; }
+    }
     var thorax = spider.thorax.pos;
     var abdomen = spider.abdomen.pos;
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
+      if (priorityObj && obj !== priorityObj) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
       if (circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
@@ -1043,9 +1116,17 @@ window.onload = function () {
     },
     clearAllObjects: clearAllObjects,
     launchObject: launchObject,
+    isAutoPlayOn: function () {
+      return autoPlay;
+    },
     toggleAutoPlay: function () {
       autoPlay = !autoPlay;
       if (!autoPlay) target = null; /* 关闭时清除自动目标 */
+      return autoPlay;
+    },
+    setAutoPlay: function (on) {
+      autoPlay = !!on;
+      if (!autoPlay) target = null;
       return autoPlay;
     }
   });
@@ -1264,24 +1345,53 @@ window.onload = function () {
 
     updateSamplePoints(samplePoints);
 
+    /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
+    if (!wrappingTarget && userPriorityTarget) {
+      if (userPriorityTarget.type === 'object') {
+        if (!getActivePriorityObject()) {
+          clearPriorityTarget();
+          pauseAndClearCurrentTarget();
+        } else {
+          _autoTarget.x = userPriorityTarget.obj.particle.pos.x;
+          _autoTarget.y = userPriorityTarget.obj.particle.pos.y;
+          target = _autoTarget;
+        }
+      } else if (userPriorityTarget.type === 'point') {
+        _autoTarget.x = userPriorityTarget.point.x;
+        _autoTarget.y = userPriorityTarget.point.y;
+        target = _autoTarget;
+        if (spider.thorax.pos.dist2(_autoTarget) <= 14 * 14) {
+          clearPriorityTarget();
+          pauseAndClearCurrentTarget();
+        }
+      }
+    }
+
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
     if (_autoPlayPause > 0) { _autoPlayPause--; }
-    if (autoPlay && !wrappingTarget && _autoPlayPause <= 0) {
-      var _bestObj = null, _bestD2 = Infinity;
-      var _tx = spider.thorax.pos;
-      for (var _oi = 0; _oi < thrownObjects.length; _oi++) {
-        var _o = thrownObjects[_oi];
-        if (_o.state !== 'stuck') continue;
-        var _odx = _o.particle.pos.x - _tx.x, _ody = _o.particle.pos.y - _tx.y;
-        var _od2 = _odx * _odx + _ody * _ody;
-        if (_od2 < _bestD2) { _bestD2 = _od2; _bestObj = _o; }
-      }
-      if (_bestObj) {
-        _autoTarget.x = _bestObj.particle.pos.x;
-        _autoTarget.y = _bestObj.particle.pos.y;
-        target = _autoTarget;
+    if (autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
+      if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
+        pauseAndClearCurrentTarget();
       } else {
-        target = null;
+        if (!autoChaseTarget) {
+          var _bestObj = null, _bestD2 = Infinity;
+          var _tx = spider.thorax.pos;
+          for (var _oi = 0; _oi < thrownObjects.length; _oi++) {
+            var _o = thrownObjects[_oi];
+            if (!isTargetObjectChaseable(_o)) continue;
+            var _odx = _o.particle.pos.x - _tx.x, _ody = _o.particle.pos.y - _tx.y;
+            var _od2 = _odx * _odx + _ody * _ody;
+            if (_od2 < _bestD2) { _bestD2 = _od2; _bestObj = _o; }
+          }
+          autoChaseTarget = _bestObj;
+        }
+        if (autoChaseTarget) {
+          _autoTarget.x = autoChaseTarget.particle.pos.x;
+          _autoTarget.y = autoChaseTarget.particle.pos.y;
+          target = _autoTarget;
+        } else {
+          target = null;
+        }
       }
     }
 
@@ -1296,8 +1406,32 @@ window.onload = function () {
       if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
         var scaledSpeed = moveSpeed; /* 固定步长，不受帧率影响 */
-        var nx = (dx / dist) * scaledSpeed, ny = (dy / dist) * scaledSpeed;
-        moveDir = new Vec2(dx / dist, dy / dist);
+        var dirX = dx / dist, dirY = dy / dist;
+
+        /* 玩家优先目标导航：绕开其他掉落物，不在路上触发打包 */
+        if (userPriorityTarget) {
+          var priorityObj = getActivePriorityObject();
+          var avoidRadius = 68;
+          for (var ai = 0; ai < thrownObjects.length; ai++) {
+            var aobj = thrownObjects[ai];
+            if (!aobj || aobj === priorityObj) continue;
+            if (aobj.state !== 'stuck' && aobj.state !== 'sticking' && aobj.state !== 'freeing' && aobj.state !== 'wrapping') continue;
+            var ap = aobj.particle.pos;
+            var adx = tx.x - ap.x;
+            var ady = tx.y - ap.y;
+            var ad2 = adx * adx + ady * ady;
+            if (ad2 <= 1 || ad2 > avoidRadius * avoidRadius) continue;
+            var ad = Math.sqrt(ad2);
+            var repel = (1 - ad / avoidRadius) * 1.45;
+            dirX += (adx / ad) * repel;
+            dirY += (ady / ad) * repel;
+          }
+          var dirL = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+          dirX /= dirL; dirY /= dirL;
+        }
+
+        var nx = dirX * scaledSpeed, ny = dirY * scaledSpeed;
+        moveDir = new Vec2(dirX, dirY);
         for (var p = 0; p < spider.particles.length; p++) {
           spider.particles[p].pos.x += nx; spider.particles[p].pos.y += ny;
           spider.particles[p].lastPos.x += nx; spider.particles[p].lastPos.y += ny;
@@ -1362,7 +1496,7 @@ window.onload = function () {
     updateBlink();
     sim.frame(16);   // 约束迭代次数固定，保持物理稳定性
     sim.draw();
-    drawThrownObjects(sim.ctx, thrownObjects);
+    drawThrownObjects(sim.ctx, thrownObjects, userPriorityTarget);
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
     drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
 
@@ -1382,6 +1516,45 @@ window.onload = function () {
         _ctx.fillStyle = _bp.color;
         _ctx.fill();
         _ctx.restore();
+      }
+    }
+
+    /* ── 玩家标记：顶层绘制 ── */
+    if (userPriorityTarget) {
+      var markerX, markerY, markerPulse = 0.55 + 0.45 * Math.abs(Math.sin(timestamp * 0.012));
+      var markerFloat = Math.sin(timestamp * 0.006) * 3;
+      var markerObj = null;
+      if (userPriorityTarget.type === 'object' && userPriorityTarget.obj && thrownObjects.indexOf(userPriorityTarget.obj) !== -1) {
+        markerObj = userPriorityTarget.obj;
+        markerX = markerObj.particle.pos.x;
+        markerY = markerObj.particle.pos.y;
+      } else if (userPriorityTarget.type === 'point') {
+        markerX = userPriorityTarget.point.x;
+        markerY = userPriorityTarget.point.y;
+        sim.ctx.save();
+        sim.ctx.strokeStyle = 'rgba(255,255,255,' + markerPulse.toFixed(2) + ')';
+        sim.ctx.lineWidth = 2;
+        sim.ctx.beginPath();
+        sim.ctx.arc(markerX, markerY, 6 + Math.sin(timestamp * 0.02) * 1.2, 0, 2 * Math.PI);
+        sim.ctx.stroke();
+        sim.ctx.beginPath();
+        sim.ctx.arc(markerX, markerY, 1.8, 0, 2 * Math.PI);
+        sim.ctx.fillStyle = 'rgba(255,255,255,' + markerPulse.toFixed(2) + ')';
+        sim.ctx.fill();
+        sim.ctx.restore();
+      }
+
+      if (markerX != null && markerY != null) {
+        var triY = markerY - (markerObj && markerObj.def ? markerObj.def.r * 2.8 : 20) - 10 + markerFloat;
+        sim.ctx.save();
+        sim.ctx.fillStyle = 'rgba(255,245,170,0.95)';
+        sim.ctx.beginPath();
+        sim.ctx.moveTo(markerX, triY + 6);
+        sim.ctx.lineTo(markerX - 6, triY - 4);
+        sim.ctx.lineTo(markerX + 6, triY - 4);
+        sim.ctx.closePath();
+        sim.ctx.fill();
+        sim.ctx.restore();
       }
     }
 
