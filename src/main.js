@@ -26,7 +26,7 @@ import {
 
 import {
   LEVEL_CONFIGS, SCORE_MULT,
-  calcWaveScore, getLevelCfg, framesToTime
+  calcCollectedSilk, getLevelCfg, getWaveCfg, framesToTime
 } from './systems/levelSystem.js';
 
 import { audioEngine } from './audio/audioEngine.js';
@@ -262,7 +262,7 @@ window.onload = function () {
      THROWN OBJECTS & GAME STATE
   ================================================================ */
   var thrownObjects = [];
-  var objCounts = { boulder: 0, bug: 0, drop: 0 };
+  var objCounts = { boulder: 0, bug: 0, drop: 0, poop: 0 };
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
   var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
@@ -270,10 +270,20 @@ window.onload = function () {
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
+  var poopStunTimer = 0;
+  var _poopPointerDown = null;
+  var _draggingPoop = null;
+  var _suppressPriorityClick = false;
+  var WAVE_FALLING = 'WAVE_FALLING';
+  var WAVE_PAUSE = 'WAVE_PAUSE';
+  var WAVE_OVERTIME = 'WAVE_OVERTIME';
 
   var gameState = 'IDLE';
-  var currentLevel = 0;
-  var totalScore = 0;
+  var currentLevelIndex = 0;
+  var currentWaveIndex = 0;
+  var currentWavePhase = WAVE_FALLING;
+  var wavePhaseTimer = 0;
+  var totalSilkCount = 0;
   var levelScored = false;
   var pendingLevelCheck = false;
   var levelTimer = 0;
@@ -294,7 +304,7 @@ window.onload = function () {
   var _webTargetPct = 100;    /* 目标值 */
   var _webRollTimer = 0;      /* 滚动帧计数 */
   var _webRollFrom = 100;     /* 滚动起始值 */
-  var silkResource = 0;
+  var silkCount = 0;
 
   /* ── 爆发-冷却掉落状态机 ── */
   var spawnPhase = 'cooldown';
@@ -307,12 +317,59 @@ window.onload = function () {
   var webGridBuildIdx = 0;
   var webGridInitCover = 0;
 
-  /* helper: getLevelCfg with current difficulty */
-  function getCfg(n) { return getLevelCfg(n, difficultyLevel); }
+  /* helper: get level/wave cfg with current difficulty */
+  function getLevelCfgAt(n) { return getLevelCfg(n, difficultyLevel); }
+  function getWaveCfgAt(levelIndex, waveIndex) { return getWaveCfg(levelIndex, waveIndex, difficultyLevel); }
+
+  function refreshWavePhaseHUD() {
+    var el = document.getElementById('phase-bar');
+    if (!el) return;
+    if (gameState !== 'LEVEL_ACTIVE') {
+      el.style.display = 'none';
+      return;
+    }
+    var phaseLabel = currentWavePhase === WAVE_PAUSE ? 'PAUSE'
+      : currentWavePhase === WAVE_OVERTIME ? 'OVERTIME'
+      : 'FALLING';
+    el.style.display = 'block';
+    el.textContent = 'L' + (currentLevelIndex + 1) + ' W' + (currentWaveIndex + 1) + ' ' + phaseLabel;
+  }
+
+  function resetSpawnerState(cfg) {
+    spawnPhase = 'cooldown';
+    cooldownTimer = 0 - (cfg.firstBurstDelay || 0);
+    burstTimer = 0;
+    burstCount = 0;
+    burstsDone = 0;
+    burstCountCur = 0;
+  }
+
+  function enterWaveFalling(waveIndex, overtime) {
+    currentWaveIndex = waveIndex;
+    currentWavePhase = overtime ? WAVE_OVERTIME : WAVE_FALLING;
+    wavePhaseTimer = 0;
+    resetSpawnerState(getWaveCfgAt(currentLevelIndex, currentWaveIndex));
+    refreshWavePhaseHUD();
+  }
+
+  function enterWavePause() {
+    currentWavePhase = WAVE_PAUSE;
+    wavePhaseTimer = 0;
+    refreshWavePhaseHUD();
+  }
+
+  function advanceWavePhase() {
+    var levelCfg = getLevelCfgAt(currentLevelIndex);
+    if (currentWaveIndex < levelCfg.waves.length - 1) {
+      enterWaveFalling(currentWaveIndex + 1, false);
+      return;
+    }
+    enterWaveFalling(currentWaveIndex, true);
+  }
 
   function refreshSilkHUD() {
     var el = document.getElementById('silk-count');
-    if (el) el.textContent = String(silkResource);
+    if (el) el.textContent = String(silkCount);
   }
 
   /* ── show IDLE start screen ── */
@@ -336,6 +393,171 @@ window.onload = function () {
     return null;
   }
 
+  function pickPoopAt(x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.kind !== 'poop' || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 18;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return obj;
+    }
+    return null;
+  }
+
+  function clearPoopDragState() {
+    if (_draggingPoop && _draggingPoop.obj) {
+      _draggingPoop.obj.playerDragging = false;
+      _draggingPoop.obj.dragStrain = 0;
+    }
+    _draggingPoop = null;
+    _poopPointerDown = null;
+  }
+
+  function spawnPoopBurst(x, y) {
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.020,
+      r: 13,
+      grow: 0.156,
+      drag: 0.904,
+      speedScale: 1.5,
+      smoke: true,
+      occlude: 0.88,
+      color: '#0a0808'
+    });
+
+    for (var i = 0; i < 36; i++) {
+      var ang = (i / 36) * Math.PI * 2 + Math.random() * 0.6;
+      var spd = 2.1 + Math.random() * 3.4;
+      _burstParticles.push({
+        x: x, y: y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd * 0.82,
+        life: 1.0,
+        decay: 0.024 + Math.random() * 0.012,
+        r: 6.76 + Math.random() * 7.54,
+        grow: 0.091 + Math.random() * 0.065,
+        drag: 0.856 + Math.random() * 0.032,
+        speedScale: 1.5,
+        smoke: true,
+        occlude: 0.78 + Math.random() * 0.08,
+        color: ['#090707', '#151110', '#211917', '#2b221f'][Math.floor(Math.random() * 4)]
+      });
+    }
+
+    for (var j = 0; j < 12; j++) {
+      var ang2 = (j / 12) * Math.PI * 2 + Math.random() * 0.4;
+      var spd2 = 4.6 + Math.random() * 2.8;
+      _burstParticles.push({
+        x: x, y: y,
+        vx: Math.cos(ang2) * spd2,
+        vy: Math.sin(ang2) * spd2 * 0.76,
+        life: 1.0,
+        decay: 0.040 + Math.random() * 0.016,
+        r: 4.16 + Math.random() * 3.12,
+        grow: 0.052 + Math.random() * 0.039,
+        drag: 0.810 + Math.random() * 0.036,
+        speedScale: 1.5,
+        smoke: true,
+        occlude: 0.82,
+        color: '#120d0c'
+      });
+    }
+  }
+
+  function handlePoopCapture(obj) {
+    var idx = thrownObjects.indexOf(obj);
+    if (idx === -1) return;
+    clearObjectConstraints(obj);
+    obj.stuckOnConstraint = null;
+    spawnPoopBurst(obj.particle.pos.x, obj.particle.pos.y);
+    if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
+      clearPriorityTarget();
+    }
+    if (autoChaseTarget === obj) autoChaseTarget = null;
+    obj.destroy(sim);
+    thrownObjects.splice(idx, 1);
+    updateBadge(obj.kind, -1);
+    target = null;
+    poopStunTimer = 180;
+    pauseAndClearCurrentTarget();
+  }
+
+  function beginPoopPointer(clientX, clientY) {
+    var p = _getCanvasPos(clientX, clientY);
+    var poop = pickPoopAt(p.x, p.y);
+    if (!poop) return;
+    _poopPointerDown = {
+      obj: poop,
+      startX: p.x,
+      startY: p.y,
+      objStartX: poop.particle.pos.x,
+      objStartY: poop.particle.pos.y,
+      active: true
+    };
+  }
+
+  function updatePoopPointer(clientX, clientY) {
+    if (!_poopPointerDown || !_poopPointerDown.active) return;
+    if (thrownObjects.indexOf(_poopPointerDown.obj) === -1 || _poopPointerDown.obj.state !== 'stuck') {
+      clearPoopDragState();
+      return;
+    }
+    var p = _getCanvasPos(clientX, clientY);
+    var dx = p.x - _poopPointerDown.startX;
+    var dy = p.y - _poopPointerDown.startY;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (!_draggingPoop && dist >= 10) {
+      _draggingPoop = {
+        obj: _poopPointerDown.obj,
+        startX: _poopPointerDown.objStartX,
+        startY: _poopPointerDown.objStartY,
+        targetX: _poopPointerDown.objStartX,
+        targetY: _poopPointerDown.objStartY,
+        lastDx: dx,
+        lastDy: dy,
+        holdFrames: 0
+      };
+      _draggingPoop.obj.playerDragging = true;
+      _suppressPriorityClick = true;
+      if (sim.draggedEntity) sim.draggedEntity = null;
+    }
+    if (!_draggingPoop) return;
+    var resistance = _draggingPoop.obj.def.dragResistance || 0.42;
+    _draggingPoop.targetX = _draggingPoop.startX + dx * resistance;
+    _draggingPoop.targetY = _draggingPoop.startY + dy * resistance;
+    _draggingPoop.lastDx = dx;
+    _draggingPoop.lastDy = dy;
+    var peelThreshold = Math.max(1, _draggingPoop.obj.def.peelThreshold);
+    var overThreshold = dist >= peelThreshold;
+    if (overThreshold) _draggingPoop.holdFrames++;
+    else _draggingPoop.holdFrames = 0;
+    var holdNeed = Math.max(1, _draggingPoop.obj.def.peelHoldFrames || 60);
+    var holdRatio = Math.min(1, _draggingPoop.holdFrames / holdNeed);
+    _draggingPoop.obj.dragStrain = Math.min(1.45, dist / peelThreshold + holdRatio * 0.45);
+    var peelDx = p.x - _draggingPoop.startX;
+    var peelDy = p.y - _draggingPoop.startY;
+    if (overThreshold && _draggingPoop.holdFrames >= holdNeed) {
+      _draggingPoop.obj.peelOff(peelDx, peelDy);
+      _draggingPoop = null;
+      _poopPointerDown = null;
+    }
+  }
+
+  function endPoopPointer() {
+    if (_draggingPoop && _draggingPoop.obj) {
+      _draggingPoop.obj.playerDragging = false;
+      _draggingPoop.obj.dragStrain = 0;
+      _draggingPoop = null;
+      _poopPointerDown = null;
+      return;
+    }
+    _poopPointerDown = null;
+  }
+
   function setPriorityTarget(x, y) {
     var picked = pickObjectAt(x, y);
     if (picked) {
@@ -357,7 +579,7 @@ window.onload = function () {
   }
 
   function isTargetObjectChaseable(obj) {
-    return !!(obj && thrownObjects.indexOf(obj) !== -1 && obj.state === 'stuck');
+    return !!(obj && thrownObjects.indexOf(obj) !== -1 && obj.state === 'stuck' && !obj.playerDragging);
   }
 
   function pauseAndClearCurrentTarget() {
@@ -373,9 +595,22 @@ window.onload = function () {
   }
 
   /* click to move (desktop) */
+  canvas.addEventListener('mousedown', function (e) {
+    beginPoopPointer(e.clientX, e.clientY);
+  });
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
+    if (_suppressPriorityClick) {
+      _suppressPriorityClick = false;
+      return;
+    }
     setPriorityTargetFromClient(e.clientX, e.clientY);
+  });
+  window.addEventListener('mousemove', function (e) {
+    updatePoopPointer(e.clientX, e.clientY);
+  });
+  window.addEventListener('mouseup', function () {
+    endPoopPointer();
   });
 
   /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
@@ -391,6 +626,7 @@ window.onload = function () {
     if (e.touches.length === 1) {
       _touchStartX = e.touches[0].clientX;
       _touchStartY = e.touches[0].clientY;
+      beginPoopPointer(_touchStartX, _touchStartY);
     }
   }, { passive: true });
   canvas.addEventListener('touchend', function (e) {
@@ -398,10 +634,18 @@ window.onload = function () {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
-      if (Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+      if (!_suppressPriorityClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
+      _suppressPriorityClick = false;
     }
+    endPoopPointer();
+  }, { passive: true });
+  window.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 0) updatePoopPointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  window.addEventListener('touchend', function () {
+    endPoopPointer();
   }, { passive: true });
 
   /* ── Game flow functions ── */
@@ -427,16 +671,17 @@ window.onload = function () {
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
-    silkResource = 0;
+    clearPoopDragState();
+    silkCount = 0;
     refreshSilkHUD();
-    totalScore = 0;
-    currentLevel = 0;
+    totalSilkCount = 0;
+    poopStunTimer = 0;
+    currentLevelIndex = 0;
+    currentWaveIndex = 0;
     gameFrames = 0;
     levelScored = false;
-    var scoreTxtEl = document.getElementById('score-txt');
-    var scoreBarEl = document.getElementById('score-bar');
-    if (scoreTxtEl) scoreTxtEl.textContent = '0';
-    if (scoreBarEl) scoreBarEl.style.display = 'none';
+    var phaseBarEl = document.getElementById('phase-bar');
+    if (phaseBarEl) phaseBarEl.style.display = 'none';
     webOverride = createWebOverrideForLevel(0);
     buildWeb(); buildSpider();
     startLevel(0);
@@ -452,17 +697,19 @@ window.onload = function () {
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
-    currentLevel = n;
+    clearPoopDragState();
+    currentLevelIndex = n;
+    currentWaveIndex = 0;
+    currentWavePhase = WAVE_FALLING;
+    wavePhaseTimer = 0;
     levelTimer = 0;
     levelScored = false;
     pendingLevelCheck = false;
+    poopStunTimer = 0;
     levelCollected = { boulder: 0, bug: 0, drop: 0 };
     inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
     clearAllObjects();
-    var cfg = getCfg(n);
-    spawnPhase = 'cooldown';
-    cooldownTimer = 0 - (cfg.firstBurstDelay || 60);
-    burstTimer = 0; burstCount = 0; burstsDone = 0; burstCountCur = 0;
+    var cfg = getLevelCfgAt(n);
     ['boulder', 'bug', 'drop'].forEach(function (k) {
       var el = document.getElementById('inv-' + k + '-count');
       if (el) el.textContent = '0/' + cfg.targets[k];
@@ -482,32 +729,31 @@ window.onload = function () {
       d.classList.toggle('active', idx === n);
     });
     if (P.bgMusicOn) audioEngine.playLevelBGM(n);
+    enterWaveFalling(0, false);
   }
 
   function endLevel() {
     if (gameState !== 'LEVEL_ACTIVE' && gameState !== 'LEVEL_RESULT') return;
     if (levelScored) return;
     levelScored = true;
-    var cfg = getCfg(currentLevel);
-    var ws = calcWaveScore(levelCollected, cfg.targets);
-    totalScore += ws;
-    var scoreTxtEl = document.getElementById('score-txt');
-    if (scoreTxtEl) scoreTxtEl.textContent = totalScore;
-    var isLast = (currentLevel >= LEVEL_CONFIGS.length - 1);
+    var cfg = getLevelCfgAt(currentLevelIndex);
+    var levelSilkGain = calcCollectedSilk(levelCollected, cfg.targets);
+    totalSilkCount += levelSilkGain;
+    var isLast = (currentLevelIndex >= LEVEL_CONFIGS.length - 1);
     if (isLast) showSuccess();
-    else showLevelResult(ws);
+    else showLevelResult(levelSilkGain);
   }
 
-  function showLevelResult(levelScore) {
+  function showLevelResult(levelSilkGain) {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'LEVEL_RESULT';
+    refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
-    var nextNum = currentLevel + 2;
     showOverlay(
-      '<div class="overlay-title">Wave Complete</div>'
-      + '<div class="overlay-subtitle">The web held together.</div>'
-      + '<button class="overlay-btn" id="btn-nextwv" style="margin-top:16px">Next Wave</button>'
+      '<div class="overlay-title">Level Complete</div>'
+      + '<div class="overlay-subtitle">Level targets secured.</div>'
+      + '<button class="overlay-btn" id="btn-nextwv" style="margin-top:16px">Next Level</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:8px" id="btn-restart-wr">Restart</button>'
     );
     var btn = document.getElementById('btn-nextwv');
@@ -517,18 +763,29 @@ window.onload = function () {
 
   function resetWebAndStartNextLevel() {
     gameFrames = 0;
-    webOverride = createWebOverrideForLevel(currentLevel + 1);
+    webOverride = createWebOverrideForLevel(currentLevelIndex + 1);
     buildWeb(); buildSpider();
-    startLevel(currentLevel + 1);
+    startLevel(currentLevelIndex + 1);
+  }
+
+  function retryCurrentLevel() {
+    gameFrames = 0;
+    silkCount = 0;
+    refreshSilkHUD();
+    poopStunTimer = 0;
+    webOverride = createWebOverrideForLevel(currentLevelIndex);
+    buildWeb(); buildSpider();
+    startLevel(currentLevelIndex);
   }
 
   function showSuccess() {
     if (gameState === 'SUCCESS' || gameState === 'GAME_OVER') return;
     gameState = 'SUCCESS';
+    refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
     showOverlay(
-      '<div class="overlay-title">All Waves Clear</div>'
+      '<div class="overlay-title">All Levels Clear</div>'
       + '<div class="overlay-subtitle">The web survived the full run.</div>'
       + '<button class="overlay-btn" id="btn-nextlv" style="margin-bottom:8px">Higher Challenge</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-s">Restart</button>'
@@ -540,6 +797,7 @@ window.onload = function () {
   function showGameOver() {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'GAME_OVER';
+    refreshWavePhaseHUD();
     audioEngine.playSfxGameOver();
     clearAllObjects();
     var timeUsed = framesToTime(gameFrames);
@@ -549,12 +807,12 @@ window.onload = function () {
       + '<button class="overlay-btn" id="btn-retry" style="margin-bottom:8px">Try Again</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-f">Restart</button>'
     );
-    document.getElementById('btn-retry').onclick = startGame;
+    document.getElementById('btn-retry').onclick = retryCurrentLevel;
     document.getElementById('btn-restart-f').onclick = startGameFromBeginning;
   }
 
   function checkLevelComplete() {
-    var cfg = getCfg(currentLevel);
+    var cfg = getLevelCfgAt(currentLevelIndex);
     var done = ['boulder', 'bug', 'drop'].every(function (k) {
       return levelCollected[k] >= (cfg.targets[k] || 0);
     });
@@ -667,19 +925,29 @@ window.onload = function () {
   }
 
   function spawnRandom() {
-    /* bug 占 30% 的原概率再降到 30%，即约 10% 总概率 */
+    /* 大便低概率出现，作为持续惩罚物 */
     var r = Math.random();
-    var kind = r < 0.10 ? 'bug' : r < 0.55 ? 'boulder' : 'drop';
+    var kind = r < 0.08 ? 'poop' : r < 0.18 ? 'bug' : r < 0.58 ? 'boulder' : 'drop';
     launchObject(kind);
   }
 
   function updateLevelSpawner() {
     if (gameState !== 'LEVEL_ACTIVE') return;
-    var cfg = getCfg(currentLevel);
+    var levelCfg = getLevelCfgAt(currentLevelIndex);
+    var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
+    wavePhaseTimer++;
+    if (currentWavePhase === WAVE_PAUSE) {
+      if (wavePhaseTimer >= cfg.pauseDuration) advanceWavePhase();
+      return;
+    }
+    if (currentWavePhase === WAVE_FALLING && wavePhaseTimer >= cfg.fallingDuration) {
+      enterWavePause();
+      return;
+    }
+    if (!levelCfg.waves.length) return;
     if (spawnPhase === 'cooldown') {
       cooldownTimer++;
       if (cooldownTimer >= cfg.cooldownDuration) {
-        if (burstsDone >= cfg.totalBursts) return;
         spawnPhase = 'burst';
         burstTimer = 0;
         burstCountCur = cfg.burstMin + Math.floor(Math.random() * (cfg.burstMax - cfg.burstMin + 1));
@@ -708,7 +976,7 @@ window.onload = function () {
   }
 
   function launchObject(kind) {
-    var obj = new ThrownObj(kind, W, H, sim, P, gameState, getCfg, currentLevel);
+    var obj = new ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgAt, currentLevelIndex, currentWaveIndex);
     obj._W = W; obj._H = H;
     thrownObjects.push(obj);
     updateBadge(kind, 1);
@@ -718,6 +986,7 @@ window.onload = function () {
     wrappingTarget = null;
     autoChaseTarget = null;
     clearPriorityTarget();
+    clearPoopDragState();
     audioEngine.stopAllBugBuzz();
     thrownObjects.forEach(function (o) {
       if (o.collectEl && o.collectEl.parentNode) o.collectEl.parentNode.removeChild(o.collectEl);
@@ -725,7 +994,7 @@ window.onload = function () {
       o.destroy(sim);
     });
     thrownObjects = [];
-    ['boulder', 'bug', 'drop'].forEach(function (k) {
+    ['boulder', 'bug', 'drop', 'poop'].forEach(function (k) {
       objCounts[k] = 0;
       document.getElementById('cnt-' + k).textContent = 0;
     });
@@ -735,9 +1004,9 @@ window.onload = function () {
     inventoryCounts[kind] = Math.max(0, inventoryCounts[kind] + delta);
     if (gameState === 'LEVEL_ACTIVE' && delta > 0) {
       levelCollected[kind]++;
-      silkResource += (SCORE_MULT[kind] || 1) * delta;
+      silkCount += (typeof SCORE_MULT[kind] === 'number' ? SCORE_MULT[kind] : 1) * delta;
       refreshSilkHUD();
-      refreshWaveHUD(kind, gameState, getCfg, currentLevel, levelCollected);
+      refreshWaveHUD(kind, gameState, getLevelCfgAt, currentLevelIndex, levelCollected);
       pendingLevelCheck = true;
     } else {
       var el = document.getElementById('inv-' + kind + '-count');
@@ -808,7 +1077,7 @@ window.onload = function () {
   }
 
   function tryCollectObjects() {
-    if (wrappingTarget !== null) return;
+    if (wrappingTarget !== null || poopStunTimer > 0) return;
     var priorityObj = getActivePriorityObject();
     if (userPriorityTarget) {
       if (userPriorityTarget.type === 'point') return;
@@ -819,6 +1088,7 @@ window.onload = function () {
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
       if (priorityObj && obj !== priorityObj) continue;
+      if (obj.playerDragging) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
       if (circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
@@ -844,7 +1114,7 @@ window.onload = function () {
       if (obj.state === 'falling') {
         var prevX = p.pos.x, prevY = p.pos.y;
 
-        if (obj.kind === 'boulder') {
+        if (obj.kind === 'boulder' || obj.kind === 'poop') {
           obj.segT += 0.22 * _currentTimeScale;
           var bGrav = obj.grav * 2.6 * _currentTimeScale;
           p.pos.y += bGrav;
@@ -974,13 +1244,25 @@ window.onload = function () {
           if (obj.kind === 'boulder') obj.wobbleAmp = 0.10;
           if (obj.kind === 'bug') obj.wobbleAmp = 0.28;
           if (obj.kind === 'drop') obj.wobbleAmp = 0.04;
+          if (obj.kind === 'poop') obj.wobbleAmp = 0.10;
         }
 
       } else if (obj.state === 'stuck') {
+        if (obj.playerDragging && _draggingPoop && _draggingPoop.obj === obj) {
+          p.pos.x = _draggingPoop.targetX;
+          p.pos.y = _draggingPoop.targetY;
+          p.lastPos.x = p.pos.x;
+          p.lastPos.y = p.pos.y;
+          continue;
+        }
         obj.stayTimer++;
-        var sagRate = obj.kind === 'boulder' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
+        var sagRate = obj.kind === 'boulder' || obj.kind === 'poop' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
         p.pos.y += sagRate;
         if (obj.kind === 'boulder') {
+          obj.segT += 0.13;
+          p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
+          p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
+        } else if (obj.kind === 'poop') {
           obj.segT += 0.13;
           p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
           p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
@@ -993,7 +1275,7 @@ window.onload = function () {
           obj.angleVel *= 0.98;
           obj.angle += obj.angleVel;
         }
-        if (obj.kind !== 'drop') {
+        if (obj.kind !== 'drop' && obj.kind !== 'poop') {
           var ramp = Math.max(0, obj.stayFrames - 72);
           if (obj.stayTimer > ramp) {
             var progress = (obj.stayTimer - ramp) / Math.max(1, obj.stayFrames - ramp);
@@ -1024,14 +1306,27 @@ window.onload = function () {
           obj.vx += Math.sin(obj.angle) * obj.glideForce;
           obj.vy += obj.grav;
           obj.vx *= obj.drag; obj.vy *= obj.drag;
+          var maxSpd = obj.kind === 'poop' ? 6.2 : 0.8;
           var spd2 = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
-          if (spd2 > 0.8) { obj.vx = obj.vx / spd2 * 0.8; obj.vy = obj.vy / spd2 * 0.8; }
+          if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
           p.pos.x += obj.vx; p.pos.y += obj.vy;
+        } else if (obj.kind === 'poop') {
+          obj.vx *= obj.def.peelDrag;
+          obj.vy *= obj.def.peelDrag;
+          obj.vy += obj.grav * 0.08;
+          p.pos.x += obj.vx;
+          p.pos.y += obj.vy;
         } else {
           p.pos.y += obj.grav;
         }
-        obj.alpha = Math.max(0, obj.alpha - 0.016);
-        if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
+        if (obj.kind === 'poop') {
+          if (p.pos.y > H + 80 || p.pos.x < -90 || p.pos.x > W + 90) {
+            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
+          }
+        } else {
+          obj.alpha = Math.max(0, obj.alpha - 0.016);
+          if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
+        }
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
@@ -1040,6 +1335,10 @@ window.onload = function () {
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
           if (autoPlay) _autoPlayPause = 24; /* 0.4秒停顿 */
+          if (obj.kind === 'poop') {
+            handlePoopCapture(obj);
+            continue;
+          }
           audioEngine.playCollectSound(obj.kind);
           playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT);
           /* 放射粒子爆发 */
@@ -1343,10 +1642,12 @@ window.onload = function () {
       return;
     }
 
+    var isPoopStunned = poopStunTimer > 0;
+
     updateSamplePoints(samplePoints);
 
     /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
-    if (!wrappingTarget && userPriorityTarget) {
+    if (!isPoopStunned && !wrappingTarget && userPriorityTarget) {
       if (userPriorityTarget.type === 'object') {
         if (!getActivePriorityObject()) {
           clearPriorityTarget();
@@ -1369,7 +1670,7 @@ window.onload = function () {
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
     if (_autoPlayPause > 0) { _autoPlayPause--; }
-    if (autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
+    if (!isPoopStunned && autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
       } else {
@@ -1398,7 +1699,9 @@ window.onload = function () {
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
     var moving = false; moveDir = null;
-    if (isWrapping) {
+    if (isPoopStunned) {
+      target = null;
+    } else if (isWrapping) {
       target = null;
     } else if (target) {
       var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
@@ -1444,7 +1747,7 @@ window.onload = function () {
       var fs = footState[fi];
       if (fs.cooldown > 0) fs.cooldown--;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED * (_isBulletTime ? 0 : 1));
+        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : 1));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
@@ -1462,7 +1765,7 @@ window.onload = function () {
         var drift2 = fs.current.dist2(spider.thorax.pos);
         var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
         var ps = partner && partner.stepping;
-        if (!ps) {
+        if (!ps && !isPoopStunned) {
           if (target && drift2 > STEP_THRESH * STEP_THRESH) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
           else if (!target && drift2 > REST_THRESH * REST_THRESH) triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
         }
@@ -1488,6 +1791,7 @@ window.onload = function () {
       updateLevelTimer();
       updateLevelSpawner();
       checkWebIntegrity();
+      if (poopStunTimer > 0) poopStunTimer--;
       tryCollectObjects();
       updateThrownObjects();
       if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
@@ -1505,16 +1809,33 @@ window.onload = function () {
       var _ctx = sim.ctx;
       for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
         var _bp = _burstParticles[_bpi];
-        _bp.x += _bp.vx; _bp.y += _bp.vy;
-        _bp.vx *= 0.92; _bp.vy *= 0.92;
-        _bp.life -= _bp.decay;
+        var _speedScale = _bp.speedScale || 1;
+        _bp.x += _bp.vx * _speedScale; _bp.y += _bp.vy * _speedScale;
+        var _drag = _bp.drag || 0.92;
+        _bp.vx *= _drag;
+        _bp.vy *= _drag;
+        if (_bp.smoke) {
+          _bp.r += (_bp.grow || 0.1) * _speedScale;
+        }
+        _bp.life -= _bp.decay * _speedScale;
         if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
         _ctx.save();
-        _ctx.globalAlpha = _bp.life;
+        _ctx.globalAlpha = _bp.smoke ? _bp.life * (_bp.occlude || 0.82) : _bp.life;
+        if (_bp.smoke) {
+          _ctx.shadowBlur = 30;
+          _ctx.shadowColor = _bp.color;
+        }
         _ctx.beginPath();
-        _ctx.arc(_bp.x, _bp.y, _bp.r * _bp.life, 0, 2 * Math.PI);
+        _ctx.arc(_bp.x, _bp.y, _bp.smoke ? _bp.r : _bp.r * _bp.life, 0, 2 * Math.PI);
         _ctx.fillStyle = _bp.color;
         _ctx.fill();
+        if (_bp.smoke) {
+          _ctx.globalAlpha *= 0.52;
+          _ctx.beginPath();
+          _ctx.arc(_bp.x + _bp.r * 0.08, _bp.y - _bp.r * 0.05, _bp.r * 0.68, 0, 2 * Math.PI);
+          _ctx.fillStyle = '#080606';
+          _ctx.fill();
+        }
         _ctx.restore();
       }
     }

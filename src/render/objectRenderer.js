@@ -71,6 +71,47 @@ function getAnimatedWormImage(obj) {
   return seq[Math.floor(obj.animT / 18) % seq.length];
 }
 
+function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
+  var pulse = obj.state === 'stuck'
+    ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
+    : 0.22;
+  var r = def.r;
+  if (obj.cA && obj.cB && (obj.state === 'stuck' || obj.playerDragging)) {
+    var strain = obj.playerDragging ? (obj.dragStrain || 0) : 0;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = obj.playerDragging
+      ? 'rgba(245,232,205,' + Math.min(0.96, 0.58 + strain * 0.22).toFixed(2) + ')'
+      : 'rgba(25,18,14,0.55)';
+    ctx.lineWidth = obj.playerDragging ? (7.0 + strain * 4.6) : 3.2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(obj.cA.b.pos.x - obj.particle.pos.x, obj.cA.b.pos.y - obj.particle.pos.y);
+    ctx.moveTo(0, 0);
+    ctx.lineTo(obj.cB.b.pos.x - obj.particle.pos.x, obj.cB.b.pos.y - obj.particle.pos.y);
+    ctx.stroke();
+    if (obj.playerDragging) {
+      ctx.globalAlpha = 0.34 + Math.min(0.42, strain * 0.22);
+      ctx.lineWidth += 3.6;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.beginPath();
+  ctx.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
+  ctx.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
+  ctx.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
+  ctx.fillStyle = 'rgba(' + Math.round(18 + pulse * 30) + ',' + Math.round(13 + pulse * 18) + ',' + Math.round(10 + pulse * 14) + ',0.96)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.12, r * 0.1, r * 1.05, r * 1.3, 0.08, 0, 2 * Math.PI);
+  ctx.strokeStyle = obj.playerDragging ? 'rgba(255,242,220,0.78)' : 'rgba(55,40,34,0.35)';
+  ctx.lineWidth = obj.playerDragging ? 3.8 : 1.6;
+  ctx.stroke();
+  applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.9);
+}
+
 /**
  * 投掷物体绘制
  */
@@ -224,6 +265,17 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         ctx.fillStyle = lg; ctx.fill();
         applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.8);
       }
+      ctx.restore();
+    }
+
+    /* ── 大便 ── */
+    else if (obj.kind === 'poop') {
+      ctx.save(); ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
+      ctx.rotate(obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6);
+      if (_isWrapping) { ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(30,20,18,0.9)'; }
+      drawPoopBlob(ctx, obj, def, applyPriorityFlashRect);
+      if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       ctx.restore();
     }
 

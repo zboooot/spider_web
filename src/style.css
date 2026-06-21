@@ -117,7 +117,7 @@ h1{
 .wave-bar{
   display:none !important;
 }
-.score-bar{
+.phase-bar{
   position:absolute;
   bottom:16px;
   right:16px;
@@ -319,7 +319,7 @@ h1{
   60% {width:70px;height:70px;background:rgba(255,255,255,0.3);opacity:0.7;}
   100%{width:100px;height:100px;background:rgba(255,255,255,0);opacity:0;}
 }
-.collect-score-pop{
+.collect-silk-pop{
   position:absolute;
   pointer-events:none;
   z-index:8;
@@ -330,7 +330,7 @@ h1{
   text-shadow:0 2px 6px rgba(0,0,0,0.7);
   transform:translate(-50%,-50%);
 }
-@keyframes collectScoreAnim{
+@keyframes collectSilkAnim{
   0%  {opacity:1;transform:translate(-50%,-50%) scale(1.4);}
   40% {opacity:1;transform:translate(-50%,-120%) scale(1.1);}
   100%{opacity:0;transform:translate(-50%,-220%) scale(0.8);}

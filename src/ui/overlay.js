@@ -46,7 +46,7 @@ export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel
 }
 
 /**
- * 收集特效：闪白圆 + 跳字分数
+ * 收集特效：闪白圆 + 跳字网丝数量
  */
 export function playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT) {
   var p = obj.particle.pos;
@@ -63,13 +63,13 @@ export function playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SC
   collectLayer.appendChild(flash);
   setTimeout(function () { if (flash.parentNode) flash.parentNode.removeChild(flash); }, 400);
 
-  var pts = SCORE_MULT[obj.kind] || 1;
+  var silkGain = typeof SCORE_MULT[obj.kind] === 'number' ? SCORE_MULT[obj.kind] : 1;
   var pop = document.createElement('div');
-  pop.className = 'collect-score-pop';
-  pop.textContent = '+' + pts;
+  pop.className = 'collect-silk-pop';
+  pop.textContent = '+' + silkGain;
   pop.style.left = sx + 'px';
   pop.style.top = sy + 'px';
-  pop.style.animation = 'collectScoreAnim 0.55s ease-out forwards';
+  pop.style.animation = 'collectSilkAnim 0.55s ease-out forwards';
   collectLayer.appendChild(pop);
   setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 600);
 }

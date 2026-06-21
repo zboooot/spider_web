@@ -7,9 +7,9 @@ import { audioEngine } from '../audio/audioEngine.js';
 /**
  * 获取物体定义参数
  */
-export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
+export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
   var waveCfg = (gameState === 'LEVEL_ACTIVE' || gameState === 'LEVEL_INTRO')
-    ? getLevelCfgFn(currentLevel) : null;
+    ? getWaveCfgFn(currentLevelIndex, currentWaveIndex) : null;
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
     stayFrames: Math.round((waveCfg ? waveCfg.catR : P.caterpillarReleaseSec) * 60),
@@ -19,6 +19,16 @@ export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
     r: 9, collectRadius: 5, weight: P.flyWeight,
     stayFrames: Math.round((waveCfg ? waveCfg.flyR : P.flyReleaseSec) * 60),
     gravity: 0, wrapDur: 80
+  };
+  if (kind === 'poop') return {
+    r: 20, collectRadius: 17, weight: P.caterpillarWeight,
+    stayFrames: Infinity,
+    gravity: P.caterpillarGravity, wrapDur: 120,
+    peelThreshold: 68,
+    peelHoldFrames: 60,
+    peelDrag: 0.985,
+    dragResistance: 0.88,
+    dragFollow: 1.0
   };
   return {
     r: 14, collectRadius: 12, weight: P.leafWeight,
@@ -30,8 +40,8 @@ export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
 /**
  * 投掷物体构造函数
  */
-export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentLevel) {
-  var def = getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel);
+export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
+  var def = getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex);
   this.kind = kind; this.def = def;
   this.state = 'falling';
   this.alpha = 1;
@@ -69,10 +79,16 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.collectCanvas = null;
   this.wrapT = 0;
   this.wrapDur = 0;
+  this.playerDragging = false;
+  this.dragTargetX = 0;
+  this.dragTargetY = 0;
+  this.dragStrain = 0;
+  this.peelVx = 0;
+  this.peelVy = 0;
 
   var sx, sy, svx = 0, svy = 0;
 
-  if (kind === 'boulder') {
+  if (kind === 'boulder' || kind === 'poop') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
     this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
@@ -239,6 +255,24 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame)
       : this.def.weight * 0.45;
     p.lastPos.y = p.pos.y - (currentVy + releaseKick);
   }
+};
+
+ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
+  var p = this.particle;
+  clearObjectConstraints(this);
+  this.stuckOnConstraint = null;
+  this.playerDragging = false;
+  this.dragStrain = 0;
+  this.state = 'falling2';
+  this.alpha = 1;
+  var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
+  var speed = 6.8;
+  this.peelVx = (dragDx / len) * speed;
+  this.peelVy = (dragDy / len) * speed;
+  this.vx = this.peelVx;
+  this.vy = this.peelVy;
+  p.lastPos.x = p.pos.x - this.peelVx;
+  p.lastPos.y = p.pos.y - this.peelVy;
 };
 
 ThrownObj.prototype.destroy = function (sim) {
