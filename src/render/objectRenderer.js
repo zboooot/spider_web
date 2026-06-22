@@ -1,36 +1,28 @@
-import flyUrl from '../assets/fly.png';
-import fly01Url from '../assets/fly01.png';
-import fly02Url from '../assets/fly02.png';
-import wormUrl from '../assets/worm.png';
-import worm00Url from '../assets/worm00.png';
-import worm01Url from '../assets/worm01.png';
-import worm02Url from '../assets/worm02.png';
-import leafUrl from '../assets/leaf.png';
 import { statsDc } from '../debug/renderStats.js';
 
 var flyImg = new Image();
-flyImg.src = flyUrl;
+flyImg.src = '/src/assets/fly.png';
 
 var fly01Img = new Image();
-fly01Img.src = fly01Url;
+fly01Img.src = '/src/assets/fly01.png';
 
 var fly02Img = new Image();
-fly02Img.src = fly02Url;
+fly02Img.src = '/src/assets/fly02.png';
 
 var wormImg = new Image();
-wormImg.src = wormUrl;
+wormImg.src = '/src/assets/worm.png';
 
 var worm00Img = new Image();
-worm00Img.src = worm00Url;
+worm00Img.src = '/src/assets/worm00.png';
 
 var worm01Img = new Image();
-worm01Img.src = worm01Url;
+worm01Img.src = '/src/assets/worm01.png';
 
 var worm02Img = new Image();
-worm02Img.src = worm02Url;
+worm02Img.src = '/src/assets/worm02.png';
 
 var leafImg = new Image();
-leafImg.src = leafUrl;
+leafImg.src = '/src/assets/leaf.png';
 
 var _priorityFlashCanvas = document.createElement('canvas');
 var _priorityFlashCtx = _priorityFlashCanvas.getContext('2d');

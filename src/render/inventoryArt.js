@@ -1,15 +1,11 @@
-import flyUrl from '../assets/fly.png';
-import wormUrl from '../assets/worm.png';
-import leafUrl from '../assets/leaf.png';
-
 var flyImg = new Image();
-flyImg.src = flyUrl;
+flyImg.src = '/src/assets/fly.png';
 
 var wormImg = new Image();
-wormImg.src = wormUrl;
+wormImg.src = '/src/assets/worm.png';
 
 var leafImg = new Image();
-leafImg.src = leafUrl;
+leafImg.src = '/src/assets/leaf.png';
 
 /**
  * HUD 物品栏图标绘制

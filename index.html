@@ -5,6 +5,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
 <h1>Verlet Spiderweb &mdash; 4 Legs &nbsp;|&nbsp; Panel V3.1</h1>
@@ -31,11 +32,11 @@
       <label>Web Stiffness <span id="lbl-webStiff">0.6</span></label>
       <input type="range" id="sl-webStiff" min="0.1" max="1.0" step="0.05" value="0.6">
     </div>
-    <button class="btn btn-secondary" id="btn-rebuild">&#x1f578; Rebuild Web</button>
+    <button type="button" class="btn btn-secondary" id="btn-rebuild">&#x1f578; Rebuild Web</button>
 
     <div class="divider"></div>
     <div class="group-title">Spider Motion</div>
-    <button class="btn btn-secondary" id="btn-autoplay">&#x1f916; Auto Play: ON</button>
+    <button type="button" class="btn btn-secondary" id="btn-autoplay">&#x1f916; Auto Play: ON</button>
     <div class="row">
       <label>Move Speed <span id="lbl-moveSpeed">1.8</span></label>
       <input type="range" id="sl-moveSpeed" min="0.5" max="18" step="0.5" value="1.8">
@@ -66,11 +67,11 @@
 
     <div class="divider"></div>
     <div class="group-title">Debug</div>
-    <button class="btn btn-secondary" id="btn-stats-toggle">&#x1f4ca; 隐藏性能面板</button>
+    <button type="button" class="btn btn-secondary" id="btn-stats-toggle">&#x1f4ca; 隐藏性能面板</button>
 
     <div class="divider"></div>
-    <button class="btn btn-secondary" id="btn-save">&#x1f4be; Save Settings</button>
-    <button class="btn btn-danger"    id="btn-reset">&#x1f504; Reset Defaults</button>
+    <button type="button" class="btn btn-secondary" id="btn-save">&#x1f4be; Save Settings</button>
+    <button type="button" class="btn btn-danger"    id="btn-reset">&#x1f504; Reset Defaults</button>
     <div class="save-hint" id="save-hint"></div>
 
     <div class="divider"></div>
@@ -112,7 +113,7 @@
       <label>Volume <span id="lbl-bgVol">50%</span></label>
       <input type="range" id="sl-bgVol" min="0" max="100" step="1" value="50">
     </div>
-    <button class="btn btn-secondary" id="bg-bgm-toggle">🔊 Music Toggle</button>
+    <button type="button" class="btn btn-secondary" id="bg-bgm-toggle">🔊 Music Toggle</button>
   </div>
 
   <!-- CENTER STAGE -->
@@ -182,20 +183,20 @@
     <div class="hint-text">Click a button to drop an object. It sticks to the web, then breaks free automatically.</div>
 
     <div class="divider"></div>
-    <button class="btn btn-launch" id="btn-boulder">&#x1f41b; Caterpillar <span class="badge" id="cnt-boulder">0</span></button>
+    <button type="button" class="btn btn-launch" id="btn-boulder">&#x1f41b; Caterpillar <span class="badge" id="cnt-boulder">0</span></button>
     <div class="hint-text">Drops straight down fast. Breaks free after about 3 seconds.</div>
 
-    <button class="btn btn-launch" id="btn-bug">&#x1fab0; Fly <span class="badge" id="cnt-bug">0</span></button>
+    <button type="button" class="btn btn-launch" id="btn-bug">&#x1fab0; Fly <span class="badge" id="cnt-bug">0</span></button>
     <div class="hint-text">Flies in from all directions. Breaks free after about 2 seconds.</div>
 
-    <button class="btn btn-launch" id="btn-drop">&#x1f343; Leaf <span class="badge" id="cnt-drop">0</span></button>
+    <button type="button" class="btn btn-launch" id="btn-drop">&#x1f343; Leaf <span class="badge" id="cnt-drop">0</span></button>
     <div class="hint-text">Drifts down softly. Stays permanently and slows the spider.</div>
 
-    <button class="btn btn-launch" id="btn-poop">&#x1f4a9; Poop <span class="badge" id="cnt-poop">0</span></button>
+    <button type="button" class="btn btn-launch" id="btn-poop">&#x1f4a9; Poop <span class="badge" id="cnt-poop">0</span></button>
     <div class="hint-text">Drops heavy like a caterpillar. Gives no silk, stuns the spider, and can be peeled off by dragging.</div>
 
     <div class="divider"></div>
-    <button class="btn btn-danger" id="btn-clearObj">&#x2715; Clear All</button>
+    <button type="button" class="btn btn-danger" id="btn-clearObj">&#x2715; Clear All</button>
 
     <div class="divider"></div>
     <div class="group-title">Stick Rules</div>
