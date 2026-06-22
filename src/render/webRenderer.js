@@ -235,6 +235,7 @@ function _drawBrokenEnds(ctx, getBrokenEnds) {
   ctx.lineWidth = 1.2;
   for (var bi = 0; bi < brokenEnds.length; bi++) {
     var bp = brokenEnds[bi];
+    if (!bp.__isStub) continue; /* 只给 stub 画绿圈 */
     ctx.beginPath();
     ctx.arc(bp.pos.x, bp.pos.y, 8.5, 0, 2 * Math.PI);
     ctx.stroke();
@@ -246,12 +247,25 @@ function _drawBrokenEnds(ctx, getBrokenEnds) {
 /**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, getBrokenEnds) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, getBrokenEnds, getSnapTarget) {
   rebuildWebRenderTopology(spiderweb);
 
   spiderweb.drawParticles = function (ctx, comp) {
     _drawWebParticles(ctx, comp);
     _drawBrokenEnds(ctx, getBrokenEnds);
+
+    /* ── 吸附目标高亮 ── */
+    var snapPt = getSnapTarget ? getSnapTarget() : null;
+    if (snapPt) {
+      var snapAlpha = 0.5 + 0.5 * Math.abs(Math.sin(_brokenEndFrame * 0.15));
+      ctx.save();
+      ctx.strokeStyle = 'rgba(100,200,255,' + snapAlpha.toFixed(2) + ')';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.arc(snapPt.pos.x, snapPt.pos.y, 12, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.restore();
+    }
   };
 
   spiderweb.drawConstraints = function (ctx, comp) {

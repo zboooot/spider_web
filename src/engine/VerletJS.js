@@ -1,6 +1,6 @@
 import { Vec2 } from './Vec2.js';
 import { Composite } from './Composite.js';
-import { PinConstraint } from './constraints.js';
+import { PinConstraint, DistanceConstraint } from './constraints.js';
 import { statsDc } from '../debug/renderStats.js';
 
 /**
@@ -14,6 +14,10 @@ export function VerletJS(width, height, canvas) {
   this.mouse = new Vec2(0, 0);
   this.mouseDown = false;
   this.draggedEntity = null;
+  this.snapTarget = null;       /* 当前吸附的存活节点 */
+  this.snapRadius = 28;         /* 吸附触发距离（由 P.stubSnapRadius 覆盖） */
+  this.stubReachRadius = 200;   /* stub 拖拽最大范围（由 P.stubReachRadius 覆盖） */
+  this.onRepairDrop = null;     /* 回调：function(stub, snapTarget) */
   this.selectionRadius = 20;
   this.highlightColor = "#4f545c";
 
@@ -37,7 +41,11 @@ export function VerletJS(width, height, canvas) {
 
   this.canvas.onmouseup = function () {
     _this.mouseDown = false;
+    if (_this.draggedEntity && _this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+      _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+    }
     _this.draggedEntity = null;
+    _this.snapTarget = null;
   };
 
   this.canvas.onmousemove = function (e) {
@@ -59,7 +67,11 @@ export function VerletJS(width, height, canvas) {
   this.canvas.addEventListener('touchend', function (e) {
     e.preventDefault();
     _this.mouseDown = false;
+    if (_this.draggedEntity && _this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+      _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+    }
     _this.draggedEntity = null;
+    _this.snapTarget = null;
   }, { passive: false });
 
   this.canvas.addEventListener('touchmove', function (e) {
@@ -114,17 +126,75 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
       p.pos.y += gy + velY;
     }
   }
-  if (this.draggedEntity) this.draggedEntity.pos.mutableSet(this.mouse);
+  if (this.draggedEntity) {
+    this.draggedEntity.pos.mutableSet(this.mouse);
+    /* 断线头拖拽时：检测附近存活网节点，吸附 */
+    if (this.draggedEntity.__isWebParticle && this.draggedEntity.__isStub) {
+      var c, i;
+      /* 找到 stub 的锚点，吸附时排除它 */
+      var stubAnchorPt = null;
+      for (c in this.composites) {
+        if (!this.composites[c].__isWeb) continue;
+        var acs = this.composites[c].constraints;
+        for (i = 0; i < acs.length; i++) {
+          if (!acs[i].__isStubAnchor) continue;
+          if (acs[i].a === this.draggedEntity) { stubAnchorPt = acs[i].b; break; }
+          if (acs[i].b === this.draggedEntity) { stubAnchorPt = acs[i].a; break; }
+        }
+        if (stubAnchorPt) break;
+      }
+      /* 限制拖拽范围：以锚点为圆心 */
+      var reachR = this.stubReachRadius;
+      var reachR2 = reachR * reachR;
+      if (stubAnchorPt) {
+        var adx = this.draggedEntity.pos.x - stubAnchorPt.pos.x;
+        var ady = this.draggedEntity.pos.y - stubAnchorPt.pos.y;
+        var ad2 = adx * adx + ady * ady;
+        if (ad2 > reachR2) {
+          var ad = Math.sqrt(ad2);
+          this.draggedEntity.pos.x = stubAnchorPt.pos.x + (adx / ad) * reachR;
+          this.draggedEntity.pos.y = stubAnchorPt.pos.y + (ady / ad) * reachR;
+        }
+      }
+
+      var snap = null, snapD2 = this.snapRadius * this.snapRadius;
+      for (c in this.composites) {
+        if (!this.composites[c].__isWeb) continue;
+        var wps = this.composites[c].particles;
+        var wcs = this.composites[c].constraints;
+        for (i = 0; i < wps.length; i++) {
+          var wp = wps[i];
+          if (wp === this.draggedEntity) continue;
+          if (wp === stubAnchorPt) continue;
+          if (stubAnchorPt && wp.pos.dist2(stubAnchorPt.pos) > reachR2) continue;
+          var wConn = 0;
+          for (var wi = 0; wi < wcs.length; wi++) {
+            if (!(wcs[wi] instanceof DistanceConstraint)) continue;
+            if (wcs[wi].__isStubAnchor) continue;
+            if (wcs[wi].a === wp || wcs[wi].b === wp) wConn++;
+          }
+          if (wConn < 2) continue;
+          var wd2 = wp.pos.dist2(this.draggedEntity.pos);
+          if (wd2 < snapD2) { snapD2 = wd2; snap = wp; }
+        }
+      }
+      this.snapTarget = snap;
+      if (snap) this.draggedEntity.pos.mutableSet(snap.pos);
+    }
+  }
 };
 
 VerletJS.prototype._relaxConstraints = function (iters, aliveCheck, sc) {
   var i, j, c;
   if (sc == null) sc = 1 / iters;
+  var _dragging = this.draggedEntity;
   for (c in this.composites) {
     var cs = this.composites[c].constraints;
     for (i = 0; i < iters; ++i) {
       for (j in cs) {
         var con = cs[j];
+        /* 拖拽 stub 时跳过它的锚定边，避免被拉回去 */
+        if (_dragging && con.__isStubAnchor && (con.a === _dragging || con.b === _dragging)) continue;
         if (!_constraintAlive(con, aliveCheck)) continue;
         con.relax(sc);
       }
@@ -246,6 +316,7 @@ VerletJS.prototype.nearestEntity = function () {
       if (csN[i].a === entity || csN[i].b === entity) connCount++;
     }
     if (connCount >= 2) return null;
+    if (!entity.__isStub) return null; /* 只有 stub 可拖拽 */
     entity.__isWebParticle = true; /* 标记断线头粒子，供子弹时间检测 */
   } else {
     entity.__isWebParticle = false;

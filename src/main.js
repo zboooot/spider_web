@@ -1,17 +1,19 @@
 /* Version: V3.2 — Sylvan Background + Procedural BGM */
 
 import { Vec2 } from './engine/Vec2.js';
+import { Particle } from './engine/Particle.js';
 import { DistanceConstraint } from './engine/constraints.js';
 import { Composite } from './engine/Composite.js';
 import { VerletJS } from './engine/VerletJS.js';
 
 import { createSpiderweb } from './entities/spiderweb.js';
 import { createSpider } from './entities/spider.js';
-import { ThrownObj, clearObjectConstraints } from './entities/ThrownObj.js';
+import { ThrownObj, clearObjectConstraints, collapseChain } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
-  liftFoot, landFoot, triggerStep
+  liftFoot, landFoot, triggerStep,
+  getNextPid
 } from './systems/footSystem.js';
 
 import {
@@ -92,7 +94,8 @@ window.onload = function () {
     caterpillarReleaseSec: 3, flyReleaseSec: 2, leafReleaseSec: 0,
     bgTheme: 0, bgBlur: 25, bgWind: 1.0, bgRay: 100,
     bgDarken: 15, bgPurity: 140, bgYOffset: 13,
-    bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3
+    bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3,
+    stubReachRadius: 200, stubSnapRadius: 28, repairPatch: 1
   };
   var P = Object.assign({}, DEFAULTS);
   var USE_LEGACY_COLLISION = /(?:^|[?&])legacy=1/.test(location.search)
@@ -130,6 +133,8 @@ window.onload = function () {
 
   var sim = new VerletJS(W, H, canvas);
   sim.gravity = new Vec2(0, 0);
+  sim.stubReachRadius = P.stubReachRadius;
+  sim.snapRadius = P.stubSnapRadius;
 
   /* ── 拖拽弹性视差交互状态机 ── */
   var _dragStart = { x: 0, y: 0 };
@@ -232,7 +237,7 @@ window.onload = function () {
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = USE_LEGACY_COLLISION ? getWebSamplePoints(spiderweb, 4) : [];
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; });
   }
 
   function buildSpider() {
@@ -326,6 +331,8 @@ window.onload = function () {
   var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
+  var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
+  var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
   var poopStunTimer = 0;
@@ -736,6 +743,7 @@ window.onload = function () {
 
   function startGame() {
     wrappingTarget = null;
+    repairQueue = [];
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
@@ -762,6 +770,7 @@ window.onload = function () {
 
   function startLevel(n) {
     wrappingTarget = null;
+    repairQueue = [];
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
@@ -1006,6 +1015,243 @@ window.onload = function () {
       _applyWebCover(webRescanCover);
     }
   }
+
+  /* ── 补网修复 ── */
+
+  /**
+   * BFS 找 A→B 的最短路径（沿网线，排除锚定边）
+   * 返回路径节点数组 [A, ..., B]，找不到返回 null
+   */
+  function bfsPath(A, B, spiderweb) {
+    if (A === B) return [A];
+
+    /* 建邻接表 */
+    var adj = {};
+    for (var i = 0; i < spiderweb.constraints.length; i++) {
+      var c = spiderweb.constraints[i];
+      if (!(c instanceof DistanceConstraint)) continue;
+      if (c.__isStubAnchor) continue;
+      var idA = c.a.__pid, idB = c.b.__pid;
+      if (!idA || !idB) continue;
+      if (!adj[idA]) adj[idA] = [];
+      if (!adj[idB]) adj[idB] = [];
+      adj[idA].push({ node: c.b, pid: idB });
+      adj[idB].push({ node: c.a, pid: idA });
+    }
+
+    var startPid = A.__pid, endPid = B.__pid;
+    if (!startPid || !endPid) return null;
+    if (!adj[startPid]) return null;
+
+    var visited = {};
+    var prev = {};    /* pid → { node, prevPid } */
+    var queue = [{ node: A, pid: startPid }];
+    visited[startPid] = true;
+
+    while (queue.length > 0) {
+      var cur = queue.shift();
+      var neighbors = adj[cur.pid] || [];
+      for (var ni = 0; ni < neighbors.length; ni++) {
+        var nb = neighbors[ni];
+        if (visited[nb.pid]) continue;
+        visited[nb.pid] = true;
+        prev[nb.pid] = { node: cur.node, pid: cur.pid };
+        if (nb.pid === endPid) {
+          /* 回溯路径 */
+          var path = [B];
+          var trace = endPid;
+          while (prev[trace]) {
+            path.push(prev[trace].node);
+            trace = prev[trace].pid;
+          }
+          path.reverse();
+          return path;
+        }
+        queue.push(nb);
+      }
+    }
+    return null; /* 不连通 */
+  }
+
+  /**
+   * 在环内部打补丁：根据环的大小创建新粒子和边
+   * ring: 环上的节点数组（有序，首尾通过新边 A—B 闭合）
+   */
+  var REPAIR_TENSOR = 0.3; /* 与原网 spiderweb.js 的 tensor 保持一致 */
+
+  function addRepairEdge(a, b, spiderweb) {
+    var d = a.pos.dist(b.pos) * REPAIR_TENSOR;
+    spiderweb.constraints.push(new DistanceConstraint(a, b, 0.6, d));
+  }
+
+  function patchHole(ring, spiderweb) {
+    var len = ring.length;
+    /* 环太小不需要补丁 */
+    if (len <= 4) return;
+
+    /* 计算环的几何中心 */
+    var cx = 0, cy = 0;
+    for (var i = 0; i < len; i++) {
+      cx += ring[i].pos.x;
+      cy += ring[i].pos.y;
+    }
+    cx /= len;
+    cy /= len;
+
+    /* 根据环大小决定补几个点 */
+    var patchCount;
+    if (len <= 6) patchCount = 1;       /* 5-6 节点：1个中心点 */
+    else if (len <= 9) patchCount = 2;  /* 7-9 节点：2个点 */
+    else patchCount = 3;                /* 10+ 节点：3个点 */
+
+    var newPts = [];
+    if (patchCount === 1) {
+      /* 单点放中心 */
+      newPts.push({ x: cx, y: cy });
+    } else {
+      /* 多点沿中心均匀分布 */
+      var spreadR = 0;
+      for (var si = 0; si < len; si++) {
+        var sdx = ring[si].pos.x - cx, sdy = ring[si].pos.y - cy;
+        spreadR += Math.sqrt(sdx * sdx + sdy * sdy);
+      }
+      spreadR = (spreadR / len) * 0.4; /* 环内半径的 40% */
+      for (var pi = 0; pi < patchCount; pi++) {
+        var ang = (pi / patchCount) * Math.PI * 2;
+        newPts.push({
+          x: cx + Math.cos(ang) * spreadR,
+          y: cy + Math.sin(ang) * spreadR
+        });
+      }
+    }
+
+    /* 创建新粒子 */
+    var newParticles = [];
+    for (var ni = 0; ni < newPts.length; ni++) {
+      var np = new Particle(new Vec2(newPts[ni].x, newPts[ni].y));
+      np.__pid = getNextPid();
+      spiderweb.particles.push(np);
+      newParticles.push(np);
+    }
+
+    /* 连接新粒子到环上的节点 */
+    var ringA = ring[0], ringB = ring[len - 1];
+    var midNode = ring[Math.floor(len / 2)];
+    if (patchCount === 1) {
+      /* 补1个点：连 A、B、路径中间点 */
+      var mp1 = newParticles[0];
+      addRepairEdge(mp1, ringA, spiderweb);
+      addRepairEdge(mp1, ringB, spiderweb);
+      addRepairEdge(mp1, midNode, spiderweb);
+    } else if (patchCount === 2) {
+      /* 补2个点 P Q */
+      var P = newParticles[0], Q = newParticles[1];
+      var idxOneThird = Math.max(1, Math.floor(len / 3));
+      var idxTwoThird = Math.min(len - 2, Math.floor(len * 2 / 3));
+      var nodeNearA = ring[idxOneThird];
+      var nodeNearB = ring[idxTwoThird];
+      /* P 连 A、Q、路径1/3处 */
+      addRepairEdge(P, ringA, spiderweb);
+      addRepairEdge(P, Q, spiderweb);
+      addRepairEdge(P, nodeNearA, spiderweb);
+      /* Q 连 B、路径2/3处（P—Q 已建） */
+      addRepairEdge(Q, ringB, spiderweb);
+      addRepairEdge(Q, nodeNearB, spiderweb);
+    } else {
+      /* 补3个点 P Q R */
+      var P3 = newParticles[0], Q3 = newParticles[1], R3 = newParticles[2];
+      var idxQuarter = Math.max(1, Math.floor(len / 4));
+      var idxMid = Math.floor(len / 2);
+      var idxThreeQuarter = Math.min(len - 2, Math.floor(len * 3 / 4));
+      var nodeQuarterA = ring[idxQuarter];
+      var nodeMid3 = ring[idxMid];
+      var nodeQuarterB = ring[idxThreeQuarter];
+      /* P 连 A、Q、路径1/4处 */
+      addRepairEdge(P3, ringA, spiderweb);
+      addRepairEdge(P3, Q3, spiderweb);
+      addRepairEdge(P3, nodeQuarterA, spiderweb);
+      /* Q 连 R、路径中间点（P—Q 已建） */
+      addRepairEdge(Q3, R3, spiderweb);
+      addRepairEdge(Q3, nodeMid3, spiderweb);
+      /* R 连 B、路径3/4处（Q—R 已建） */
+      addRepairEdge(R3, ringB, spiderweb);
+      addRepairEdge(R3, nodeQuarterB, spiderweb);
+    }
+  }
+
+  function repairWeb(stub, snapTarget) {
+    if (!spiderweb || !snapTarget) return;
+
+    /* 找 stub 的锚点 */
+    var anchorPt = null;
+    for (var i = 0; i < spiderweb.constraints.length; i++) {
+      var c = spiderweb.constraints[i];
+      if (!c.__isStubAnchor) continue;
+      if (c.a === stub) { anchorPt = c.b; break; }
+      if (c.b === stub) { anchorPt = c.a; break; }
+    }
+
+    if (anchorPt && anchorPt !== snapTarget) {
+      if (P.repairPatch) {
+        /* 先 BFS 找最小环（在建新边之前，否则 BFS 会直接走新边） */
+        var path = bfsPath(anchorPt, snapTarget, spiderweb);
+
+        /* 建 A—B 主线（立即） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb);
+
+        /* 环够大则把补丁任务放入队列，等蜘蛛过来修 */
+        if (path && path.length > 4) {
+          /* 计算环的几何中心作为蜘蛛目标位置 */
+          var rcx = 0, rcy = 0;
+          for (var ri = 0; ri < path.length; ri++) {
+            rcx += path[ri].pos.x;
+            rcy += path[ri].pos.y;
+          }
+          rcx /= path.length;
+          rcy /= path.length;
+          repairQueue.push({
+            ring: path,
+            pos: new Vec2(rcx, rcy),
+            state: 'pending',
+            timer: REPAIR_WORK_DUR
+          });
+        }
+      } else {
+        /* 只修一根 */
+        addRepairEdge(anchorPt, snapTarget, spiderweb);
+      }
+    }
+
+    /* 删掉 stub 的锚定边 */
+    spiderweb.constraints = spiderweb.constraints.filter(function (c) {
+      if (c.__isStubAnchor && (c.a === stub || c.b === stub)) return false;
+      return true;
+    });
+
+    /* 删掉 stub 粒子 */
+    var si = spiderweb.particles.indexOf(stub);
+    if (si !== -1) spiderweb.particles.splice(si, 1);
+
+    /* 刷新断线头列表和网完整度 */
+    _refreshBrokenEnds();
+    webScanPending = 3;
+  }
+
+  /**
+   * 检查补网任务是否仍然有效：ring 上的节点是否还在 spiderweb.particles 中
+   * 超过半数节点失效则视为任务无效
+   */
+  function _isRepairTaskValid(task) {
+    if (!spiderweb || !task.ring) return false;
+    var alive = 0;
+    for (var i = 0; i < task.ring.length; i++) {
+      if (spiderweb.particles.indexOf(task.ring[i]) !== -1) alive++;
+    }
+    return alive > task.ring.length / 2;
+  }
+
+  /* 注册修复回调 */
+  sim.onRepairDrop = repairWeb;
 
   function checkWebIntegrity() {
     if (gameState !== 'LEVEL_ACTIVE') return;
@@ -1634,6 +1880,10 @@ window.onload = function () {
       moveSpeed = P.moveSpeed; STEP_SPEED = P.stepSpeed;
       STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
     },
+    onRepairChange: function () {
+      sim.stubReachRadius = P.stubReachRadius;
+      sim.snapRadius = P.stubSnapRadius;
+    },
     clearAllObjects: clearAllObjects,
     launchObject: launchObject,
     isAutoPlayOn: function () {
@@ -1650,6 +1900,19 @@ window.onload = function () {
       return autoPlay;
     }
   });
+
+  /* ── 调试：手动触发 collapseChain ── */
+  document.getElementById('btn-debugCollapse').onclick = function () {
+    if (!spiderweb) return;
+    var stubs = [];
+    for (var i = 0; i < spiderweb.particles.length; i++) {
+      if (spiderweb.particles[i].__isStub) stubs.push(spiderweb.particles[i]);
+    }
+    for (var j = 0; j < stubs.length; j++) {
+      collapseChain(stubs[j], spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+    }
+    _refreshBrokenEnds();
+  };
 
   /* ── 背景与音乐控制（左侧参数面板） ── */
   (function initBgPanel() {
@@ -1878,9 +2141,48 @@ window.onload = function () {
     statsTimeStart('anim');
     captureThrownStickPrev();
     var isPoopStunned = poopStunTimer > 0;
+    var isRepairing = false; /* 标记当前是否在执行补网任务 */
+
+    /* ── 补网任务：优先级高于玩家点击和 autoPlay，不可打断 ── */
+    if (!isPoopStunned && !wrappingTarget && repairQueue.length > 0) {
+      /* 检查队首任务是否仍然有效（ring 上的节点还活着） */
+      while (repairQueue.length > 0 && !_isRepairTaskValid(repairQueue[0])) {
+        repairQueue.shift();
+      }
+      if (repairQueue.length > 0) {
+        var rTask = repairQueue[0];
+        if (rTask.state === 'pending') {
+          rTask.state = 'walking';
+          _autoTarget.x = rTask.pos.x;
+          _autoTarget.y = rTask.pos.y;
+          target = _autoTarget;
+          isRepairing = true;
+        } else if (rTask.state === 'walking') {
+          _autoTarget.x = rTask.pos.x;
+          _autoTarget.y = rTask.pos.y;
+          target = _autoTarget;
+          isRepairing = true;
+          if (spider.thorax.pos.dist2(rTask.pos) <= 14 * 14) {
+            rTask.state = 'repairing';
+            target = null;
+          }
+        } else if (rTask.state === 'repairing') {
+          target = null;
+          isRepairing = true;
+          rTask.timer -= _currentTimeScale;
+          if (rTask.timer <= 0) {
+            patchHole(rTask.ring, spiderweb);
+            repairQueue.shift();
+            _refreshBrokenEnds();
+            webScanPending = 3;
+            isRepairing = false;
+          }
+        }
+      }
+    }
 
     /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
-    if (!isPoopStunned && !wrappingTarget && userPriorityTarget) {
+    if (!isPoopStunned && !wrappingTarget && !isRepairing && userPriorityTarget) {
       if (userPriorityTarget.type === 'object') {
         if (!getActivePriorityObject()) {
           clearPriorityTarget();
@@ -1903,7 +2205,7 @@ window.onload = function () {
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
     if (_autoPlayPause > 0) { _autoPlayPause -= timeScale; }
-    if (!isPoopStunned && autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
+    if (!isPoopStunned && autoPlay && !wrappingTarget && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
       } else {
@@ -2073,6 +2375,25 @@ window.onload = function () {
     statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
     drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
+
+    /* ── 补网修复进度圈 ── */
+    if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {
+      var rt = repairQueue[0];
+      var progress = 1 - rt.timer / REPAIR_WORK_DUR;
+      var rpx = rt.pos.x, rpy = rt.pos.y;
+      var rStartA = -Math.PI / 2;
+      sim.ctx.beginPath();
+      sim.ctx.arc(rpx, rpy, 14, rStartA, rStartA + progress * 2 * Math.PI);
+      sim.ctx.strokeStyle = 'rgba(100,220,160,0.85)';
+      sim.ctx.lineWidth = 2.2;
+      sim.ctx.stroke();
+      var rTipAngle = rStartA + progress * 2 * Math.PI;
+      sim.ctx.beginPath();
+      sim.ctx.arc(rpx + Math.cos(rTipAngle) * 14, rpy + Math.sin(rTipAngle) * 14, 2.2, 0, 2 * Math.PI);
+      sim.ctx.fillStyle = 'rgba(100,220,160,0.95)';
+      sim.ctx.fill();
+    }
+
     statsTimeEnd();
 
     /* 放射粒子：更新 + 绘制 */
