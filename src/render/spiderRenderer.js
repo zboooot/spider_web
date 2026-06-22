@@ -88,7 +88,17 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
         pts.push({ x: p.x, y: p.y });
       }
       if (footDraw[ci]) {
-        pts[pts.length - 1] = footDraw[ci];
+        var fd = footDraw[ci];
+        var hx = pts[0].x, hy = pts[0].y;
+        var dxh = fd.x - hx, dyh = fd.y - hy;
+        var d2h = dxh * dxh + dyh * dyh;
+        if (d2h > 66 * 66) {
+          var dl = Math.sqrt(d2h) || 1;
+          var clamp = 60;
+          pts[pts.length - 1] = { x: hx + dxh / dl * clamp, y: hy + dyh / dl * clamp };
+        } else {
+          pts[pts.length - 1] = fd;
+        }
       }
 
       if (wrappingTarget) {

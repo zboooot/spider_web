@@ -75,7 +75,7 @@ window.onload = function () {
     stickMidBias: 0.8, stickHistory: 40,
     caterpillarGravity: 2.0,
     caterpillarWeight: 5, flyWeight: 3, leafWeight: 1,
-    caterpillarReleaseSec: 3, flyReleaseSec: 2, leafReleaseSec: 0,
+    caterpillarReleaseSec: 5, flyReleaseSec: 3.5, leafReleaseSec: 0,
     bgTheme: 0, bgBlur: 25, bgWind: 1.0, bgRay: 100,
     bgDarken: 15, bgPurity: 140, bgYOffset: 13,
     bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3
@@ -125,10 +125,12 @@ window.onload = function () {
   var PICKUP_PULL_STRENGTH = 0.26;
   var PICKUP_TENSION_THRESHOLD = 0.42;
   var PICKUP_TENSION_RELEASE_RATE = 0.05;
-  var STUCK_PLUCK_THRESHOLD = 0.65;
+  var STUCK_PLUCK_THRESHOLD = 0.72;
   var STUCK_BREAK_THRESHOLD = 1.1;
-  var STUCK_FORCE_THRESHOLD_BOULDER = 14;
+  var STUCK_FORCE_THRESHOLD_BOULDER = 12;
   var STUCK_FORCE_THRESHOLD_BUG = 10;
+  var STUCK_OVERFORCE_BOULDER = 15;
+  var STUCK_OVERFORCE_BUG = 12;
   var _pickupDrag = null;
   var _suppressMoveCommand = false;
 
@@ -295,7 +297,30 @@ window.onload = function () {
   var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
   var _locomotionState = 'ACTIVE';
   var _lockedTopologyVersion = 0;
+  var _samplePointsTopologyVersion = -1;
   var _gaitCursor = 0;
+  var _dbg = { needStepFrames: 0, stuckFrames: 0, topoRefreshCount: 0 };
+  var _gaitTuneDefaults = {
+    minStepDistMove: 28,
+    minStepDistIdle: 22,
+    maxHipTargetDist: 60,
+    segPenaltyMoving: 160,
+    segPenaltyLowMove: 280,
+    segPenaltyStable: 760,
+    forwardMinProgressMove: 18,
+    forwardMinProgressIdle: 10,
+    forwardProgressPenalty: 18,
+    holdNodeBase: 11,
+    holdNodeScale: 0.08,
+    holdNodeMin: 6,
+    holdNodeMax: 12,
+    holdSegBase: 14,
+    holdSegScale: 0.1,
+    holdSegMin: 8,
+    holdSegMax: 16
+  };
+  if (typeof window !== 'undefined') window._spiderStats = _dbg;
+  if (typeof window !== 'undefined') window._gaitTune = Object.assign({}, _gaitTuneDefaults, window._gaitTune || {});
   var _gaitOrderIdle = [0, 2, 1, 3];
   var _gaitOrderMove = [0, 3, 1, 2];
 
@@ -532,16 +557,17 @@ window.onload = function () {
     return order.length;
   }
 
-  function _isPhaseEligible(legIndex, fs, moving, swingCount, emergencyStep) {
+  function _isPhaseEligible(legIndex, fs, moving, swingCount, emergencyStep, speedNorm) {
     if (emergencyStep) return true;
+    var sn = speedNorm || 0;
     var order = moving ? _gaitOrderMove : _gaitOrderIdle;
     var slotDist = _slotDistanceInOrder(legIndex, order, _gaitCursor);
     if (slotDist === 0) return true;
-    if (moving) {
-      if (slotDist <= 1) return true;
-      if (swingCount === 0 && slotDist <= 2) return true;
-    }
-    if ((fs.phase || 0) >= 0.9) return true;
+    var slotWindow = moving ? (sn >= 0.5 ? 2 : 1) : 0;
+    if (slotDist <= slotWindow) return true;
+    if (moving && swingCount === 0 && slotDist <= slotWindow + 1) return true;
+    var phaseThreshold = 0.75 + (1 - sn) * 0.2;
+    if ((fs.phase || 0) >= phaseThreshold) return true;
     return false;
   }
 
@@ -1246,17 +1272,24 @@ window.onload = function () {
           var sTension = sTensionA + sTensionB;
           obj._pickupTension = sTension;
           obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
-          if (sAppliedForce >= sForceThresh) {
-            if (sTension >= STUCK_BREAK_THRESHOLD) {
+          var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : STUCK_OVERFORCE_BUG;
+          if (sAppliedForce >= sOverForce) {
+            _pickupDrag = null;
+            sim.draggedEntity = null;
+            obj._pickupTension = 0; obj._pickupCharge = 0;
+            obj.state = 'freeing'; obj.freeTimer = 0;
+            continue;
+          } else if (sAppliedForce >= sForceThresh) {
+            if (sTension >= STUCK_PLUCK_THRESHOLD) {
+              _pickupDrag = null;
+              sim.draggedEntity = null;
+              beginPlucking(obj);
+              continue;
+            } else if (sTension >= STUCK_BREAK_THRESHOLD) {
               _pickupDrag = null;
               sim.draggedEntity = null;
               obj._pickupTension = 0; obj._pickupCharge = 0;
               obj.state = 'freeing'; obj.freeTimer = 0;
-              continue;
-            } else if (sTension >= STUCK_PLUCK_THRESHOLD) {
-              _pickupDrag = null;
-              sim.draggedEntity = null;
-              beginPlucking(obj);
               continue;
             }
           }
@@ -1609,6 +1642,129 @@ window.onload = function () {
     applyBgParams();
   })();
 
+  function _mountDevGaitTunePanel() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    var host = window.location && window.location.hostname ? window.location.hostname : '';
+    var q = window.location && window.location.search ? window.location.search : '';
+    var isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
+    var forceShow = q.indexOf('gaitdev=1') !== -1;
+    if (!isDevHost && !forceShow) return;
+
+    var tune = window._gaitTune || (window._gaitTune = Object.assign({}, _gaitTuneDefaults));
+
+    var panel = document.createElement('div');
+    panel.id = 'gait-dev-panel';
+    panel.style.position = 'fixed';
+    panel.style.right = '12px';
+    panel.style.top = '12px';
+    panel.style.width = '300px';
+    panel.style.maxHeight = '72vh';
+    panel.style.overflow = 'auto';
+    panel.style.zIndex = '9999';
+    panel.style.background = 'rgba(10,12,18,0.86)';
+    panel.style.border = '1px solid rgba(255,255,255,0.2)';
+    panel.style.borderRadius = '10px';
+    panel.style.padding = '10px';
+    panel.style.color = '#e8eefc';
+    panel.style.font = '12px/1.3 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+
+    var title = document.createElement('div');
+    title.textContent = 'Gait Tune (Dev)';
+    title.style.fontWeight = '700';
+    title.style.marginBottom = '8px';
+    panel.appendChild(title);
+
+    function addSlider(key, min, max, step) {
+      var wrap = document.createElement('div');
+      wrap.style.marginBottom = '7px';
+
+      var row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.marginBottom = '2px';
+
+      var name = document.createElement('span');
+      name.textContent = key;
+      var val = document.createElement('span');
+      val.textContent = String(tune[key]);
+      row.appendChild(name);
+      row.appendChild(val);
+
+      var input = document.createElement('input');
+      input.type = 'range';
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.value = String(tune[key]);
+      input.style.width = '100%';
+      input.addEventListener('input', function () {
+        var v = parseFloat(input.value);
+        tune[key] = v;
+        val.textContent = (Math.abs(v % 1) > 0.0001) ? v.toFixed(2) : String(v);
+      });
+
+      wrap.appendChild(row);
+      wrap.appendChild(input);
+      panel.appendChild(wrap);
+    }
+
+    addSlider('minStepDistMove', 20, 40, 1);
+    addSlider('minStepDistIdle', 16, 30, 1);
+    addSlider('segPenaltyMoving', 80, 300, 5);
+    addSlider('segPenaltyLowMove', 120, 420, 5);
+    addSlider('segPenaltyStable', 300, 900, 10);
+    addSlider('forwardMinProgressMove', 8, 30, 1);
+    addSlider('forwardMinProgressIdle', 4, 20, 1);
+    addSlider('forwardProgressPenalty', 6, 36, 1);
+    addSlider('holdNodeBase', 8, 14, 0.5);
+    addSlider('holdNodeScale', 0.02, 0.2, 0.01);
+    addSlider('holdNodeMin', 4, 10, 0.5);
+    addSlider('holdNodeMax', 8, 16, 0.5);
+    addSlider('holdSegBase', 10, 18, 0.5);
+    addSlider('holdSegScale', 0.02, 0.24, 0.01);
+    addSlider('holdSegMin', 6, 12, 0.5);
+    addSlider('holdSegMax', 10, 20, 0.5);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.display = 'flex';
+    btnRow.style.gap = '8px';
+    btnRow.style.marginTop = '8px';
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset';
+    resetBtn.style.flex = '1';
+    resetBtn.addEventListener('click', function () {
+      window._gaitTune = Object.assign({}, _gaitTuneDefaults);
+      tune = window._gaitTune;
+      panel.parentNode && panel.parentNode.removeChild(panel);
+      _mountDevGaitTunePanel();
+    });
+
+    var hideBtn = document.createElement('button');
+    hideBtn.textContent = 'Hide';
+    hideBtn.style.flex = '1';
+    hideBtn.addEventListener('click', function () {
+      panel.style.display = 'none';
+    });
+
+    btnRow.appendChild(resetBtn);
+    btnRow.appendChild(hideBtn);
+    panel.appendChild(btnRow);
+
+    document.body.appendChild(panel);
+
+    if (!window._gaitTuneHotkeyBound) {
+      window.addEventListener('keydown', function (e) {
+        if (e.key === '`') {
+          var p = document.getElementById('gait-dev-panel');
+          if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }
+      });
+      window._gaitTuneHotkeyBound = true;
+    }
+  }
+  _mountDevGaitTunePanel();
+
   /* ================================================================
      MAIN LOOP
   ================================================================ */
@@ -1747,28 +1903,59 @@ window.onload = function () {
     sim.frame(_adaptIter);
 
     /* ── 物理帧结束后，用最新网形态刷新采样点再做步态决策 ── */
+    /* 拓扑变化时重建 samplePoints，防止旧 segment 候选残留 */
+    var _currentTopoVer = spiderweb ? (spiderweb._topologyVersion || 0) : 0;
+    if (_currentTopoVer !== _samplePointsTopologyVersion) {
+      samplePoints = getWebSamplePoints(spiderweb, 4);
+      _samplePointsTopologyVersion = _currentTopoVer;
+      _dbg.topoRefreshCount++;
+    }
     updateSamplePoints(samplePoints);
 
     /* feet */
     var swingCount = 0;
     for (var _si = 0; _si < footState.length; _si++) if (footState[_si].stepping) swingCount++;
-    var maxSwing = target ? 2 : 1;
+
+    var _speedNorm = (moving && !_aiOwnsTarget) ? 1.0 : (_aiOwnsTarget ? 0.6 : 0.0);
+    var maxSwing = _speedNorm >= 0.5 ? 2 : 1;
+    var _phaseRateBase = 0.06 + _speedNorm * 0.14;
+
     var _curStepSpeed = _aiOwnsTarget ? 0.06 : STEP_SPEED;
     var _segMaxJump2 = 36 * 36;
+    var _maxLegReach2 = 66 * 66;
+    var _safeLegReach = 60;
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
-      if (fs.cooldown > 0) fs.cooldown--;
-      if (fs.holdFrames > 0) fs.holdFrames--;
+      if (fs.cooldown > 0) fs.cooldown = Math.max(0, fs.cooldown - timeScale);
+      if (fs.holdFrames > 0) fs.holdFrames = Math.max(0, fs.holdFrames - timeScale);
       if (!fs.stepping && _locomotionState !== 'IDLE_LOCKED' && !_spawnAnim.active) {
-        var phaseRate = target ? 0.18 : 0.08;
-        fs.phase = Math.min(1.4, (fs.phase || 0) + phaseRate * timeScale);
+        fs.phase = Math.min(1.4, (fs.phase || 0) + _phaseRateBase * timeScale);
       }
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + _curStepSpeed);
+        fs.t = Math.min(1, fs.t + _curStepSpeed * timeScale);
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
         fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+        var _hipStep = spider.legChains && spider.legChains[fi] && spider.legChains[fi][0]
+          ? spider.legChains[fi][0].pos
+          : spider.thorax.pos;
+        var _sdx = fs.current.x - _hipStep.x, _sdy = fs.current.y - _hipStep.y;
+        var _s2 = _sdx * _sdx + _sdy * _sdy;
+        if (_s2 > _maxLegReach2) {
+          var _sl = Math.sqrt(_s2) || 1;
+          liftFoot(fs, spider);
+          fs.targetStepPoint = null;
+          fs.stepping = false;
+          fs.t = 1;
+          fs.current.x = _hipStep.x + _sdx / _sl * _safeLegReach;
+          fs.current.y = _hipStep.y + _sdy / _sl * _safeLegReach;
+          fs.particle.pos.mutableSet(fs.current);
+          fs.particle.lastPos.mutableSet(fs.current);
+          fs.cooldown = Math.max(fs.cooldown || 0, 8);
+          _dbg.legRecoveries = (_dbg.legRecoveries || 0) + 1;
+          continue;
+        }
         if (fs.t >= 1) {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
           fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
@@ -1793,6 +1980,26 @@ window.onload = function () {
           }
         }
         if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
+
+        var _hip = spider.legChains && spider.legChains[fi] && spider.legChains[fi][0]
+          ? spider.legChains[fi][0].pos
+          : spider.thorax.pos;
+        var _ldx = fs.current.x - _hip.x, _ldy = fs.current.y - _hip.y;
+        var _l2 = _ldx * _ldx + _ldy * _ldy;
+        if (_l2 > _maxLegReach2 && (fs.cooldown <= 0 || _l2 > _maxLegReach2 * 1.5)) {
+          var _ll = Math.sqrt(_l2) || 1;
+          liftFoot(fs, spider);
+          fs.targetStepPoint = null;
+          fs.stepping = false;
+          fs.t = 1;
+          fs.current.x = _hip.x + _ldx / _ll * _safeLegReach;
+          fs.current.y = _hip.y + _ldy / _ll * _safeLegReach;
+          fs.particle.pos.mutableSet(fs.current);
+          fs.particle.lastPos.mutableSet(fs.current);
+          fs.cooldown = Math.max(fs.cooldown || 0, 8);
+          _dbg.legRecoveries = (_dbg.legRecoveries || 0) + 1;
+        }
+
         var drift2 = fs.current.dist2(spider.thorax.pos);
         var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
         var ps = partner && partner.stepping;
@@ -1804,8 +2011,9 @@ window.onload = function () {
           var idleNeedStep = !target && drift2 > _restThresh * _restThresh;
           var needStep = movingNeedStep || idleNeedStep;
           if (needStep) {
+            _dbg.needStepFrames++;
             var emergencyStep = drift2 > (target ? _stepThresh * _stepThresh * 1.8 : _restThresh * _restThresh * 1.35);
-            var phaseOk = _isPhaseEligible(fi, fs, !!target, swingCount, emergencyStep);
+            var phaseOk = _isPhaseEligible(fi, fs, !!target, swingCount, emergencyStep, _speedNorm);
             if (phaseOk) {
               if (movingNeedStep) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _maxStepR);
               else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, Math.max(18, _restThresh - 6), true);
@@ -1813,6 +2021,8 @@ window.onload = function () {
                 fs.phase = 0;
                 _gaitCursor = (_gaitCursor + 1) % _gaitOrderIdle.length;
                 swingCount++;
+              } else {
+                _dbg.stuckFrames++;
               }
             }
           }

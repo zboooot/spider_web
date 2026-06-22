@@ -2,6 +2,33 @@ import { Vec2 } from '../engine/Vec2.js';
 import { DistanceConstraint } from '../engine/constraints.js';
 import { audioEngine } from '../audio/audioEngine.js';
 
+var DEFAULT_GAIT_TUNE = {
+  minStepDistMove: 28,
+  minStepDistIdle: 22,
+  maxHipTargetDist: 60,
+  segPenaltyMoving: 160,
+  segPenaltyLowMove: 280,
+  segPenaltyStable: 760,
+  forwardMinProgressMove: 18,
+  forwardMinProgressIdle: 10,
+  forwardProgressPenalty: 18,
+  holdNodeBase: 11,
+  holdNodeScale: 0.08,
+  holdNodeMin: 6,
+  holdNodeMax: 12,
+  holdSegBase: 14,
+  holdSegScale: 0.1,
+  holdSegMin: 8,
+  holdSegMax: 16
+};
+
+function _getGaitTune() {
+  if (typeof window !== 'undefined' && window._gaitTune) {
+    return window._gaitTune;
+  }
+  return DEFAULT_GAIT_TUNE;
+}
+
 /**
  * 落脚点搜索的全局粒子 ID 计数器
  */
@@ -91,6 +118,8 @@ export function updateSamplePoints(pts) {
  * @param {Set|null} occupiedFootholds  其他腿已占用的 foothold key 集合（硬排除）
  */
 export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds) {
+  if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.findStepTargetCalls = (window._spiderStats.findStepTargetCalls || 0) + 1;
+  var tune = _getGaitTune();
   var stepR = maxStepR || 42, minR = 16;
   var MIN_LEG_SEP = 14;
   var MIN_STEP_PROGRESS = 20;
@@ -103,22 +132,28 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   var isRightLeg = (legIndex === 0 || legIndex === 2);
   var sideMargin = Math.max(2, MIN_LEG_SEP * 0.2);
   var moveLen = moveDir ? Math.sqrt(moveDir.x * moveDir.x + moveDir.y * moveDir.y) : 0;
-  var idealDist = 24 + (moveDir ? moveLen * 18 : 0);
+  var isFrontLeg = (legIndex === 0 || legIndex === 1);
+  var legReachBias = isFrontLeg ? 6 : -4;
+  var idealDist = 24 + legReachBias + (moveDir ? moveLen * 18 : 0);
   var theta = spiderComp.particles[0].pos.angle2(
     spiderComp.particles[0].pos.add(new Vec2(1, 0)), spiderComp.particles[1].pos);
-  // upper-right, upper-left, lower-right, lower-left
   var legAngles = [-0.22, Math.PI + 0.22, 0.28, Math.PI - 0.28];
   var la = theta + legAngles[legIndex];
   var ix = thorax.x + Math.cos(la) * idealDist, iy = thorax.y + Math.sin(la) * idealDist;
-  if (moveDir) { ix += moveDir.x * 26; iy += moveDir.y * 26; }
+  var moveFwdBias = isFrontLeg ? 30 : 18;
+  if (moveDir) { ix += moveDir.x * moveFwdBias; iy += moveDir.y * moveFwdBias; }
 
-  /* 构建存活约束中出现的粒子集合 */
   var aliveParticles = {};
+  var aliveEdges = {};
   for (var ai = 0; ai < webComp.constraints.length; ai++) {
     var ac = webComp.constraints[ai];
     if (!(ac instanceof DistanceConstraint)) continue;
-    aliveParticles[ac.a.__pid || (ac.a.__pid = getNextPid())] = true;
-    aliveParticles[ac.b.__pid || (ac.b.__pid = getNextPid())] = true;
+    var pidA = ac.a.__pid || (ac.a.__pid = getNextPid());
+    var pidB = ac.b.__pid || (ac.b.__pid = getNextPid());
+    aliveParticles[pidA] = true;
+    aliveParticles[pidB] = true;
+    var eKey = pidA < pidB ? pidA + '-' + pidB : pidB + '-' + pidA;
+    aliveEdges[eKey] = true;
   }
 
   var cands = [];
@@ -132,9 +167,11 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   for (var si = 0; si < samplePoints.length; si++) {
     var sp = samplePoints[si], ddx = sp.x - thorax.x, ddy = sp.y - thorax.y, d2 = ddx * ddx + ddy * ddy;
     if (d2 >= minR * minR && d2 <= stepR * stepR) {
-      var paOk = sp.pa.__pid && aliveParticles[sp.pa.__pid];
-      var pbOk = sp.pb.__pid && aliveParticles[sp.pb.__pid];
-      if (!paOk || !pbOk) continue;
+      var paPid = sp.pa.__pid, pbPid = sp.pb.__pid;
+      if (!paPid || !pbPid) continue;
+      if (!aliveParticles[paPid] || !aliveParticles[pbPid]) continue;
+      var spEdgeKey = paPid < pbPid ? paPid + '-' + pbPid : pbPid + '-' + paPid;
+      if (!aliveEdges[spEdgeKey]) continue;
       cands.push(sp);
     }
   }
@@ -187,27 +224,33 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
 
   var CROSS_PENALTY = 8000;
   var SIDE_PENALTY  = 3000;
-  /* segment 相比 node 额外惩罚：运动时 300，静止时 800 */
-  var SEG_PENALTY   = preferStable ? 800 : 300;
+  var SEG_PENALTY = preferStable ? tune.segPenaltyStable : (moveLen > 0.2 ? tune.segPenaltyMoving : tune.segPenaltyLowMove);
+  var FORWARD_MIN_PROGRESS = moveLen > 0.2 ? tune.forwardMinProgressMove : tune.forwardMinProgressIdle;
 
-  function score(cand) {
+  function score(cand, mode) {
+    mode = mode || {};
     var cx = cand.x, cy = cand.y;
     var dx = cx - ix, dy = cy - iy;
     var base = dx * dx + dy * dy;
     var penalty = 0;
 
-    if (!sideOk(cand)) penalty += SIDE_PENALTY;
-    if (crossesOccupied(cand)) penalty += CROSS_PENALTY;
+    if (!mode.relaxSide && !sideOk(cand)) penalty += SIDE_PENALTY;
+    if (!mode.relaxCross && crossesOccupied(cand)) penalty += CROSS_PENALTY;
 
     if (currentFootPos) {
       var rdx = cx - currentFootPos.x, rdy = cy - currentFootPos.y;
       var progressSq = rdx * rdx + rdy * rdy;
-      if (progressSq < MIN_STEP_PROGRESS * MIN_STEP_PROGRESS) {
-        penalty += (MIN_STEP_PROGRESS * MIN_STEP_PROGRESS - progressSq) * 12;
+      if (!mode.relaxProgress && progressSq < MIN_STEP_PROGRESS * MIN_STEP_PROGRESS) {
+        var deficit = MIN_STEP_PROGRESS * MIN_STEP_PROGRESS - progressSq;
+        penalty += deficit * deficit / (MIN_STEP_PROGRESS * MIN_STEP_PROGRESS) * 8;
       }
       if (moveDir && moveLen > 0.01) {
         var prog = rdx * moveDir.x + rdy * moveDir.y;
-        if (prog < 0) penalty += prog * prog * 4;
+        if (prog < 0) penalty += prog * prog * 3;
+        if (!mode.relaxProgress && prog < FORWARD_MIN_PROGRESS) {
+          var fDef = FORWARD_MIN_PROGRESS - prog;
+          penalty += fDef * fDef * tune.forwardProgressPenalty;
+        }
       }
     }
 
@@ -228,18 +271,25 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
     return base + penalty;
   }
 
-  /* 分两档候选池：
-     hardFree  = foothold 唯一 + 距离够远（首选）
-     hardOnly  = foothold 唯一 + 允许接近（退路）
-     不再有回退到"允许共享"的选项 */
   var hardFree = cands.filter(function (c) { return !tooCloseToOccupied(c.x, c.y); });
   var pool = hardFree.length ? hardFree : cands;
 
+  var tierModes = [
+    { relaxCross: false, relaxSide: false, relaxProgress: false },
+    { relaxCross: true,  relaxSide: false, relaxProgress: false },
+    { relaxCross: true,  relaxSide: true,  relaxProgress: true }
+  ];
+
   var best = null, bs = Number.POSITIVE_INFINITY;
-  for (var ci = 0; ci < pool.length; ci++) {
-    var s = score(pool[ci]);
-    if (s < bs) { best = pool[ci]; bs = s; }
+  for (var tm = 0; tm < tierModes.length; tm++) {
+    var mode = tierModes[tm];
+    for (var ci = 0; ci < pool.length; ci++) {
+      var s = score(pool[ci], mode);
+      if (s < bs) { best = pool[ci]; bs = s; }
+    }
+    if (best) break;
   }
+
   return best || null;
 }
 
@@ -267,9 +317,11 @@ export function liftFoot(fs, spider) {
  * @param {Array|null} footState  全部腿状态，用于二次冲突校验；可选
  */
 export function landFoot(fs, spider, spiderweb, footState) {
+  var tune = _getGaitTune();
   var sp = fs.targetStepPoint;
+  var stepLen = fs && fs.from && fs.targetPos ? fs.from.dist(fs.targetPos) : 0;
   fs.targetStepPoint = null;
-  if (!sp) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+  if (!sp) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1; return; }
 
   /* ── 二次 foothold key 冲突检查（最终保险丝） ── */
   if (footState) {
@@ -285,6 +337,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
         if (otherKey && otherKey === myKey) {
           liftFoot(fs, spider);
           fs.cooldown = Math.max(fs.cooldown || 0, 18);
+          if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1;
           return;
         }
         /* 检查另一条腿正在飞向的目标 */
@@ -293,6 +346,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
           if (targetKey && targetKey === myKey) {
             liftFoot(fs, spider);
             fs.cooldown = Math.max(fs.cooldown || 0, 18);
+            if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1;
             return;
           }
         }
@@ -319,20 +373,25 @@ export function landFoot(fs, spider, spiderweb, footState) {
     spider.constraints.push(c);
     fs.constraintA = c;
     fs.landedNode = sp.particle;
-    fs.holdFrames = 10;
+    fs.holdFrames = Math.max(tune.holdNodeMin, Math.min(tune.holdNodeMax, tune.holdNodeBase - stepLen * tune.holdNodeScale));
   } else {
     if (!sp.pa || !sp.pb) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
     if (spiderweb) {
-      var paAlive = false, pbAlive = false;
+      var paAlive = false, pbAlive = false, edgeAlive = false;
+      var paPid2 = sp.pa.__pid, pbPid2 = sp.pb.__pid;
       var wcs2 = spiderweb.constraints;
       for (var wi2 = 0; wi2 < wcs2.length; wi2++) {
         var wc2 = wcs2[wi2];
         if (!(wc2 instanceof DistanceConstraint)) continue;
         if (wc2.a === sp.pa || wc2.b === sp.pa) paAlive = true;
         if (wc2.a === sp.pb || wc2.b === sp.pb) pbAlive = true;
-        if (paAlive && pbAlive) break;
+        if (paPid2 && pbPid2 &&
+            ((wc2.a === sp.pa && wc2.b === sp.pb) || (wc2.a === sp.pb && wc2.b === sp.pa))) {
+          edgeAlive = true;
+        }
+        if (paAlive && pbAlive && edgeAlive) break;
       }
-      if (!paAlive || !pbAlive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+      if (!paAlive || !pbAlive || !edgeAlive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
     }
     liftFoot(fs, spider);
     audioEngine.playSfxFootstep();
@@ -344,7 +403,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
     fs.constraintA = cA;
     fs.constraintB = cB;
     fs.landedSeg = sp;
-    fs.holdFrames = 16;
+    fs.holdFrames = Math.max(tune.holdSegMin, Math.min(tune.holdSegMax, tune.holdSegBase - stepLen * tune.holdSegScale));
   }
 }
 
@@ -354,6 +413,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
  * 触发迈步
  */
 export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, maxStepR, preferStable) {
+  var tune = _getGaitTune();
   var fs = footState[i];
   if (!fs || fs.stepping || fs.cooldown > 0) return;
 
@@ -390,8 +450,14 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
 
   var sp = findStepTarget(spiderweb, i, spider, md || null, samplePoints, occupied, occupiedSegments, maxStepR, preferStable, { x: fs.current.x, y: fs.current.y }, occupiedFootholds);
   if (!sp) return;
+  var hip = spider.legChains && spider.legChains[i] && spider.legChains[i][0]
+    ? spider.legChains[i][0].pos
+    : spider.particles[0].pos;
+  var hdx = sp.x - hip.x, hdy = sp.y - hip.y;
+  if (hdx * hdx + hdy * hdy > tune.maxHipTargetDist * tune.maxHipTargetDist) return;
   var dx = sp.x - fs.current.x, dy = sp.y - fs.current.y;
-  if (dx * dx + dy * dy < 400) return;
+  var minStepDist = moveDir ? tune.minStepDistMove : tune.minStepDistIdle;
+  if (dx * dx + dy * dy < minStepDist * minStepDist) return;
 
   liftFoot(fs, spider);
   fs.from = new Vec2(fs.current.x, fs.current.y);

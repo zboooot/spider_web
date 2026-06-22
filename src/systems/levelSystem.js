@@ -4,19 +4,19 @@
 
 export var LEVEL_CONFIGS = [
   /* 第1关 — 轻松热身 */
-  { targets: { boulder: 5, bug: 0, drop: 20 }, flyR: 4.0, catR: 6.0,
+  { targets: { boulder: 5, bug: 0, drop: 20 }, flyR: 6.0, catR: 8.0,
     burstMin: 3, burstMax: 5, burstInterval: 55, cooldownDuration: 160, firstBurstDelay: 60 },
   /* 第2关 — 引入苍蝇 */
-  { targets: { boulder: 10, bug: 10, drop: 30 }, flyR: 3.0, catR: 5.0,
+  { targets: { boulder: 10, bug: 10, drop: 30 }, flyR: 5.0, catR: 7.0,
     burstMin: 3, burstMax: 6, burstInterval: 45, cooldownDuration: 130, firstBurstDelay: 45 },
   /* 第3关 — 苍蝇加倍 */
-  { targets: { boulder: 10, bug: 20, drop: 30 }, flyR: 2.5, catR: 4.0,
+  { targets: { boulder: 10, bug: 20, drop: 30 }, flyR: 4.0, catR: 6.0,
     burstMin: 4, burstMax: 7, burstInterval: 38, cooldownDuration: 110, firstBurstDelay: 35 },
   /* 第4关 — 全面提速 */
-  { targets: { boulder: 10, bug: 20, drop: 35 }, flyR: 2.0, catR: 3.5,
+  { targets: { boulder: 10, bug: 20, drop: 35 }, flyR: 3.0, catR: 5.0,
     burstMin: 4, burstMax: 8, burstInterval: 32, cooldownDuration: 90, firstBurstDelay: 25 },
   /* 第5关 — 极限冲刺 */
-  { targets: { boulder: 15, bug: 25, drop: 35 }, flyR: 1.5, catR: 3.0,
+  { targets: { boulder: 15, bug: 25, drop: 35 }, flyR: 2.5, catR: 4.0,
     burstMin: 5, burstMax: 9, burstInterval: 26, cooldownDuration: 70, firstBurstDelay: 15 }
 ];
 
