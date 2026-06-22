@@ -18,6 +18,18 @@ function getSpiderHeadFrame(blinkState, wrappingTarget) {
   return popoHeadImg;
 }
 
+var HEAD_IMG_W = 36.8;
+
+/** 头图中心：与 popo 绘制位置一致，作为四条腿的公共根部锚点 */
+function getHeadCenter(ax, ay, tx, ty) {
+  var fdx = tx - ax, fdy = ty - ay;
+  var fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
+  return {
+    x: ax + (fdx / fl) * 4,
+    y: ay + (fdy / fl) * 4
+  };
+}
+
 /**
  * 设置蜘蛛的自定义绘制函数
  */
@@ -65,12 +77,13 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
 
     var tx2 = spider.thorax.pos.x + thoraxDX, ty2 = spider.thorax.pos.y + thoraxDY;
     var ax2 = spider.abdomen.pos.x + abdomenDX, ay2 = spider.abdomen.pos.y + abdomenDY;
+    var headCenter = getHeadCenter(ax2, ay2, tx2, ty2);
 
-    // Soft curved legs with more joints.
+    // Soft curved legs with more joints — 根部统一从头图中心发出，物理链仍从 p1 接出。
     var chains = spider.legChains || [];
     for (var ci = 0; ci < chains.length; ci++) {
       var chain = chains[ci];
-      var pts = [];
+      var pts = [{ x: headCenter.x, y: headCenter.y }];
       for (var pi = 0; pi < chain.length; pi++) {
         var p = chain[pi].pos;
         pts.push({ x: p.x, y: p.y });
@@ -86,16 +99,16 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
         if (activeIdx !== -1) {
           var legPhase = activeIdx === 0 ? 0 : Math.PI;
           var legTime = wrapAt * 0.95 + legPhase;
-          for (var ai = 0; ai < pts.length; ai++) {
-            var factor = (ai + 1) / pts.length;
+          for (var ai = 1; ai < pts.length; ai++) {
+            var factor = ai / (pts.length - 1);
             var scrambleForward = Math.sin(legTime * 0.9 + ai * 0.65) * (4 + factor * 8 + wrapT2 * 7);
             var scrambleLateral = Math.cos(legTime * 1.35 + ai * 0.5) * (2 + factor * 5 + wrapT2 * 4);
             pts[ai].x += wrapOX * scrambleForward * factor + perpX * scrambleLateral * factor;
             pts[ai].y += wrapOY * scrambleForward * factor + perpY * scrambleLateral * factor;
           }
         } else {
-          for (var bi = 0; bi < pts.length; bi++) {
-            var settle = (bi + 1) / pts.length;
+          for (var bi = 1; bi < pts.length; bi++) {
+            var settle = bi / (pts.length - 1);
             pts[bi].x += -wrapOX * (1.4 + wrapT2 * 1.8) * settle;
             pts[bi].y += -wrapOY * (1.4 + wrapT2 * 1.8) * settle;
           }
@@ -143,18 +156,16 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       ctx.restore();
     }
 
-    var ax = ax2, ay = ay2;
-    var tx = tx2, ty = ty2;
-    var fdx = tx - ax, fdy = ty - ay, fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
-    var fnx = fdx / fl, fny = fdy / fl;
-
     var headFrame = getSpiderHeadFrame(blinkState, wrappingTarget);
     if (headFrame.complete && headFrame.naturalWidth > 0) {
-      var imgW = 36.8;
-      var imgH = imgW * (headFrame.naturalHeight / headFrame.naturalWidth);
-      var imgCX = ax + fnx * 4;
-      var imgCY = ay + fny * 4;
-      ctx.drawImage(headFrame, imgCX - imgW * 0.5, imgCY - imgH * 0.5, imgW, imgH);
+      var imgH = HEAD_IMG_W * (headFrame.naturalHeight / headFrame.naturalWidth);
+      ctx.drawImage(
+        headFrame,
+        headCenter.x - HEAD_IMG_W * 0.5,
+        headCenter.y - imgH * 0.5,
+        HEAD_IMG_W,
+        imgH
+      );
       statsDc('image');
     }
   };
