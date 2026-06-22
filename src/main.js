@@ -12,18 +12,18 @@ import { ThrownObj, clearObjectConstraints } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
-  liftFoot, landFoot, triggerStep
+  liftFoot, landFoot, triggerStep, reposeAllLegs
 } from './systems/footSystem.js';
 
 import {
   getWebOuterR, inWebZone, radialRatioAt,
   collectPathHitCandidates, collectPathHitCandidatesSpatial, chooseStickCandidate,
+  findNearestWebSegment,
   mergeStickHits, stickHitScratch
 } from './systems/stickSystem.js';
 
 import {
-  buildWebGridList, cellCovered, cellCoveredSpatial,
-  markDirtyCellsFromSegment, markDirtyRegionFromAABB, tickDirtyCells,
+  buildWebGridList, cellCovered,
   scanWebCellsBatch, WEB_BUILD_BATCH, WEB_RESCAN_BATCH
 } from './systems/webIntegrity.js';
 
@@ -61,7 +61,7 @@ import { initPanel } from './ui/panel.js';
 
 import {
   statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
-  statsTimeStart, statsTimeEnd
+  statsTimeStart, statsTimeEnd, statsGetPanelVisible, statsSetPanelVisible
 } from './debug/renderStats.js';
 import { getBgEntityCounts } from './render/sylvanBackground.js';
 
@@ -279,6 +279,21 @@ window.onload = function () {
 
   var updateStatsPanel = statsBindPanel(document.getElementById('stats-panel'));
 
+  (function initStatsPanelToggle() {
+    var btn = document.getElementById('btn-stats-toggle');
+    if (!btn) return;
+    function syncBtn() {
+      btn.textContent = statsGetPanelVisible()
+        ? '\uD83D\uDCCA \u9690\u85cf\u6027\u80fd\u9762\u677f'
+        : '\uD83D\uDCCA \u663e\u793a\u6027\u80fd\u9762\u677f';
+    }
+    syncBtn();
+    btn.onclick = function () {
+      statsSetPanelVisible(!statsGetPanelVisible());
+      syncBtn();
+    };
+  })();
+
   function countSimStats(physicsIters) {
     var particles = 0;
     var webC = 0;
@@ -321,6 +336,7 @@ window.onload = function () {
   var webInitCells = 1;
   var webGridList = null;
   var webWarmupFrames = 0;
+  var webScanPending = 0;
   var webRescanActive = false;
   var webRescanIdx = 0;
   var webRescanCover = 0;
@@ -439,8 +455,8 @@ window.onload = function () {
     document.getElementById('wave-bar').style.display = 'block';
     levelTimer = 0;
     webWarmupFrames = 90;
-    webGridList = null; webInitCells = 1; webRescanActive = false; webRescanIdx = 0;
-    webRescanCover = 0; webLossPct = 0;
+    webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
+    webRescanIdx = 0; webRescanCover = 0; webLossPct = 0;
     webIntegrityState.webGridList = null;
     webIntegrityState.cellCovered = null;
     webIntegrityState.coveredCount = 0;
@@ -558,17 +574,10 @@ window.onload = function () {
     spatialIndex.build(spiderweb, _spatialBounds());
   }
 
-  function _markDirtyAABB(minX, minY, maxX, maxY) {
-    if (!webGridList) return;
-    var dirty = markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList);
-    for (var di = 0; di < dirty.length; di++) _markDirtyCell(dirty[di]);
-  }
-
   function _spatialOpts() {
     return USE_LEGACY_COLLISION ? null : {
       index: spatialIndex,
-      queryBuf: spatialQueryBuf,
-      markDirtyAABB: _markDirtyAABB
+      queryBuf: spatialQueryBuf
     };
   }
 
@@ -593,12 +602,10 @@ window.onload = function () {
     if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
     var end = Math.min(webGridBuildIdx + WEB_BUILD_BATCH, webGridList.length);
     for (var k = webGridBuildIdx; k < end; k++) {
-      var cov;
-      if (USE_LEGACY_COLLISION) {
-        cov = cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD, null);
-      } else {
-        cov = cellCoveredSpatial(webGridList[k].x, webGridList[k].y, spatialIndex, spatialQueryBuf, webGridCoverD);
-      }
+      var cov = cellCovered(
+        webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD,
+        USE_LEGACY_COLLISION ? null : spatialIndex
+      );
       webIntegrityState.cellCovered[k] = cov ? 1 : 0;
       if (cov) webGridInitCover++;
     }
@@ -609,27 +616,10 @@ window.onload = function () {
     }
   }
 
-  function _markDirtyCell(idx) {
-    if (!webIntegrityState.dirtyFlags || idx < 0) return;
-    if (!webIntegrityState.dirtyFlags[idx]) {
-      webIntegrityState.dirtyFlags[idx] = 1;
-      webIntegrityState.dirtyIndices.push(idx);
-    }
-  }
-
-  function _onWebSegmentBroken(c, opts) {
+  function _onWebSegmentBroken(c) {
     if (!c) return;
     if (c.__webId) spatialIndex.removeConstraint(c.__webId);
-    if (USE_LEGACY_COLLISION) {
-      _queueWebRescan();
-      return;
-    }
-    if (opts && opts.skipDirty) return;
-    if (!webGridList) return;
-    var dirty = markDirtyCellsFromSegment(
-      c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y, webGridCoverD, webGridList
-    );
-    for (var di = 0; di < dirty.length; di++) _markDirtyCell(dirty[di]);
+    webScanPending = 12;
   }
 
   function _queueWebRescan() {
@@ -642,7 +632,8 @@ window.onload = function () {
     if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
-    webLossPct = Math.round(loss * 100);
+    var pct = Math.round(loss * 100);
+    if (pct > webLossPct) webLossPct = pct;
   }
 
   function tickWebRescan() {
@@ -671,15 +662,12 @@ window.onload = function () {
     }
     if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) {
       continueWebGridBuild();
-    } else if (USE_LEGACY_COLLISION) {
+    } else {
+      if (webScanPending > 0) {
+        webScanPending--;
+        if (webScanPending === 0) _queueWebRescan();
+      }
       if (webRescanActive) tickWebRescan();
-    } else if (webIntegrityState.dirtyIndices.length) {
-      rebuildSpatialIndex();
-      webIntegrityState.webGridList = webGridList;
-      tickDirtyCells(
-        webIntegrityState, spatialIndex, spatialQueryBuf, webGridCoverD, WEB_RESCAN_BATCH
-      );
-      _applyWebCover(webIntegrityState.coveredCount);
     }
     var dbgEl = document.getElementById('dbg-web');
     if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';
@@ -951,6 +939,12 @@ window.onload = function () {
         } else if (obj.kind === 'bug') {
           p.pos.x += (Math.random() - 0.5) * obj.wobbleAmp * 2;
           p.pos.y += (Math.random() - 0.5) * obj.wobbleAmp;
+          if (obj.stuckOnConstraint) {
+            var nearStuck = findNearestWebSegment(
+              p.pos.x, p.pos.y, spiderweb, _spatialOpts(), obj.stuckOnConstraint
+            );
+            if (nearStuck) obj.stuckOnConstraint = nearStuck;
+          }
           obj.wingT += 0.55;
         } else {
           obj.angleVel += (Math.random() - 0.5) * 0.0005;
@@ -971,6 +965,12 @@ window.onload = function () {
 
       } else if (obj.state === 'freeing') {
         obj.freeTimer++;
+        if (obj.kind === 'bug' && obj.stuckOnConstraint) {
+          var nearSeg = findNearestWebSegment(
+            p.pos.x, p.pos.y, spiderweb, _spatialOpts(), obj.stuckOnConstraint
+          );
+          if (nearSeg) obj.stuckOnConstraint = nearSeg;
+        }
         var thrash = obj.kind === 'boulder' ? 18 : obj.kind === 'bug' ? 14 : 4;
         p.pos.x += (Math.random() - 0.5) * thrash;
         p.pos.y += (Math.random() - 0.5) * (thrash * 0.6);
@@ -1108,7 +1108,9 @@ window.onload = function () {
       if (obj.penetrationDist >= obj.stickDelay && obj._hitHistoryCount) {
         var pick = chooseStickCandidate(
           obj.hitHistory, obj._hitHistoryCount,
-          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, P.stickMidBias
+          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, P.stickMidBias,
+          obj.kind === 'bug' ? p.pos.x : null,
+          obj.kind === 'bug' ? p.pos.y : null
         );
         obj._hitHistoryCount = pick.count;
         if (pick.candidate) {
@@ -1423,6 +1425,7 @@ window.onload = function () {
         if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
       }
     }
+    reposeAllLegs(spider, footState);
 
     integrateThrownObjects();
     statsTimeEnd();
@@ -1436,6 +1439,7 @@ window.onload = function () {
       USE_LEGACY_COLLISION ? null : _constraintAlive
     );
     _resyncFootParticles();
+    reposeAllLegs(spider, footState);
     statsTimeEnd();
 
     statsTimeStart('query');

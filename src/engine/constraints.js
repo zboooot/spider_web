@@ -68,6 +68,14 @@ export function AngleConstraint(a, b, c, stiffness) {
   this.stiffness = stiffness;
 }
 
+AngleConstraint.prototype.syncAngle = function () {
+  this.angle = Vec2.angleAt(
+    this.b.pos.x, this.b.pos.y,
+    this.a.pos.x, this.a.pos.y,
+    this.c.pos.x, this.c.pos.y
+  );
+};
+
 AngleConstraint.prototype.relax = function (sc) {
   var angle = Vec2.angleAt(
     this.b.pos.x, this.b.pos.y,
@@ -77,6 +85,9 @@ AngleConstraint.prototype.relax = function (sc) {
   var diff = angle - this.angle;
   if (diff <= -Math.PI) diff += 2 * Math.PI;
   else if (diff >= Math.PI) diff -= 2 * Math.PI;
+  var maxStep = 0.42;
+  if (diff > maxStep) diff = maxStep;
+  else if (diff < -maxStep) diff = -maxStep;
   diff *= sc * this.stiffness;
   this.a.pos.mutableRotate(this.b.pos, diff);
   this.c.pos.mutableRotate(this.b.pos, -diff);

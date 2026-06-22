@@ -104,12 +104,14 @@ var _BG_BAKE_IDLE_TIMEOUT = 2000;
 var USE_LEGACY_BG = typeof location !== 'undefined'
   && /(?:^|[?&])legacyBg=1/.test(location.search);
 
-/** 预模糊半径（逻辑 px，约等效旧 CSS blur） */
-var BAKE_BLUR = { bg: 90, deep: 24, mid: 10, fg: 2 };
 /** 半分辨率绘制层（再放大 + 预模糊，减像素量） */
 var LAYER_DRAW_SCALE = { deep: 0.5, mid: 0.5 };
-/** 预模糊后保留极轻 CSS tail，供 blurScale 滑条微调 */
-var CSS_TAIL_RATIO = 0.08;
+/**
+ * 烘焙 / CSS tail 相对「旧方案 BASE_BLURS×blurScale」的配比。
+ * deep/mid 半分辨率放大后会偏锐，BAKE_FRAC >1 做补偿。
+ */
+var BAKE_FRAC = { bg: 0.92, deep: 1.7, mid: 1.45, fg: 0.8 };
+var CSS_TAIL_FRAC = 0.22;
 
 /* ── 背景可调参数（供外部面板控制） ── */
 export var bgConfig = {
@@ -125,14 +127,18 @@ export var bgConfig = {
 /* 基准模糊值（blurScale=1.0时的像素数，legacy 模式 CSS 全量） */
 var BASE_BLURS = { bg: 90, deep: 48, mid: 20, fg: 4 };
 
+function _targetBlurPx(key) {
+  return BASE_BLURS[key] * bgConfig.blurScale;
+}
+
 function _bakeBlurPx(key) {
-  return BAKE_BLUR[key] * bgConfig.blurScale;
+  return _targetBlurPx(key) * BAKE_FRAC[key];
 }
 
 function _cssBlurPx(key) {
-  var s = bgConfig.blurScale;
-  if (USE_LEGACY_BG) return BASE_BLURS[key] * s;
-  return BASE_BLURS[key] * s * CSS_TAIL_RATIO;
+  var target = _targetBlurPx(key);
+  if (USE_LEGACY_BG) return target;
+  return target * CSS_TAIL_FRAC;
 }
 
 function _ensureScratch(key, scale) {
@@ -171,8 +177,8 @@ function _applyBgCssFilter() {
     canvases.bg.style.filter = 'blur(' + _cssBlurPx('bg') + 'px)';
     return;
   }
-  /* 烘焙完成前：用 CSS 大 blur 兜底，避免首帧同步烘焙 */
-  canvases.bg.style.filter = 'blur(' + (BASE_BLURS.bg * bgConfig.blurScale) + 'px)';
+  /* 烘焙完成前：用与旧方案等价的 CSS blur 兜底 */
+  canvases.bg.style.filter = 'blur(' + _targetBlurPx('bg') + 'px)';
 }
 
 function _bakeBgFromSharp() {

@@ -1,5 +1,6 @@
 import { DistanceConstraint } from '../engine/constraints.js';
-import { segmentSegmentClosest } from '../physics/CollisionMath.js';
+import { ptSegDistSq, segmentSegmentClosest } from '../physics/CollisionMath.js';
+import { isWebConstraintAlive } from '../physics/SpatialIndexService.js';
 
 /**
  * 粘网系统 — C方案
@@ -143,10 +144,39 @@ export function mergeStickHits(history, historyCount, newHits, newCount, penetra
 }
 
 /**
+ * 查找离 (px,py) 最近的存活网段（断丝时用当前位置，避免抖离后断到远处）
+ */
+export function findNearestWebSegment(px, py, spiderweb, spatialOpts, fallback) {
+  var best = null;
+  var bestD2 = Infinity;
+
+  function consider(c) {
+    if (!c || !(c instanceof DistanceConstraint) || c.__webGlobal) return;
+    if (spatialOpts && spatialOpts.index) {
+      if (!isWebConstraintAlive(c, spatialOpts.index)) return;
+    } else if (spiderweb.constraints.indexOf(c) === -1) return;
+    var d2 = ptSegDistSq(px, py, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y);
+    if (d2 < bestD2) { bestD2 = d2; best = c; }
+  }
+
+  if (spatialOpts && spatialOpts.index && spatialOpts.queryBuf) {
+    var pad = 80;
+    var count = spatialOpts.index.queryAABB(px - pad, px + pad, py - pad, py + pad, spatialOpts.queryBuf);
+    for (var qi = 0; qi < count; qi++) consider(spatialOpts.index.getConstraint(spatialOpts.queryBuf[qi]));
+  }
+  if (!best) {
+    var cs = spiderweb.constraints;
+    for (var ci = 0; ci < cs.length; ci++) consider(cs[ci]);
+  }
+  return best || fallback || null;
+}
+
+/**
  * 从历史候选点中选一个粘住（双指针原位压缩）
+ * preferX/preferY 有值时（虫子）优先选离当前位置最近的候选
  * @returns {{ candidate: object|null, count: number }}
  */
-export function chooseStickCandidate(history, historyCount, aliveCheck, stickMidBias) {
+export function chooseStickCandidate(history, historyCount, aliveCheck, stickMidBias, preferX, preferY) {
   if (!historyCount) return { candidate: null, count: 0 };
   var write = 0;
   if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
@@ -168,6 +198,18 @@ export function chooseStickCandidate(history, historyCount, aliveCheck, stickMid
     }
   }
   if (!write) return { candidate: null, count: 0 };
+  if (preferX != null && preferY != null) {
+    var nearest = null;
+    var nearestD2 = Infinity;
+    for (var ni = 0; ni < write; ni++) {
+      var nh = history[ni];
+      var dx = nh.x - preferX;
+      var dy = nh.y - preferY;
+      var nd2 = dx * dx + dy * dy;
+      if (nd2 < nearestD2) { nearestD2 = nd2; nearest = nh; }
+    }
+    if (nearest) return { candidate: nearest, count: write };
+  }
   var total = 0;
   for (var i = 0; i < write; i++) {
     var hit = history[i];

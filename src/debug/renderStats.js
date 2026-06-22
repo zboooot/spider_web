@@ -251,11 +251,39 @@ export function statsFormatPanel() {
   ].concat(statsFormatProfile());
 }
 
+var _panelEl = null;
+var _panelVisible = true;
+
+export function statsGetPanelVisible() {
+  return _panelVisible;
+}
+
+export function statsSetPanelVisible(visible, persist) {
+  _panelVisible = !!visible;
+  if (_panelEl) _panelEl.style.display = _panelVisible ? '' : 'none';
+  if (persist !== false) {
+    try {
+      localStorage.setItem('spiderStatsPanelVisible', _panelVisible ? '1' : '0');
+    } catch (e) { }
+  }
+}
+
+function _loadPanelVisiblePref() {
+  try {
+    if (localStorage.getItem('spiderStatsPanelVisible') === '0') _panelVisible = false;
+  } catch (e) { }
+}
+
 export function statsBindPanel(el) {
   if (!el) return function () {};
+  _panelEl = el;
+  _loadPanelVisiblePref();
+  statsSetPanelVisible(_panelVisible, false);
+
   var lastPaint = -_PANEL_REFRESH_MS;
   var cachedText = '';
   return function updatePanel() {
+    if (!_panelVisible) return;
     var now = performance.now();
     if (now - lastPaint < _PANEL_REFRESH_MS) return;
     lastPaint = now;

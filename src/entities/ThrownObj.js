@@ -3,6 +3,7 @@ import { Particle } from '../engine/Particle.js';
 import { DistanceConstraint } from '../engine/constraints.js';
 import { Composite } from '../engine/Composite.js';
 import { audioEngine } from '../audio/audioEngine.js';
+import { findNearestWebSegment } from '../systems/stickSystem.js';
 
 /**
  * 获取物体定义参数
@@ -186,6 +187,10 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
 
   if (this.stuckOnConstraint) {
     var bc = this.stuckOnConstraint;
+    if (this.kind === 'bug') {
+      var nearBc = findNearestWebSegment(p.pos.x, p.pos.y, spiderweb, spatialOpts, bc);
+      if (nearBc) bc = nearBc;
+    }
     if (this.kind !== 'drop') {
       webBreakFlashes.push({
         ax: bc.a.pos.x, ay: bc.a.pos.y,
