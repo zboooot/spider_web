@@ -45,16 +45,9 @@ export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel
   });
 }
 
-/**
- * 收集特效：闪白圆 + 跳字分数
- */
-export function playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT) {
-  var p = obj.particle.pos;
-  var stageRect = screenShellEl.getBoundingClientRect();
-  var canvasRect = canvas.getBoundingClientRect();
-  var sx = (canvasRect.left - stageRect.left) + p.x * (canvasRect.width / W);
-  var sy = (canvasRect.top - stageRect.top) + p.y * (canvasRect.height / H);
+var _PREY_NAMES = { boulder: '毛毛虫!', bug: '苍蝇!', drop: '树叶!' };
 
+export function playCollectFX(sx, sy, collectLayer, kind) {
   var flash = document.createElement('div');
   flash.className = 'collect-flash';
   flash.style.left = sx + 'px';
@@ -63,13 +56,15 @@ export function playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SC
   collectLayer.appendChild(flash);
   setTimeout(function () { if (flash.parentNode) flash.parentNode.removeChild(flash); }, 400);
 
-  var pts = SCORE_MULT[obj.kind] || 1;
-  var pop = document.createElement('div');
-  pop.className = 'collect-score-pop';
-  pop.textContent = '+' + pts;
-  pop.style.left = sx + 'px';
-  pop.style.top = sy + 'px';
-  pop.style.animation = 'collectScoreAnim 0.55s ease-out forwards';
-  collectLayer.appendChild(pop);
-  setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 600);
+  var label = _PREY_NAMES[kind] || '';
+  if (label) {
+    var pop = document.createElement('div');
+    pop.className = 'collect-score-pop';
+    pop.textContent = label;
+    pop.style.left = sx + 'px';
+    pop.style.top = sy + 'px';
+    pop.style.animation = 'collectScoreAnim 0.6s ease-out forwards';
+    collectLayer.appendChild(pop);
+    setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 650);
+  }
 }

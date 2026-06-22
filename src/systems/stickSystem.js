@@ -72,13 +72,27 @@ export function collectPathHitCandidates(px0, py0, px1, py1, catchR, spiderweb, 
 /**
  * 从历史候选点中选一个粘住
  */
-export function chooseStickCandidate(history, spiderweb, stickMidBias) {
+export function chooseStickCandidate(history, spiderweb, stickMidBias, occupiedPoints, minSep) {
   if (!history.length) return null;
   /* 过滤掉已断掉的约束 */
   var alive = history.filter(function (h) {
     return spiderweb.constraints.indexOf(h.c) !== -1;
   });
   if (!alive.length) return null;
+  var spaced = alive;
+  if (occupiedPoints && occupiedPoints.length) {
+    var minSepSq = (minSep || 0) * (minSep || 0);
+    spaced = alive.filter(function (h) {
+      for (var oi = 0; oi < occupiedPoints.length; oi++) {
+        var op = occupiedPoints[oi];
+        var dx = h.x - op.x, dy = h.y - op.y;
+        var req = (minSep || 0) + (op.r || 0);
+        if (dx * dx + dy * dy < Math.max(minSepSq, req * req)) return false;
+      }
+      return true;
+    });
+    if (spaced.length) alive = spaced;
+  }
   var total = 0;
   for (var i = 0; i < alive.length; i++) {
     var h = alive[i];

@@ -135,6 +135,7 @@ VerletJS.prototype.nearestEntity = function () {
   for (c in this.composites) {
     var ps = this.composites[c].particles;
     for (i in ps) {
+      if (ps[i]._noSimDrag) continue;
       var d2 = ps[i].pos.dist2(this.mouse);
       if (d2 <= this.selectionRadius * this.selectionRadius && (entity == null || d2 < d2N)) {
         entity = ps[i];

@@ -23,7 +23,7 @@ import {
 } from './systems/webIntegrity.js';
 
 import {
-  LEVEL_CONFIGS, GAME_DURATION, SCORE_MULT,
+  LEVEL_CONFIGS, GAME_DURATION,
   calcWaveScore, getLevelCfg, framesToTime
 } from './systems/levelSystem.js';
 
@@ -31,7 +31,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot } from './render/objectRenderer.js';
 import { createSpiderAI } from './systems/spiderAI.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
@@ -122,6 +122,15 @@ window.onload = function () {
   var _pointerStartClient = { x: 0, y: 0 };
   var _pointerMoved = false;
   var TAP_MOVE_THRESHOLD = 12;
+  var PICKUP_PULL_STRENGTH = 0.26;
+  var PICKUP_TENSION_THRESHOLD = 0.42;
+  var PICKUP_TENSION_RELEASE_RATE = 0.05;
+  var STUCK_PLUCK_THRESHOLD = 0.65;
+  var STUCK_BREAK_THRESHOLD = 1.1;
+  var STUCK_FORCE_THRESHOLD_BOULDER = 14;
+  var STUCK_FORCE_THRESHOLD_BUG = 10;
+  var _pickupDrag = null;
+  var _suppressMoveCommand = false;
 
   function _getCanvasPos(clientX, clientY) {
     var r = canvas.getBoundingClientRect();
@@ -131,7 +140,84 @@ window.onload = function () {
     };
   }
 
+  function _getWrappedPickupRadius(obj) {
+    if (obj.kind === 'boulder') return obj.def.r * 5.6;
+    if (obj.kind === 'drop') return obj.def.r * 5.0;
+    return obj.def.r * 3.8;
+  }
+
+  function _getPickupForceThreshold(obj) {
+    if (obj.kind === 'boulder') return 8;
+    if (obj.kind === 'bug') return 5;
+    return 3;
+  }
+
+  function _findWrappedPreyAt(clientX, clientY) {
+    var pos = _getCanvasPos(clientX, clientY);
+    var best = null;
+    var bestD2 = Infinity;
+    for (var oi = 0; oi < thrownObjects.length; oi++) {
+      var obj = thrownObjects[oi];
+      if (obj.state !== 'wrapped' && obj.state !== 'stuck') continue;
+      if (obj.state === 'stuck' && obj.kind === 'drop') continue;
+      var p = obj.particle.pos;
+      var radius = _getWrappedPickupRadius(obj);
+      var dx = pos.x - p.x, dy = pos.y - p.y, d2 = dx * dx + dy * dy;
+      if (d2 > radius * radius) continue;
+      if (d2 < bestD2) {
+        best = obj;
+        bestD2 = d2;
+      }
+    }
+    return best ? { obj: best, pos: pos } : null;
+  }
+
+  function _beginWrappedPickup(clientX, clientY) {
+    var hit = _findWrappedPreyAt(clientX, clientY);
+    if (!hit) return false;
+    _pickupDrag = {
+      obj: hit.obj,
+      startX: hit.pos.x,
+      startY: hit.pos.y,
+      pointerX: hit.pos.x,
+      pointerY: hit.pos.y,
+      gripDX: hit.pos.x - hit.obj.particle.pos.x,
+      gripDY: hit.pos.y - hit.obj.particle.pos.y,
+      active: true
+    };
+    hit.obj._pickupTension = 0;
+    hit.obj._pickupCharge = 0;
+    _suppressMoveCommand = true;
+    sim.draggedEntity = null;
+    return true;
+  }
+
+  function _updateWrappedPickup(clientX, clientY) {
+    if (!_pickupDrag) return false;
+    var pos = _getCanvasPos(clientX, clientY);
+    _pickupDrag.pointerX = pos.x;
+    _pickupDrag.pointerY = pos.y;
+    _pointerMoved = true;
+    sim.draggedEntity = null;
+    return false;
+  }
+
+  function _endWrappedPickup() {
+    if (_pickupDrag) {
+      if (_pickupDrag.obj) {
+        _pickupDrag.obj._pickupTension = 0;
+        _pickupDrag.obj._pickupCharge = 0;
+      }
+      _suppressMoveCommand = true;
+      _pickupDrag = null;
+      sim.draggedEntity = null;
+      return true;
+    }
+    return false;
+  }
+
   window.addEventListener('mousedown', function (e) {
+    _beginWrappedPickup(e.clientX, e.clientY);
     var p = _getCanvasPos(e.clientX, e.clientY);
     _dragStart.x = p.x; _dragStart.y = p.y;
     _dragOffset.x = 0; _dragOffset.y = 0;
@@ -140,6 +226,7 @@ window.onload = function () {
     _pointerMoved = false;
   });
   window.addEventListener('mousemove', function (e) {
+    if (_updateWrappedPickup(e.clientX, e.clientY)) return;
     if (sim.mouseDown) {
       var p = _getCanvasPos(e.clientX, e.clientY);
       _dragOffset.x = p.x - _dragStart.x;
@@ -150,10 +237,12 @@ window.onload = function () {
     }
   });
   window.addEventListener('mouseup', function () {
+    _endWrappedPickup();
     _dragOffset.x = 0; _dragOffset.y = 0;
   });
   window.addEventListener('touchstart', function (e) {
     if (e.touches.length > 0) {
+      _beginWrappedPickup(e.touches[0].clientX, e.touches[0].clientY);
       var p = _getCanvasPos(e.touches[0].clientX, e.touches[0].clientY);
       _dragStart.x = p.x; _dragStart.y = p.y;
       _dragOffset.x = 0; _dragOffset.y = 0;
@@ -163,6 +252,7 @@ window.onload = function () {
     }
   }, { passive: true });
   window.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 0 && _updateWrappedPickup(e.touches[0].clientX, e.touches[0].clientY)) return;
     if (sim.mouseDown && e.touches.length > 0) {
       var p = _getCanvasPos(e.touches[0].clientX, e.touches[0].clientY);
       _dragOffset.x = p.x - _dragStart.x;
@@ -173,6 +263,7 @@ window.onload = function () {
     }
   }, { passive: true });
   window.addEventListener('touchend', function () {
+    _endWrappedPickup();
     _dragOffset.x = 0; _dragOffset.y = 0;
   }, { passive: true });
 
@@ -259,6 +350,55 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _webDrawApi = setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return _logicalTimeMs; });
+  }
+
+  function _collectAliveWebPoints() {
+    if (!spiderweb) return [];
+    var alive = [];
+    var seen = [];
+    for (var ci = 0; ci < spiderweb.constraints.length; ci++) {
+      var c = spiderweb.constraints[ci];
+      if (!c || !c.a || !c.b || !c.a.pos || !c.b.pos) continue;
+      if (seen.indexOf(c.a) === -1) { seen.push(c.a); alive.push({ x: c.a.pos.x, y: c.a.pos.y }); }
+      if (seen.indexOf(c.b) === -1) { seen.push(c.b); alive.push({ x: c.b.pos.x, y: c.b.pos.y }); }
+    }
+    for (var si = 0; si < samplePoints.length; si++) {
+      var sp = samplePoints[si];
+      if (!sp || !sp.pa || !sp.pb) continue;
+      alive.push({ x: sp.x, y: sp.y });
+    }
+    return alive;
+  }
+
+  function _snapPointToWeb(x, y, fromPos, maxReach, forwardDir) {
+    var pts = _collectAliveWebPoints();
+    if (!pts.length) return null;
+    var best = null;
+    var bestScore = Number.POSITIVE_INFINITY;
+    var maxReach2 = maxReach != null ? maxReach * maxReach : 0;
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (fromPos) {
+        var fdx = p.x - fromPos.x, fdy = p.y - fromPos.y;
+        var fd2 = fdx * fdx + fdy * fdy;
+        if (maxReach != null && fd2 > maxReach2) continue;
+        if (forwardDir) {
+          var dot = fdx * forwardDir.x + fdy * forwardDir.y;
+          if (dot < -4) continue;
+        }
+      }
+      var dx = p.x - x, dy = p.y - y;
+      var score = dx * dx + dy * dy;
+      if (fromPos) {
+        var tdx = p.x - fromPos.x, tdy = p.y - fromPos.y;
+        score += (tdx * tdx + tdy * tdy) * 0.15;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best ? new Vec2(best.x, best.y) : null;
   }
 
   function buildSpider() {
@@ -365,7 +505,7 @@ window.onload = function () {
       r = 6 + (1 - ease) * 10;
       alpha = 0.55 * ease;
     } else {
-      var outT = Math.min(1, (age - ARRIVE_AGE) / 14);
+      var outT = Math.max(0, Math.min(1, (age - ARRIVE_AGE) / 14));
       r = 6 + outT * 8;
       alpha = 0.55 * (1 - outT * outT);
       if (alpha <= 0) { _targetMarker.active = false; return; }
@@ -467,10 +607,12 @@ window.onload = function () {
 
   /* click to move (desktop) */
   canvas.addEventListener('click', function (e) {
+    if (_suppressMoveCommand) { _suppressMoveCommand = false; return; }
     if (wrappingTarget !== null) return;
     if (_pointerMoved) return;
     var r = canvas.getBoundingClientRect();
-    target = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    var rawTarget = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    target = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
     _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
     _aiPlayerInputThisFrame = true;
   });
@@ -484,6 +626,7 @@ window.onload = function () {
     }
   }, { passive: true });
   canvas.addEventListener('touchend', function (e) {
+    if (_suppressMoveCommand) { _suppressMoveCommand = false; return; }
     if (wrappingTarget !== null) return;
     if (e.changedTouches.length === 1) {
       var t = e.changedTouches[0];
@@ -491,7 +634,8 @@ window.onload = function () {
       var ddy = t.clientY - _touchStartY;
       if (!_pointerMoved && Math.sqrt(ddx * ddx + ddy * ddy) < TAP_MOVE_THRESHOLD) {
         var r = canvas.getBoundingClientRect();
-        target = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
+        var rawTarget = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
+        target = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
         _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
         _aiPlayerInputThisFrame = true;
       }
@@ -840,38 +984,81 @@ window.onload = function () {
     return dx * dx + dy * dy <= rr * rr;
   }
 
+  function beginPlucking(obj) {
+    if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
+    clearObjectConstraints(obj);
+    obj.state = 'plucking';
+    obj._pluckT = 0;
+    obj._pickupTension = 0;
+    obj._pickupCharge = 0;
+    var pullAngle = obj._pickupPullAngle || -Math.PI / 2;
+    obj._pluckVx = Math.cos(pullAngle) * 2.2;
+    obj._pluckVy = Math.sin(pullAngle) * 2.2;
+    obj.particle._noSimDrag = false;
+    obj.particle.lastPos.x = obj.particle.pos.x;
+    obj.particle.lastPos.y = obj.particle.pos.y;
+    sim.draggedEntity = null;
+    var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
+    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind);
+  }
+
   function beginCollectObject(obj) {
     var p = obj.particle;
     var startPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
     var targetPos = getInventoryTarget(obj.kind);
+    var snapshot = buildCollectSnapshot(obj);
+    if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
     clearObjectConstraints(obj);
     obj.state = 'collecting';
-    obj.collectT = 0; obj.collectPause = 12; obj.collectFlash = 0; obj.travelT = 0;
-    obj.collectDur = 40;
+    obj.collectT = 0;
+    obj.collectPause = 10;
+    obj.collectFlash = 0;
+    obj.collectDur = 34;
+    obj.travelT = 0;
+    obj.alpha = 0;
+    obj._shrinkScale = 1;
     obj.collectFromX = startPos.x; obj.collectFromY = startPos.y;
     obj.collectToX = targetPos.x; obj.collectToY = targetPos.y;
     p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
-    obj.alpha = 0;
+    obj._pickupTension = 0;
+    obj._pickupCharge = 0;
     obj.collectEl = document.createElement('div');
     obj.collectEl.className = 'collect-token';
-    obj.collectCanvas = document.createElement('canvas');
-    obj.collectCanvas.className = 'collect-token-art';
-    obj.collectCanvas.width = 34; obj.collectCanvas.height = 34;
-    renderArtToCanvas(obj.collectCanvas, obj.kind);
-    obj.collectEl.appendChild(obj.collectCanvas);
+    if (snapshot) {
+      obj.collectCanvas = snapshot.canvas;
+      obj.collectEl.style.width = snapshot.size + 'px';
+      obj.collectEl.style.height = snapshot.size + 'px';
+      obj.collectEl.style.marginLeft = (-snapshot.size * 0.5) + 'px';
+      obj.collectEl.style.marginTop = (-snapshot.size * 0.5) + 'px';
+      obj.collectEl.appendChild(snapshot.canvas);
+      obj._collectStartScale = 1;
+      obj._collectEndScale = 34 / snapshot.size;
+    } else {
+      obj.collectCanvas = document.createElement('canvas');
+      obj.collectCanvas.className = 'collect-token-art';
+      obj.collectCanvas.width = 34; obj.collectCanvas.height = 34;
+      renderArtToCanvas(obj.collectCanvas, obj.kind);
+      obj.collectEl.appendChild(obj.collectCanvas);
+      obj._collectStartScale = 1.15;
+      obj._collectEndScale = 0.82;
+    }
     obj.collectEl.style.left = obj.collectFromX + 'px';
     obj.collectEl.style.top = obj.collectFromY + 'px';
     collectLayer.appendChild(obj.collectEl);
+    obj.particle._noSimDrag = false;
   }
 
   function beginWrapping(obj) {
-    clearObjectConstraints(obj);
     obj.state = 'wrapping';
     obj.wrapT = 0;
     obj.wrapDur = obj.def.wrapDur;
     obj.particle.lastPos.mutableSet(obj.particle.pos);
+    obj.particle._noSimDrag = true;
     wrappingTarget = obj;
     target = null;
+
+    obj._silkLines = null;
+    obj._silkSpiral = buildSilkSpiral(obj);
   }
 
   function tryCollectObjects() {
@@ -880,10 +1067,10 @@ window.onload = function () {
     var abdomen = spider.abdomen.pos;
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
-      if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
-      if (circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
-        || circlesOverlap(abdomen.x, abdomen.y, 19, p.x, p.y, obj.def.collectRadius)) {
+      if (!circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
+        && !circlesOverlap(abdomen.x, abdomen.y, 19, p.x, p.y, obj.def.collectRadius)) continue;
+      if (obj.state === 'stuck') {
         beginWrapping(obj);
         return;
       }
@@ -979,8 +1166,35 @@ window.onload = function () {
             obj.hitHistory.splice(0, obj.hitHistory.length - P.stickHistory);
           }
           if (obj.penetrationDist >= obj.stickDelay && obj.hitHistory.length) {
-            var chosen = chooseStickCandidate(obj.hitHistory, spiderweb, P.stickMidBias);
-            if (chosen) obj.stickToPoint(chosen, spiderweb);
+            var occupiedStickPoints = [];
+            for (var oj = 0; oj < thrownObjects.length; oj++) {
+              var otherObj = thrownObjects[oj];
+              if (otherObj === obj || !otherObj.particle) continue;
+              if (otherObj.state !== 'stuck' && otherObj.state !== 'sticking') continue;
+              occupiedStickPoints.push({
+                x: otherObj.particle.pos.x,
+                y: otherObj.particle.pos.y,
+                r: otherObj.def ? otherObj.def.r : 0
+              });
+            }
+            var chosen = chooseStickCandidate(
+              obj.hitHistory,
+              spiderweb,
+              P.stickMidBias,
+              occupiedStickPoints,
+              (obj.def ? obj.def.r : 0) + 10
+            );
+            if (chosen) {
+              var cdx = chosen.x - p.pos.x, cdy = chosen.y - p.pos.y;
+              var maxStickDist = P.stickCatchRadius * 1.35;
+              if (cdx * cdx + cdy * cdy <= maxStickDist * maxStickDist) {
+                obj.stickToPoint(chosen, spiderweb);
+              } else {
+                obj.enteredWebZone = false;
+                obj.penetrationDist = 0;
+                obj.hitHistory = [];
+              }
+            }
           }
           if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
             obj.enteredWebZone = false;
@@ -1001,16 +1215,55 @@ window.onload = function () {
         if (obj.stickT >= 1) {
           if (obj.cA) obj.cA.distance = obj.stickyToA;
           if (obj.cB) obj.cB.distance = obj.stickyToB;
-          obj.state = 'stuck'; obj.stayTimer = 0;
           if (obj.kind === 'bug') audioEngine.stopBugBuzz(thrownObjects.indexOf(obj));
           audioEngine.playSfxLand(obj.kind);
           var _ws = obj._stickIsRadial ? P.radialWobbleScale : P.spiralWobbleScale;
-          if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
-          if (obj.kind === 'bug') obj.wobbleAmp = 0.28 * _ws;
-          if (obj.kind === 'drop') obj.wobbleAmp = 0.04 * _ws;
+          if (obj.kind === 'drop') {
+            obj.state = 'wrapped';
+            obj._popT = 0;
+            obj.particle._noSimDrag = true;
+          } else {
+            obj.state = 'stuck'; obj.stayTimer = 0;
+            if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
+            if (obj.kind === 'bug') obj.wobbleAmp = 0.28 * _ws;
+          }
         }
 
       } else if (obj.state === 'stuck') {
+        if (_pickupDrag && _pickupDrag.obj === obj) {
+          var sTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+          var sTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+          var sPullDx = sTargetGripX - p.pos.x;
+          var sPullDy = sTargetGripY - p.pos.y;
+          var sAppliedForce = Math.sqrt(sPullDx * sPullDx + sPullDy * sPullDy) * PICKUP_PULL_STRENGTH / Math.max(1, obj.def.r);
+          var sForceThresh = obj.kind === 'boulder' ? STUCK_FORCE_THRESHOLD_BOULDER : STUCK_FORCE_THRESHOLD_BUG;
+          p.pos.x += sPullDx * PICKUP_PULL_STRENGTH;
+          p.pos.y += sPullDy * PICKUP_PULL_STRENGTH;
+          obj._pickupPullAngle = Math.atan2(sPullDy, sPullDx);
+          var sTensionA = 0, sTensionB = 0;
+          if (obj.cA) { var sAnchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a; sTensionA = Math.max(0, p.pos.dist(sAnchorA.pos) / Math.max(1, obj.cA.distance) - 1); }
+          if (obj.cB) { var sAnchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a; sTensionB = Math.max(0, p.pos.dist(sAnchorB.pos) / Math.max(1, obj.cB.distance) - 1); }
+          var sTension = sTensionA + sTensionB;
+          obj._pickupTension = sTension;
+          obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
+          if (sAppliedForce >= sForceThresh) {
+            if (sTension >= STUCK_BREAK_THRESHOLD) {
+              _pickupDrag = null;
+              sim.draggedEntity = null;
+              obj._pickupTension = 0; obj._pickupCharge = 0;
+              obj.state = 'freeing'; obj.freeTimer = 0;
+              continue;
+            } else if (sTension >= STUCK_PLUCK_THRESHOLD) {
+              _pickupDrag = null;
+              sim.draggedEntity = null;
+              beginPlucking(obj);
+              continue;
+            }
+          }
+        } else {
+          obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
+          obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
+        }
         obj.stayTimer++;
         var sagRate = obj.kind === 'boulder' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
         p.pos.y += sagRate;
@@ -1079,8 +1332,58 @@ window.onload = function () {
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
+          obj.state = 'wrapped';
+          obj._popT = 0;
           audioEngine.playCollectSound(obj.kind);
-          playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT);
+        }
+
+      } else if (obj.state === 'wrapped') {
+        if (obj._popT <= obj._popDur) obj._popT++;
+        if (_pickupDrag && _pickupDrag.obj === obj) {
+          var targetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+          var targetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+          var pullDx = targetGripX - p.pos.x;
+          var pullDy = targetGripY - p.pos.y;
+          var appliedPullForce = Math.sqrt(pullDx * pullDx + pullDy * pullDy) * PICKUP_PULL_STRENGTH / Math.max(1, obj.def.r);
+          p.pos.x += pullDx * PICKUP_PULL_STRENGTH;
+          p.pos.y += pullDy * PICKUP_PULL_STRENGTH;
+          obj._pickupPullAngle = Math.atan2(pullDy, pullDx);
+          var tensionA = 0;
+          var tensionB = 0;
+          if (obj.cA) {
+            var anchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+            tensionA = Math.max(0, p.pos.dist(anchorA.pos) / Math.max(1, obj.cA.distance) - 1);
+          }
+          if (obj.cB) {
+            var anchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+            tensionB = Math.max(0, p.pos.dist(anchorB.pos) / Math.max(1, obj.cB.distance) - 1);
+          }
+          obj._pickupTension = tensionA + tensionB;
+          obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+          if (obj._pickupTension >= PICKUP_TENSION_THRESHOLD && appliedPullForce >= _getPickupForceThreshold(obj)) {
+            beginPlucking(obj);
+            continue;
+          }
+        } else {
+          obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
+          obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
+        }
+
+      } else if (obj.state === 'plucking') {
+        obj._pluckT++;
+        var pluckPop  = 20;
+        var pluckTot  = pluckPop;
+        if (obj._pluckT <= pluckPop) {
+          var gravity = 0.18;
+          obj._pluckVy += gravity;
+          obj._pluckVx *= 0.88;
+          obj._pluckVy *= 0.88;
+          p.pos.x += obj._pluckVx;
+          p.pos.y += obj._pluckVy;
+          p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
+        }
+        if (obj._pluckT >= pluckTot) {
+          audioEngine.playCollectSound(obj.kind);
           beginCollectObject(obj);
         }
 
@@ -1093,21 +1396,21 @@ window.onload = function () {
         if (obj.collectPause > 0) {
           obj.collectPause--;
           obj.collectFlash++;
-          var holdT = 1 - obj.collectPause / 12;
-          var pulse = Math.sin(holdT * Math.PI * 3.2) * 0.18;
-          drawX += Math.sin(obj.collectFlash * 0.9) * 1.8;
-          drawY += Math.cos(obj.collectFlash * 0.8) * 1.1;
-          scale = 1.05 + holdT * 0.42 + pulse;
-          opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
+          var holdT = 1 - obj.collectPause / 10;
+          drawX += Math.sin(obj.collectFlash * 0.9) * 1.6;
+          drawY += Math.cos(obj.collectFlash * 0.8) * 1.0;
+          scale = obj._collectStartScale + (Math.max(1.08, obj._collectStartScale * 1.08) - obj._collectStartScale) * holdT;
+          opacity = 0.9 + Math.sin(holdT * Math.PI) * 0.1;
         } else {
           obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
-          var easeIn = obj.travelT * obj.travelT * obj.travelT;
+          var easeIn = 1 - Math.pow(1 - obj.travelT, 3);
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
-          scale = 1.32 - (0.5 * obj.travelT);
+          scale = Math.max(obj._collectEndScale, 1 + (obj._collectEndScale - 1) * easeIn);
           opacity = 1 - obj.travelT * 0.08;
         }
 
+        obj.alpha = 0;
         if (obj.collectEl) {
           obj.collectEl.style.left = drawX + 'px';
           obj.collectEl.style.top = drawY + 'px';
@@ -1375,7 +1678,7 @@ window.onload = function () {
     if (!wrappingTarget && !_spawnAnim.active && spider) {
       var _aiResult = _spiderAI.update(spider, spiderweb, thrownObjects, _aiPlayerInputThisFrame);
       if (_aiResult && !target) {
-        target = _aiResult;
+        target = _snapPointToWeb(_aiResult.x, _aiResult.y) || _aiResult;
         _aiOwnsTarget = true;
       }
       if (!target) _aiOwnsTarget = false;
@@ -1395,7 +1698,15 @@ window.onload = function () {
       target = null;
     } else if (target) {
       _locomotionState = 'ACTIVE';
-      var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
+      var tx = spider.thorax.pos;
+      var desiredDx = target.x - tx.x, desiredDy = target.y - tx.y;
+      var desiredDist = Math.sqrt(desiredDx * desiredDx + desiredDy * desiredDy);
+      var desiredDir = desiredDist > 0.001 ? new Vec2(desiredDx / desiredDist, desiredDy / desiredDist) : null;
+      var moveAnchor = _snapPointToWeb(target.x, target.y, tx, _aiOwnsTarget ? 28 : 42, desiredDir);
+      if (!moveAnchor) {
+        target = null;
+      } else {
+        var dx = moveAnchor.x - tx.x, dy = moveAnchor.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold) {
         moving = true;
@@ -1407,6 +1718,7 @@ window.onload = function () {
           spider.particles[p].lastPos.x += nx; spider.particles[p].lastPos.y += ny;
         }
       } else target = null;
+      }
     }
 
     if (_locomotionState === 'IDLE_LOCKED' && _shouldUnlockIdle()) {

@@ -69,6 +69,16 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.collectCanvas = null;
   this.wrapT = 0;
   this.wrapDur = 0;
+  this._silkLines = null;
+  this._silkSpiral = null;
+  this._popT = 0;
+  this._popDur = 18;
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this._pickupPullAngle = 0;
+  this._pluckT = 0;
+  this._pluckVx = 0;
+  this._pluckVy = 0;
 
   var sx, sy, svx = 0, svy = 0;
 
@@ -110,6 +120,8 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.prevX = sx; this.prevY = sy;
   this.particle = new Particle(new Vec2(sx, sy));
   this.particle.lastPos.mutableSet(new Vec2(sx - svx, sy - svy));
+  this.particle._ownerObj = this;
+  this.particle._noSimDrag = false;
   this.comp = new Composite();
   this.comp.particles.push(this.particle);
   this.comp.drawParticles = function () { };
@@ -134,6 +146,8 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
   if (!pt) return false;
   if (spiderweb.constraints.indexOf(pt.c) === -1) return false;
   var p = this.particle;
+  p.pos.mutableSet(new Vec2(pt.x, pt.y));
+  p.lastPos.mutableSet(new Vec2(pt.x, pt.y));
   var dA = p.pos.dist(pt.c.a.pos);
   var dB = p.pos.dist(pt.c.b.pos);
   this.stickyFromA = dA;
