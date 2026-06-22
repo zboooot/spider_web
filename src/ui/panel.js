@@ -53,6 +53,19 @@ export function initPanel(P, DEFAULTS, callbacks) {
 
   document.getElementById('btn-rebuild').onclick = function () { callbacks.buildWeb(); };
 
+  /* Auto Play 开关 */
+  var autoPlayBtn = document.getElementById('btn-autoplay');
+  function renderAutoPlayBtn(on) {
+    autoPlayBtn.textContent = on ? '🤖 Auto Play: ON' : '🤖 Auto Play: OFF';
+    autoPlayBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    autoPlayBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderAutoPlayBtn(callbacks.isAutoPlayOn());
+  autoPlayBtn.addEventListener('click', function () {
+    var on = callbacks.toggleAutoPlay();
+    renderAutoPlayBtn(on);
+  });
+
   document.getElementById('btn-save').onclick = function () {
     localStorage.setItem('spiderPanelParams', JSON.stringify(P));
     var h = document.getElementById('save-hint');
@@ -69,6 +82,8 @@ export function initPanel(P, DEFAULTS, callbacks) {
       if (el) { el.value = P[key]; lbl.textContent = P[key]; }
     });
     callbacks.onMotionChange();
+    callbacks.setAutoPlay(true);
+    renderAutoPlayBtn(true);
     callbacks.clearAllObjects();
     callbacks.buildWeb();
     callbacks.buildSpider();
@@ -78,5 +93,6 @@ export function initPanel(P, DEFAULTS, callbacks) {
   document.getElementById('btn-boulder').onclick = function () { callbacks.launchObject('boulder'); };
   document.getElementById('btn-bug').onclick = function () { callbacks.launchObject('bug'); };
   document.getElementById('btn-drop').onclick = function () { callbacks.launchObject('drop'); };
+  document.getElementById('btn-poop').onclick = function () { callbacks.launchObject('poop'); };
   document.getElementById('btn-clearObj').onclick = callbacks.clearAllObjects;
 }

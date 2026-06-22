@@ -33,15 +33,15 @@ import {
 } from './physics/SpatialIndexService.js';
 
 import {
-  LEVEL_CONFIGS, GAME_DURATION, SCORE_MULT,
-  calcWaveScore, getLevelCfg, framesToTime
+  LEVEL_CONFIGS, SCORE_MULT,
+  calcCollectedSilk, getLevelCfg, getWaveCfg, framesToTime
 } from './systems/levelSystem.js';
 
 import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects } from './render/objectRenderer.js';
+import { drawThrownObjects, drawWrappingOverlay } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -52,6 +52,7 @@ import {
   bgConfig,
   applyBgBlur,
   applyBgPresentation,
+  applyBgVignette,
   setBgParticleCount,
   THEMES as BG_THEMES
 } from './render/sylvanBackground.js';
@@ -194,6 +195,7 @@ window.onload = function () {
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
   var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
+  var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
 
   /* ── blink ── */
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240) };
@@ -231,7 +233,7 @@ window.onload = function () {
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = USE_LEGACY_COLLISION ? getWebSamplePoints(spiderweb, 4) : [];
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; });
   }
 
   function buildSpider() {
@@ -319,13 +321,28 @@ window.onload = function () {
      THROWN OBJECTS & GAME STATE
   ================================================================ */
   var thrownObjects = [];
-  var objCounts = { boulder: 0, bug: 0, drop: 0 };
+  var objCounts = { boulder: 0, bug: 0, drop: 0, poop: 0 };
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
+  var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
+  var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
+  var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
+  var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
+  var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
+  var poopStunTimer = 0;
+  var _poopPointerDown = null;
+  var _draggingPoop = null;
+  var _suppressPriorityClick = false;
+  var WAVE_FALLING = 'WAVE_FALLING';
+  var WAVE_PAUSE = 'WAVE_PAUSE';
+  var WAVE_OVERTIME = 'WAVE_OVERTIME';
 
   var gameState = 'IDLE';
-  var currentLevel = 0;
-  var totalScore = 0;
+  var currentLevelIndex = 0;
+  var currentWaveIndex = 0;
+  var currentWavePhase = WAVE_FALLING;
+  var wavePhaseTimer = 0;
+  var totalSilkCount = 0;
   var levelScored = false;
   var pendingLevelCheck = false;
   var levelTimer = 0;
@@ -350,6 +367,13 @@ window.onload = function () {
   var webLossPct = 0;
   var webBreakFlashes = [];
   var _breakFrame = 0;
+  var _burstParticles = []; /* 打包完成放射粒子 */
+  var _currentTimeScale = 1.0; /* 子弹时间：供投掷物积分使用 */
+  var _webDisplayPct = 100;   /* 当前显示值 */
+  var _webTargetPct = 100;    /* 目标值 */
+  var _webRollTimer = 0;      /* 滚动帧计数 */
+  var _webRollFrom = 100;     /* 滚动起始值 */
+  var silkCount = 0;
 
   /* ── 爆发-冷却掉落状态机 ── */
   var spawnPhase = 'cooldown';
@@ -362,23 +386,307 @@ window.onload = function () {
   var webGridBuildIdx = 0;
   var webGridInitCover = 0;
 
-  /* helper: getLevelCfg with current difficulty */
-  function getCfg(n) { return getLevelCfg(n, difficultyLevel); }
+  /* helper: get level/wave cfg with current difficulty */
+  function getLevelCfgAt(n) { return getLevelCfg(n, difficultyLevel); }
+  function getWaveCfgAt(levelIndex, waveIndex) { return getWaveCfg(levelIndex, waveIndex, difficultyLevel); }
+
+  function refreshWavePhaseHUD() {
+    var el = document.getElementById('phase-bar');
+    if (!el) return;
+    if (gameState !== 'LEVEL_ACTIVE') {
+      el.style.display = 'none';
+      return;
+    }
+    var phaseLabel = currentWavePhase === WAVE_PAUSE ? 'PAUSE'
+      : currentWavePhase === WAVE_OVERTIME ? 'OVERTIME'
+      : 'FALLING';
+    el.style.display = 'block';
+    el.textContent = 'L' + (currentLevelIndex + 1) + ' W' + (currentWaveIndex + 1) + ' ' + phaseLabel;
+  }
+
+  function resetSpawnerState(cfg) {
+    spawnPhase = 'cooldown';
+    cooldownTimer = 0 - (cfg.firstBurstDelay || 0);
+    burstTimer = 0;
+    burstCount = 0;
+    burstsDone = 0;
+    burstCountCur = 0;
+  }
+
+  function enterWaveFalling(waveIndex, overtime) {
+    currentWaveIndex = waveIndex;
+    currentWavePhase = overtime ? WAVE_OVERTIME : WAVE_FALLING;
+    wavePhaseTimer = 0;
+    resetSpawnerState(getWaveCfgAt(currentLevelIndex, currentWaveIndex));
+    refreshWavePhaseHUD();
+  }
+
+  function enterWavePause() {
+    currentWavePhase = WAVE_PAUSE;
+    wavePhaseTimer = 0;
+    refreshWavePhaseHUD();
+  }
+
+  function advanceWavePhase() {
+    var levelCfg = getLevelCfgAt(currentLevelIndex);
+    if (currentWaveIndex < levelCfg.waves.length - 1) {
+      enterWaveFalling(currentWaveIndex + 1, false);
+      return;
+    }
+    enterWaveFalling(currentWaveIndex, true);
+  }
+
+  function refreshSilkHUD() {
+    var el = document.getElementById('silk-count');
+    if (el) el.textContent = String(silkCount);
+  }
 
   /* ── show IDLE start screen ── */
   showOverlay(
     '<div class="overlay-title">SPIDER WEB</div>'
     + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
-    + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Survive for 3 minutes. If the web breaks, you lose.</div>'
+    + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
     + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
   );
   document.getElementById('btn-start-game').onclick = startGameFromBeginning;
 
-  /* click to move (desktop) */
-  canvas.addEventListener('click', function (e) {
-    if (wrappingTarget !== null) return;
+  function pickObjectAt(x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 16;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return obj;
+    }
+    return null;
+  }
+
+  function pickPoopAt(x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.kind !== 'poop' || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 18;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return obj;
+    }
+    return null;
+  }
+
+  function clearPoopDragState() {
+    if (_draggingPoop && _draggingPoop.obj) {
+      _draggingPoop.obj.playerDragging = false;
+      _draggingPoop.obj.dragStrain = 0;
+    }
+    _draggingPoop = null;
+    _poopPointerDown = null;
+  }
+
+  function spawnPoopBurst(x, y) {
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.020,
+      r: 13,
+      grow: 0.156,
+      drag: 0.904,
+      speedScale: 1.5,
+      smoke: true,
+      occlude: 0.88,
+      color: '#0a0808'
+    });
+
+    for (var i = 0; i < 36; i++) {
+      var ang = (i / 36) * Math.PI * 2 + Math.random() * 0.6;
+      var spd = 2.1 + Math.random() * 3.4;
+      _burstParticles.push({
+        x: x, y: y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd * 0.82,
+        life: 1.0,
+        decay: 0.024 + Math.random() * 0.012,
+        r: 6.76 + Math.random() * 7.54,
+        grow: 0.091 + Math.random() * 0.065,
+        drag: 0.856 + Math.random() * 0.032,
+        speedScale: 1.5,
+        smoke: true,
+        occlude: 0.78 + Math.random() * 0.08,
+        color: ['#090707', '#151110', '#211917', '#2b221f'][Math.floor(Math.random() * 4)]
+      });
+    }
+
+    for (var j = 0; j < 12; j++) {
+      var ang2 = (j / 12) * Math.PI * 2 + Math.random() * 0.4;
+      var spd2 = 4.6 + Math.random() * 2.8;
+      _burstParticles.push({
+        x: x, y: y,
+        vx: Math.cos(ang2) * spd2,
+        vy: Math.sin(ang2) * spd2 * 0.76,
+        life: 1.0,
+        decay: 0.040 + Math.random() * 0.016,
+        r: 4.16 + Math.random() * 3.12,
+        grow: 0.052 + Math.random() * 0.039,
+        drag: 0.810 + Math.random() * 0.036,
+        speedScale: 1.5,
+        smoke: true,
+        occlude: 0.82,
+        color: '#120d0c'
+      });
+    }
+  }
+
+  function handlePoopCapture(obj) {
+    var idx = thrownObjects.indexOf(obj);
+    if (idx === -1) return;
+    clearObjectConstraints(obj);
+    obj.stuckOnConstraint = null;
+    spawnPoopBurst(obj.particle.pos.x, obj.particle.pos.y);
+    if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
+      clearPriorityTarget();
+    }
+    if (autoChaseTarget === obj) autoChaseTarget = null;
+    obj.destroy(sim);
+    thrownObjects.splice(idx, 1);
+    updateBadge(obj.kind, -1);
+    target = null;
+    poopStunTimer = 180;
+    pauseAndClearCurrentTarget();
+  }
+
+  function beginPoopPointer(clientX, clientY) {
+    var p = _getCanvasPos(clientX, clientY);
+    var poop = pickPoopAt(p.x, p.y);
+    if (!poop) return;
+    _poopPointerDown = {
+      obj: poop,
+      startX: p.x,
+      startY: p.y,
+      objStartX: poop.particle.pos.x,
+      objStartY: poop.particle.pos.y,
+      active: true
+    };
+  }
+
+  function updatePoopPointer(clientX, clientY) {
+    if (!_poopPointerDown || !_poopPointerDown.active) return;
+    if (thrownObjects.indexOf(_poopPointerDown.obj) === -1 || _poopPointerDown.obj.state !== 'stuck') {
+      clearPoopDragState();
+      return;
+    }
+    var p = _getCanvasPos(clientX, clientY);
+    var dx = p.x - _poopPointerDown.startX;
+    var dy = p.y - _poopPointerDown.startY;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (!_draggingPoop && dist >= 10) {
+      _draggingPoop = {
+        obj: _poopPointerDown.obj,
+        startX: _poopPointerDown.objStartX,
+        startY: _poopPointerDown.objStartY,
+        targetX: _poopPointerDown.objStartX,
+        targetY: _poopPointerDown.objStartY,
+        lastDx: dx,
+        lastDy: dy,
+        holdFrames: 0
+      };
+      _draggingPoop.obj.playerDragging = true;
+      _suppressPriorityClick = true;
+      if (sim.draggedEntity) sim.draggedEntity = null;
+    }
+    if (!_draggingPoop) return;
+    var resistance = _draggingPoop.obj.def.dragResistance || 0.42;
+    _draggingPoop.targetX = _draggingPoop.startX + dx * resistance;
+    _draggingPoop.targetY = _draggingPoop.startY + dy * resistance;
+    _draggingPoop.lastDx = dx;
+    _draggingPoop.lastDy = dy;
+    var peelThreshold = Math.max(1, _draggingPoop.obj.def.peelThreshold);
+    var overThreshold = dist >= peelThreshold;
+    if (overThreshold) _draggingPoop.holdFrames += _currentTimeScale;
+    else _draggingPoop.holdFrames = 0;
+    var holdNeed = Math.max(1, _draggingPoop.obj.def.peelHoldFrames || 60);
+    var holdRatio = Math.min(1, _draggingPoop.holdFrames / holdNeed);
+    _draggingPoop.obj.dragStrain = Math.min(1.45, dist / peelThreshold + holdRatio * 0.45);
+    var peelDx = p.x - _draggingPoop.startX;
+    var peelDy = p.y - _draggingPoop.startY;
+    if (overThreshold && _draggingPoop.holdFrames >= holdNeed) {
+      _draggingPoop.obj.peelOff(peelDx, peelDy);
+      _draggingPoop = null;
+      _poopPointerDown = null;
+    }
+  }
+
+  function endPoopPointer() {
+    if (_draggingPoop && _draggingPoop.obj) {
+      _draggingPoop.obj.playerDragging = false;
+      _draggingPoop.obj.dragStrain = 0;
+      _draggingPoop = null;
+      _poopPointerDown = null;
+      return;
+    }
+    _poopPointerDown = null;
+  }
+
+  function setPriorityTarget(x, y) {
+    var picked = pickObjectAt(x, y);
+    if (picked) {
+      userPriorityTarget = { type: 'object', obj: picked };
+      return;
+    }
+    /* 点目标只允许落在当前仍有网线覆盖的区域；网外或破洞无效 */
+    if (!spiderweb || !cellCovered(x, y, spiderweb, webGridCoverD)) return;
+    userPriorityTarget = { type: 'point', point: new Vec2(x, y) };
+  }
+
+  function setPriorityTargetFromClient(clientX, clientY) {
     var r = canvas.getBoundingClientRect();
-    target = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    setPriorityTarget((clientX - r.left) * (W / r.width), (clientY - r.top) * (H / r.height));
+  }
+
+  function clearPriorityTarget() {
+    userPriorityTarget = null;
+  }
+
+  function isTargetObjectChaseable(obj) {
+    return !!(obj && thrownObjects.indexOf(obj) !== -1 && obj.state === 'stuck' && !obj.playerDragging);
+  }
+
+  function pauseAndClearCurrentTarget() {
+    target = null;
+    autoChaseTarget = null;
+    _autoPlayPause = 30; /* 0.5秒停顿 */
+  }
+
+  function getActivePriorityObject() {
+    if (!userPriorityTarget || userPriorityTarget.type !== 'object') return null;
+    var obj = userPriorityTarget.obj;
+    return isTargetObjectChaseable(obj) ? obj : null;
+  }
+
+  /* click to move (desktop) */
+  canvas.addEventListener('mousedown', function (e) {
+    beginPoopPointer(e.clientX, e.clientY);
+  });
+  canvas.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (_suppressPriorityClick) {
+      _suppressPriorityClick = false;
+      return;
+    }
+    setPriorityTargetFromClient(e.clientX, e.clientY);
+  });
+  window.addEventListener('mousemove', function (e) {
+    updatePoopPointer(e.clientX, e.clientY);
+  });
+  window.addEventListener('mouseup', function () {
+    endPoopPointer();
+  });
+
+  /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
+  screenShellEl.addEventListener('click', function (e) {
+    if (e.target === canvas) return;
+    if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay')) return;
+    setPriorityTargetFromClient(e.clientX, e.clientY);
   });
 
   /* tap to move (iOS / mobile) — touchend with no drag */
@@ -387,42 +695,63 @@ window.onload = function () {
     if (e.touches.length === 1) {
       _touchStartX = e.touches[0].clientX;
       _touchStartY = e.touches[0].clientY;
+      beginPoopPointer(_touchStartX, _touchStartY);
     }
   }, { passive: true });
   canvas.addEventListener('touchend', function (e) {
-    if (wrappingTarget !== null) return;
     if (e.changedTouches.length === 1) {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
-      if (Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
-        var r = canvas.getBoundingClientRect();
-        target = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
+      if (!_suppressPriorityClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+        setPriorityTargetFromClient(t.clientX, t.clientY);
       }
+      _suppressPriorityClick = false;
     }
+    endPoopPointer();
+  }, { passive: true });
+  window.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 0) updatePoopPointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  window.addEventListener('touchend', function () {
+    endPoopPointer();
   }, { passive: true });
 
   /* ── Game flow functions ── */
+  function createWebOverrideForLevel(levelIndex) {
+    var maxLevel = Math.max(1, LEVEL_CONFIGS.length - 1);
+    var phase = Math.max(0, Math.min(1, levelIndex / maxLevel));
+    /* 复杂度随关卡递增：辐射数、圈数、半径逐步增加，只保留少量随机抖动 */
+    var segsBase = 20 + Math.round(phase * 14);   /* 20 -> 34 */
+    var depthBase = 8 + Math.round(phase * 7);    /* 8 -> 15 */
+    var radiusBase = 1.22 + phase * 0.28;         /* 1.22 -> 1.50 */
+    return {
+      segs: segsBase + Math.floor(Math.random() * 3),
+      depth: depthBase + Math.floor(Math.random() * 2),
+      radius: Math.round(Math.min(W, H) / 2 * (radiusBase + Math.random() * 0.08) * WEB_SCALE),
+      cx: cx + (Math.random() - 0.5) * 24,
+      cy: cy + (Math.random() - 0.5) * 24,
+      pinStep: 4
+    };
+  }
+
   function startGame() {
     wrappingTarget = null;
     target = null;
-    totalScore = 0;
-    currentLevel = 0;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    clearPoopDragState();
+    silkCount = 0;
+    refreshSilkHUD();
+    totalSilkCount = 0;
+    poopStunTimer = 0;
+    currentLevelIndex = 0;
+    currentWaveIndex = 0;
     gameFrames = 0;
     levelScored = false;
-    var scoreTxtEl = document.getElementById('score-txt');
-    var scoreBarEl = document.getElementById('score-bar');
-    if (scoreTxtEl) scoreTxtEl.textContent = '0';
-    if (scoreBarEl) scoreBarEl.style.display = 'none';
-    document.getElementById('wave-bar').style.display = 'block';
-    webOverride = {
-      segs: 20 + Math.floor(Math.random() * 18),
-      depth: 8 + Math.floor(Math.random() * 7),
-      radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
-      cx: cx + (Math.random() - 0.5) * 40,
-      cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 3 + Math.floor(Math.random() * 4)
-    };
+    var phaseBarEl = document.getElementById('phase-bar');
+    if (phaseBarEl) phaseBarEl.style.display = 'none';
+    webOverride = createWebOverrideForLevel(0);
     buildWeb(); buildSpider();
     startLevel(0);
   }
@@ -435,24 +764,27 @@ window.onload = function () {
   function startLevel(n) {
     wrappingTarget = null;
     target = null;
-    currentLevel = n;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    clearPoopDragState();
+    currentLevelIndex = n;
+    currentWaveIndex = 0;
+    currentWavePhase = WAVE_FALLING;
+    wavePhaseTimer = 0;
     levelTimer = 0;
     levelScored = false;
     pendingLevelCheck = false;
+    poopStunTimer = 0;
     levelCollected = { boulder: 0, bug: 0, drop: 0 };
     inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
     clearAllObjects();
-    var cfg = getCfg(n);
-    spawnPhase = 'cooldown';
-    cooldownTimer = 0 - (cfg.firstBurstDelay || 60);
-    burstTimer = 0; burstCount = 0; burstsDone = 0; burstCountCur = 0;
+    var cfg = getLevelCfgAt(n);
     ['boulder', 'bug', 'drop'].forEach(function (k) {
       var el = document.getElementById('inv-' + k + '-count');
       if (el) el.textContent = '0/' + cfg.targets[k];
     });
     gameState = 'LEVEL_ACTIVE';
     hideOverlay();
-    document.getElementById('wave-bar').style.display = 'block';
     levelTimer = 0;
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
@@ -463,6 +795,7 @@ window.onload = function () {
     webIntegrityState.dirtyIndices = [];
     webIntegrityState.dirtyFlags = null;
     webGridBuildIdx = 0; webGridInitCover = 0;
+    brokenEnds = [];
 
     /* ── 同步切换背景主题与BGM ── */
     P.bgTheme = n;
@@ -471,33 +804,31 @@ window.onload = function () {
       d.classList.toggle('active', idx === n);
     });
     if (P.bgMusicOn) audioEngine.playLevelBGM(n);
+    enterWaveFalling(0, false);
   }
 
   function endLevel() {
     if (gameState !== 'LEVEL_ACTIVE' && gameState !== 'LEVEL_RESULT') return;
     if (levelScored) return;
     levelScored = true;
-    var cfg = getCfg(currentLevel);
-    var ws = calcWaveScore(levelCollected, cfg.targets);
-    totalScore += ws;
-    var scoreTxtEl = document.getElementById('score-txt');
-    if (scoreTxtEl) scoreTxtEl.textContent = totalScore;
-    var isLast = (currentLevel >= LEVEL_CONFIGS.length - 1);
+    var cfg = getLevelCfgAt(currentLevelIndex);
+    var levelSilkGain = calcCollectedSilk(levelCollected, cfg.targets);
+    totalSilkCount += levelSilkGain;
+    var isLast = (currentLevelIndex >= LEVEL_CONFIGS.length - 1);
     if (isLast) showSuccess();
-    else showLevelResult(ws);
+    else showLevelResult(levelSilkGain);
   }
 
-  function showLevelResult(levelScore) {
+  function showLevelResult(levelSilkGain) {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'LEVEL_RESULT';
+    refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
-    var nextNum = currentLevel + 2;
     showOverlay(
-      '<div class="overlay-title">Wave Complete</div>'
-      + '<div class="overlay-subtitle">The web held together.</div>'
-      + '<button class="overlay-btn" id="btn-nextwv" style="margin-top:16px">Next Wave</button>'
+      '<div class="overlay-title">Level Complete</div>'
+      + '<div class="overlay-subtitle">Level targets secured.</div>'
+      + '<button class="overlay-btn" id="btn-nextwv" style="margin-top:16px">Next Level</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:8px" id="btn-restart-wr">Restart</button>'
     );
     var btn = document.getElementById('btn-nextwv');
@@ -507,26 +838,29 @@ window.onload = function () {
 
   function resetWebAndStartNextLevel() {
     gameFrames = 0;
-    webOverride = {
-      segs: 20 + Math.floor(Math.random() * 18),
-      depth: 8 + Math.floor(Math.random() * 7),
-      radius: Math.round(Math.min(W, H) / 2 * (1.25 + Math.random() * 0.35) * WEB_SCALE),
-      cx: cx + (Math.random() - 0.5) * 40,
-      cy: cy + (Math.random() - 0.5) * 40,
-      pinStep: 3 + Math.floor(Math.random() * 4)
-    };
+    webOverride = createWebOverrideForLevel(currentLevelIndex + 1);
     buildWeb(); buildSpider();
-    startLevel(currentLevel + 1);
+    startLevel(currentLevelIndex + 1);
+  }
+
+  function retryCurrentLevel() {
+    gameFrames = 0;
+    silkCount = 0;
+    refreshSilkHUD();
+    poopStunTimer = 0;
+    webOverride = createWebOverrideForLevel(currentLevelIndex);
+    buildWeb(); buildSpider();
+    startLevel(currentLevelIndex);
   }
 
   function showSuccess() {
     if (gameState === 'SUCCESS' || gameState === 'GAME_OVER') return;
     gameState = 'SUCCESS';
+    refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
     showOverlay(
-      '<div class="overlay-title">All Waves Clear</div>'
+      '<div class="overlay-title">All Levels Clear</div>'
       + '<div class="overlay-subtitle">The web survived the full run.</div>'
       + '<button class="overlay-btn" id="btn-nextlv" style="margin-bottom:8px">Higher Challenge</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-s">Restart</button>'
@@ -538,22 +872,22 @@ window.onload = function () {
   function showGameOver() {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'GAME_OVER';
+    refreshWavePhaseHUD();
     audioEngine.playSfxGameOver();
     clearAllObjects();
-    document.getElementById('wave-bar').style.display = 'none';
     var timeUsed = framesToTime(gameFrames);
     showOverlay(
       '<div class="overlay-title">Web Broken</div>'
-      + '<div class="overlay-subtitle">Survived ' + timeUsed + '</div>'
+      + '<div class="overlay-subtitle">Survived&nbsp;' + timeUsed + '</div>'
       + '<button class="overlay-btn" id="btn-retry" style="margin-bottom:8px">Try Again</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-f">Restart</button>'
     );
-    document.getElementById('btn-retry').onclick = startGame;
+    document.getElementById('btn-retry').onclick = retryCurrentLevel;
     document.getElementById('btn-restart-f').onclick = startGameFromBeginning;
   }
 
   function checkLevelComplete() {
-    var cfg = getCfg(currentLevel);
+    var cfg = getLevelCfgAt(currentLevelIndex);
     var done = ['boulder', 'bug', 'drop'].every(function (k) {
       return levelCollected[k] >= (cfg.targets[k] || 0);
     });
@@ -634,6 +968,30 @@ window.onload = function () {
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
     if (pct > webLossPct) webLossPct = pct;
+    /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
+    _refreshBrokenEnds();
+  }
+
+  function _refreshBrokenEnds() {
+    if (!spiderweb) return;
+    var _connMap = {};
+    for (var _ci = 0; _ci < spiderweb.constraints.length; _ci++) {
+      var _cc = spiderweb.constraints[_ci];
+      if (!(_cc instanceof DistanceConstraint)) continue;
+      var _pidA = _cc.a.__pid, _pidB = _cc.b.__pid;
+      if (_pidA) _connMap[_pidA] = (_connMap[_pidA] || 0) + 1;
+      if (_pidB) _connMap[_pidB] = (_connMap[_pidB] || 0) + 1;
+    }
+    var _newBroken = [], _newParticles = [];
+    for (var _pi = 0; _pi < spiderweb.particles.length; _pi++) {
+      var _pp = spiderweb.particles[_pi];
+      var _cnt = _pp.__pid ? (_connMap[_pp.__pid] || 0) : 0;
+      if (_cnt === 0) continue;          /* 孤立点：丢弃 */
+      _newParticles.push(_pp);
+      if (_cnt === 1) _newBroken.push(_pp); /* 断线头 */
+    }
+    spiderweb.particles = _newParticles;
+    brokenEnds = _newBroken;
   }
 
   function tickWebRescan() {
@@ -654,59 +1012,81 @@ window.onload = function () {
     if (gameState !== 'LEVEL_ACTIVE') return;
     if (!spiderweb) return;
     if (webWarmupFrames > 0) {
-      webWarmupFrames--;
-      if (webWarmupFrames === 0) _buildWebGrid();
-      var dbgEl = document.getElementById('dbg-web');
-      if (dbgEl) dbgEl.textContent = 'WEB 100%';
+      webWarmupFrames = Math.max(0, webWarmupFrames - _currentTimeScale);
+      if (webWarmupFrames === 0 && !webGridList) _buildWebGrid();
+      var warmNumEl = document.getElementById('dbg-web-num');
+      if (warmNumEl) warmNumEl.textContent = '100';
       return;
     }
     if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) {
       continueWebGridBuild();
     } else {
       if (webScanPending > 0) {
-        webScanPending--;
+        webScanPending = Math.max(0, webScanPending - _currentTimeScale);
         if (webScanPending === 0) _queueWebRescan();
       }
       if (webRescanActive) tickWebRescan();
     }
-    var dbgEl = document.getElementById('dbg-web');
-    if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';
+    var _newPct = Math.max(0, Math.round(100 - webLossPct * 2));
+    if (_newPct !== _webTargetPct) {
+      _webRollFrom = _webDisplayPct;
+      _webTargetPct = _newPct;
+      _webRollTimer = 0;
+    }
+    var _rollDur = 20;
+    if (_webRollTimer < _rollDur) {
+      _webRollTimer += _currentTimeScale;
+      var _rollT = 1 - Math.pow(1 - _webRollTimer / _rollDur, 2);
+      _webDisplayPct = Math.round(_webRollFrom + (_webTargetPct - _webRollFrom) * _rollT);
+    } else {
+      _webDisplayPct = _webTargetPct;
+    }
+    var _numEl = document.getElementById('dbg-web-num');
+    if (_numEl) {
+      var _showing = parseInt(_numEl.textContent, 10);
+      if (_showing !== _webDisplayPct) {
+        _numEl.textContent = String(_webDisplayPct);
+        if (_webRollTimer === 1) {
+          _numEl.classList.remove('dbg-web-flash');
+          void _numEl.offsetWidth;
+          _numEl.classList.add('dbg-web-flash');
+        }
+      }
+    }
     if (webLossPct >= 50) showGameOver();
   }
 
   /* ── Timer & spawner ── */
   function updateLevelTimer() {
     if (gameState === 'IDLE' || gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
-    levelTimer++;
-    gameFrames++;
-    var remaining = Math.max(0, GAME_DURATION - gameFrames);
-    var rs = Math.ceil(remaining / 60);
-    var rm = Math.floor(rs / 60); var rsec = rs % 60;
-    var cntStr = rm + ':' + (rsec < 10 ? '0' : '') + rsec;
-    if (gameState === 'LEVEL_ACTIVE') {
-      document.getElementById('wave-bar').textContent = cntStr;
-      if (gameFrames >= GAME_DURATION) endLevel();
-      return;
-    }
-    if (gameState === 'LEVEL_RESULT') {
-      document.getElementById('wave-bar').textContent = cntStr;
-      if (gameFrames >= GAME_DURATION) { endLevel(); return; }
-      return;
-    }
+    levelTimer += _currentTimeScale;
+    gameFrames += _currentTimeScale;
   }
 
   function spawnRandom() {
-    var kinds = ['boulder', 'bug', 'drop'];
-    launchObject(kinds[Math.floor(Math.random() * kinds.length)]);
+    /* 大便低概率出现，作为持续惩罚物 */
+    var r = Math.random();
+    var kind = r < 0.08 ? 'poop' : r < 0.18 ? 'bug' : r < 0.58 ? 'boulder' : 'drop';
+    launchObject(kind);
   }
 
   function updateLevelSpawner() {
     if (gameState !== 'LEVEL_ACTIVE') return;
-    var cfg = getCfg(currentLevel);
+    var levelCfg = getLevelCfgAt(currentLevelIndex);
+    var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
+    wavePhaseTimer += _currentTimeScale;
+    if (currentWavePhase === WAVE_PAUSE) {
+      if (wavePhaseTimer >= cfg.pauseDuration) advanceWavePhase();
+      return;
+    }
+    if (currentWavePhase === WAVE_FALLING && wavePhaseTimer >= cfg.fallingDuration) {
+      enterWavePause();
+      return;
+    }
+    if (!levelCfg.waves.length) return;
     if (spawnPhase === 'cooldown') {
-      cooldownTimer++;
+      cooldownTimer += _currentTimeScale;
       if (cooldownTimer >= cfg.cooldownDuration) {
-        if (burstsDone >= cfg.totalBursts) return;
         spawnPhase = 'burst';
         burstTimer = 0;
         burstCountCur = cfg.burstMin + Math.floor(Math.random() * (cfg.burstMax - cfg.burstMin + 1));
@@ -715,7 +1095,7 @@ window.onload = function () {
       return;
     }
     if (spawnPhase === 'burst') {
-      burstTimer++;
+      burstTimer += _currentTimeScale;
       if (burstTimer < cfg.burstInterval) return;
       burstTimer = 0;
       spawnRandom();
@@ -735,7 +1115,7 @@ window.onload = function () {
   }
 
   function launchObject(kind) {
-    var obj = new ThrownObj(kind, W, H, sim, P, gameState, getCfg, currentLevel);
+    var obj = new ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgAt, currentLevelIndex, currentWaveIndex);
     obj._W = W; obj._H = H;
     thrownObjects.push(obj);
     updateBadge(kind, 1);
@@ -743,6 +1123,9 @@ window.onload = function () {
 
   function clearAllObjects() {
     wrappingTarget = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    clearPoopDragState();
     audioEngine.stopAllBugBuzz();
     thrownObjects.forEach(function (o) {
       if (o.collectEl && o.collectEl.parentNode) o.collectEl.parentNode.removeChild(o.collectEl);
@@ -750,7 +1133,7 @@ window.onload = function () {
       o.destroy(sim);
     });
     thrownObjects = [];
-    ['boulder', 'bug', 'drop'].forEach(function (k) {
+    ['boulder', 'bug', 'drop', 'poop'].forEach(function (k) {
       objCounts[k] = 0;
       document.getElementById('cnt-' + k).textContent = 0;
     });
@@ -760,7 +1143,9 @@ window.onload = function () {
     inventoryCounts[kind] = Math.max(0, inventoryCounts[kind] + delta);
     if (gameState === 'LEVEL_ACTIVE' && delta > 0) {
       levelCollected[kind]++;
-      refreshWaveHUD(kind, gameState, getCfg, currentLevel, levelCollected);
+      silkCount += (typeof SCORE_MULT[kind] === 'number' ? SCORE_MULT[kind] : 1) * delta;
+      refreshSilkHUD();
+      refreshWaveHUD(kind, gameState, getLevelCfgAt, currentLevelIndex, levelCollected);
       pendingLevelCheck = true;
     } else {
       var el = document.getElementById('inv-' + kind + '-count');
@@ -823,15 +1208,26 @@ window.onload = function () {
     obj.wrapDur = obj.def.wrapDur;
     obj.particle.lastPos.mutableSet(obj.particle.pos);
     wrappingTarget = obj;
+    if (autoChaseTarget === obj) autoChaseTarget = null;
+    if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
+      clearPriorityTarget();
+    }
     target = null;
   }
 
   function tryCollectObjects() {
-    if (wrappingTarget !== null) return;
+    if (wrappingTarget !== null || poopStunTimer > 0) return;
+    var priorityObj = getActivePriorityObject();
+    if (userPriorityTarget) {
+      if (userPriorityTarget.type === 'point') return;
+      if (!priorityObj) { clearPriorityTarget(); pauseAndClearCurrentTarget(); return; }
+    }
     var thorax = spider.thorax.pos;
     var abdomen = spider.abdomen.pos;
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
+      if (priorityObj && obj !== priorityObj) continue;
+      if (obj.playerDragging) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
       if (circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
@@ -856,18 +1252,17 @@ window.onload = function () {
     }
   }
 
-  /* ── updateThrownObjects：运动积分（粘网查询在 physics+build 之后） ── */
+  /* ── 投掷物运动积分（粘网查询在 physics+build 之后） ── */
   function integrateThrownObjects() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
       if (!obj || !obj.def) continue;
       var def = obj.def, p = obj.particle;
-      obj.animT++;
 
       if (obj.state === 'falling') {
-        if (obj.kind === 'boulder') {
-          obj.segT += 0.22;
-          var bGrav = obj.grav * 2.6;
+        if (obj.kind === 'boulder' || obj.kind === 'poop') {
+          obj.segT += 0.22 * _currentTimeScale;
+          var bGrav = obj.grav * 2.6 * _currentTimeScale;
           p.pos.y += bGrav;
           p.lastPos.x = p.pos.x;
           p.lastPos.y = p.pos.y - bGrav;
@@ -879,16 +1274,43 @@ window.onload = function () {
             + Math.cos(obj.animT * obj.buzzFreqY * 2.1 + obj.buzzPhaseY) * obj.buzzAmp * 0.04
             + (Math.random() - 0.5) * 0.5;
           if (!obj.released && Math.random() < 0.018) { obj.baseVx = (Math.random() - 0.5) * 5; obj.baseVy = (Math.random() - 0.5) * 5; }
-          p.pos.x += bx; p.pos.y += by;
-          p.lastPos.x = p.pos.x - bx; p.lastPos.y = p.pos.y - by;
-          obj.angle = Math.atan2(by, bx);
-          obj.wingT += 0.55;
+
+          var _bxs = bx * _currentTimeScale, _bys = by * _currentTimeScale;
+          p.pos.x += _bxs; p.pos.y += _bys;
+          p.lastPos.x = p.pos.x - _bxs; p.lastPos.y = p.pos.y - _bys;
+          obj.angle = Math.atan2(_bys, _bxs);
+          obj.wingT += 0.55 * _currentTimeScale;
           if (!obj._buzzStarted) { obj._buzzStarted = true; audioEngine.startBugBuzz(oi); }
-          var offScreen = p.pos.x < -80 || p.pos.x > W + 80 || p.pos.y < -80 || p.pos.y > H + 80;
-          var timeout = obj.released && (obj.animT - obj._releaseFrame > 200);
-          if (offScreen || timeout) {
-            audioEngine.stopBugBuzz(oi);
-            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue;
+
+          /* 环绕穿越：飞出一侧从对面出现，轨迹不被阻挡 */
+          var _wrap = 100;
+          if (p.pos.x < -_wrap)   { p.pos.x += W + _wrap * 2; p.lastPos.x = p.pos.x - bx; }
+          if (p.pos.x > W + _wrap) { p.pos.x -= W + _wrap * 2; p.lastPos.x = p.pos.x - bx; }
+          if (p.pos.y < -_wrap)   { p.pos.y += H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
+          if (p.pos.y > H + _wrap) { p.pos.y -= H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
+          /* 挣脱后乱飞一段再重新粘网（无限循环，飞出屏幕才消失） */
+          if (obj.released) {
+            obj._reStickTimer = (obj._reStickTimer || 0) + _currentTimeScale;
+            if (obj._reStickTimer >= (obj._reStickDelay || 80)) {
+              /* 完全重置粘网状态，允许再次被网捕获 */
+              obj.released = false;
+              obj._reStickTimer = 0;
+              obj.enteredWebZone = false;
+              obj.hitHistory = [];
+              obj.penetrationDist = 0;
+              obj.stickDelay = 0;
+              /* 重置 stayFrames，下次粘住后有正常停留时间 */
+              obj.stayFrames = obj.def.stayFrames;
+              /* 保留原本随机飞行行为，只给 baseVx/baseVy 加一个微弱的网中心偏移
+                 让苍蝇自然地偏向网而不是直线冲过去 */
+              var _tcx = W * 0.3 + Math.random() * W * 0.4;
+              var _tcy = H * 0.3 + Math.random() * H * 0.4;
+              var _ddx = _tcx - p.pos.x, _ddy = _tcy - p.pos.y;
+              var _dd = Math.sqrt(_ddx * _ddx + _ddy * _ddy) || 1;
+              var _bias = 0.6 + Math.random() * 0.4; /* 微弱偏移，不覆盖随机性 */
+              obj.baseVx = (_ddx / _dd) * _bias + (Math.random() - 0.5) * 2.0;
+              obj.baseVy = (_ddy / _dd) * _bias + (Math.random() - 0.5) * 2.0;
+            }
           }
         } else {
           obj.angleVel += (Math.random() - 0.5) * obj.angleTurb;
@@ -903,8 +1325,9 @@ window.onload = function () {
           obj.vx *= obj.drag; obj.vy *= obj.drag;
           var spd = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
           if (spd > 0.8) { obj.vx = obj.vx / spd * 0.8; obj.vy = obj.vy / spd * 0.8; }
-          p.pos.x += obj.vx; p.pos.y += obj.vy;
-          p.lastPos.x = p.pos.x - obj.vx; p.lastPos.y = p.pos.y - obj.vy;
+          var _lvx = obj.vx * _currentTimeScale, _lvy = obj.vy * _currentTimeScale;
+          p.pos.x += _lvx; p.pos.y += _lvy;
+          p.lastPos.x = p.pos.x - _lvx; p.lastPos.y = p.pos.y - _lvy;
           if (p.pos.y > H + 60) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
         }
 
@@ -913,7 +1336,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'sticking') {
-        obj.stickT = Math.min(1, obj.stickT + 0.06);
+        obj.stickT = Math.min(1, obj.stickT + 0.078 * _currentTimeScale);
         var ease = obj.stickT < 0.5 ? 2 * obj.stickT * obj.stickT : -1 + (4 - 2 * obj.stickT) * obj.stickT;
         if (obj.cA) obj.cA.distance = obj.stickyFromA + (obj.stickyToA - obj.stickyFromA) * ease;
         if (obj.cB) obj.cB.distance = obj.stickyFromB + (obj.stickyToB - obj.stickyFromB) * ease;
@@ -926,14 +1349,26 @@ window.onload = function () {
           if (obj.kind === 'boulder') obj.wobbleAmp = 0.10;
           if (obj.kind === 'bug') obj.wobbleAmp = 0.28;
           if (obj.kind === 'drop') obj.wobbleAmp = 0.04;
+          if (obj.kind === 'poop') obj.wobbleAmp = 0.10;
         }
 
       } else if (obj.state === 'stuck') {
-        obj.stayTimer++;
-        var sagRate = obj.kind === 'boulder' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
-        p.pos.y += sagRate;
+        if (obj.playerDragging && _draggingPoop && _draggingPoop.obj === obj) {
+          p.pos.x = _draggingPoop.targetX;
+          p.pos.y = _draggingPoop.targetY;
+          p.lastPos.x = p.pos.x;
+          p.lastPos.y = p.pos.y;
+          continue;
+        }
+        obj.stayTimer += _currentTimeScale;
+        var sagRate = obj.kind === 'boulder' || obj.kind === 'poop' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
+        p.pos.y += sagRate * _currentTimeScale;
         if (obj.kind === 'boulder') {
-          obj.segT += 0.13;
+          obj.segT += 0.13 * _currentTimeScale;
+          p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
+          p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
+        } else if (obj.kind === 'poop') {
+          obj.segT += 0.13 * _currentTimeScale;
           p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
           p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
         } else if (obj.kind === 'bug') {
@@ -945,26 +1380,26 @@ window.onload = function () {
             );
             if (nearStuck) obj.stuckOnConstraint = nearStuck;
           }
-          obj.wingT += 0.55;
+          obj.wingT += 0.55 * _currentTimeScale;
         } else {
-          obj.angleVel += (Math.random() - 0.5) * 0.0005;
-          obj.angleVel *= 0.98;
-          obj.angle += obj.angleVel;
+          obj.angleVel += (Math.random() - 0.5) * 0.0005 * _currentTimeScale;
+          obj.angleVel *= Math.pow(0.98, _currentTimeScale);
+          obj.angle += obj.angleVel * _currentTimeScale;
         }
-        if (obj.kind !== 'drop') {
+        if (obj.kind !== 'drop' && obj.kind !== 'poop') {
           var ramp = Math.max(0, obj.stayFrames - 72);
           if (obj.stayTimer > ramp) {
             var progress = (obj.stayTimer - ramp) / Math.max(1, obj.stayFrames - ramp);
             var wobbleMax = obj.kind === 'boulder' ? 12.0 : obj.kind === 'bug' ? 9.0 : 1.5;
-            obj.wobbleAmp = Math.min(wobbleMax, obj.wobbleAmp + (0.08 + progress * 0.18));
-            if (obj.kind === 'boulder') obj.segT += progress * 0.4;
-            if (obj.kind === 'bug') obj.wingT += progress * 0.8;
+            obj.wobbleAmp = Math.min(wobbleMax, obj.wobbleAmp + (0.08 + progress * 0.18) * _currentTimeScale);
+            if (obj.kind === 'boulder') obj.segT += progress * 0.4 * _currentTimeScale;
+            if (obj.kind === 'bug') obj.wingT += progress * 0.8 * _currentTimeScale;
           }
           if (obj.stayTimer >= obj.stayFrames) { obj.state = 'freeing'; obj.freeTimer = 0; }
         }
 
       } else if (obj.state === 'freeing') {
-        obj.freeTimer++;
+        obj.freeTimer += _currentTimeScale;
         if (obj.kind === 'bug' && obj.stuckOnConstraint) {
           var nearSeg = findNearestWebSegment(
             p.pos.x, p.pos.y, spiderweb, _spatialOpts(), obj.stuckOnConstraint
@@ -980,29 +1415,67 @@ window.onload = function () {
 
       } else if (obj.state === 'falling2') {
         if (obj.kind === 'drop') {
-          obj.angleVel += (Math.random() - 0.5) * obj.angleTurb;
-          obj.angleVel *= obj.angleDrag;
-          obj.angle += obj.angleVel;
-          obj.vx += Math.sin(obj.angle) * obj.glideForce;
-          obj.vy += obj.grav;
-          obj.vx *= obj.drag; obj.vy *= obj.drag;
+          obj.angleVel += (Math.random() - 0.5) * obj.angleTurb * _currentTimeScale;
+          obj.angleVel *= Math.pow(obj.angleDrag, _currentTimeScale);
+          obj.angle += obj.angleVel * _currentTimeScale;
+          obj.vx += Math.sin(obj.angle) * obj.glideForce * _currentTimeScale;
+          obj.vy += obj.grav * _currentTimeScale;
+          var dragScale = Math.pow(obj.drag, _currentTimeScale);
+          obj.vx *= dragScale; obj.vy *= dragScale;
+          var maxSpd = obj.kind === 'poop' ? 6.2 : 0.8;
           var spd2 = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
-          if (spd2 > 0.8) { obj.vx = obj.vx / spd2 * 0.8; obj.vy = obj.vy / spd2 * 0.8; }
-          p.pos.x += obj.vx; p.pos.y += obj.vy;
+          if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
+          p.pos.x += obj.vx * _currentTimeScale; p.pos.y += obj.vy * _currentTimeScale;
+        } else if (obj.kind === 'poop') {
+          var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
+          obj.vx *= peelDragScale;
+          obj.vy *= peelDragScale;
+          obj.vy += obj.grav * 0.08 * _currentTimeScale;
+          p.pos.x += obj.vx * _currentTimeScale;
+          p.pos.y += obj.vy * _currentTimeScale;
         } else {
-          p.pos.y += obj.grav;
+          p.pos.y += obj.grav * _currentTimeScale;
         }
-        obj.alpha = Math.max(0, obj.alpha - 0.016);
-        if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
+        if (obj.kind === 'poop') {
+          if (p.pos.y > H + 80 || p.pos.x < -90 || p.pos.x > W + 90) {
+            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
+          }
+        } else {
+          obj.alpha = Math.max(0, obj.alpha - 0.016 * _currentTimeScale);
+          if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
+        }
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
-        obj.wrapT = Math.min(1, obj.wrapT + 1 / obj.wrapDur);
+        obj.wrapT = Math.min(1, obj.wrapT + _currentTimeScale / obj.wrapDur);
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
+          if (autoPlay) _autoPlayPause = 24; /* 0.4秒停顿 */
+          if (obj.kind === 'poop') {
+            handlePoopCapture(obj);
+            continue;
+          }
           audioEngine.playCollectSound(obj.kind);
           playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT);
+          /* 放射粒子爆发 */
+          var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
+          var _colors = obj.kind === 'boulder' ? ['#ff9966','#ffcc88','#ffffff']
+                      : obj.kind === 'bug'     ? ['#88ddff','#aaffcc','#ffffff']
+                      :                         ['#aaffaa','#ffffaa','#ffffff'];
+          for (var _pi = 0; _pi < 14; _pi++) {
+            var _ang = (_pi / 14) * Math.PI * 2 + Math.random() * 0.3;
+            var _spd = 1.8 + Math.random() * 2.8;
+            _burstParticles.push({
+              x: _bx, y: _by,
+              vx: Math.cos(_ang) * _spd,
+              vy: Math.sin(_ang) * _spd,
+              life: 1.0,
+              decay: 0.045 + Math.random() * 0.025,
+              r: 2.2 + Math.random() * 2.0,
+              color: _colors[Math.floor(Math.random() * _colors.length)]
+            });
+          }
           beginCollectObject(obj);
         }
 
@@ -1013,16 +1486,16 @@ window.onload = function () {
         var opacity = 1;
 
         if (obj.collectPause > 0) {
-          obj.collectPause--;
-          obj.collectFlash++;
-          var holdT = 1 - obj.collectPause / 12;
+          obj.collectPause -= _currentTimeScale;
+          obj.collectFlash += _currentTimeScale;
+          var holdT = Math.min(1, 1 - Math.max(0, obj.collectPause) / 12);
           var pulse = Math.sin(holdT * Math.PI * 3.2) * 0.18;
           drawX += Math.sin(obj.collectFlash * 0.9) * 1.8;
           drawY += Math.cos(obj.collectFlash * 0.8) * 1.1;
           scale = 1.05 + holdT * 0.42 + pulse;
           opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
         } else {
-          obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
+          obj.travelT = Math.min(1, obj.travelT + _currentTimeScale / obj.collectDur);
           var easeIn = obj.travelT * obj.travelT * obj.travelT;
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
@@ -1070,7 +1543,8 @@ window.onload = function () {
         var minDelay = P.stickDelayMin * outerR;
         var maxDelay = P.stickDelayMax * outerR;
         if (maxDelay < minDelay) maxDelay = minDelay;
-        obj.stickDelay = minDelay + Math.random() * (maxDelay - minDelay);
+        var stickMult = obj.kind === 'bug' ? 2.0 : 1.0;
+        obj.stickDelay = (minDelay + Math.random() * (maxDelay - minDelay)) * stickMult;
       }
       obj.penetrationDist += stepLen;
 
@@ -1135,6 +1609,7 @@ window.onload = function () {
   }
 
   function updateFootTriggers() {
+    if (poopStunTimer > 0) return;
     var spatialOpts = _spatialOpts();
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
@@ -1160,7 +1635,20 @@ window.onload = function () {
       STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
     },
     clearAllObjects: clearAllObjects,
-    launchObject: launchObject
+    launchObject: launchObject,
+    isAutoPlayOn: function () {
+      return autoPlay;
+    },
+    toggleAutoPlay: function () {
+      autoPlay = !autoPlay;
+      if (!autoPlay) target = null; /* 关闭时清除自动目标 */
+      return autoPlay;
+    },
+    setAutoPlay: function (on) {
+      autoPlay = !!on;
+      if (!autoPlay) target = null;
+      return autoPlay;
+    }
   });
 
   /* ── 背景与音乐控制（左侧参数面板） ── */
@@ -1335,29 +1823,45 @@ window.onload = function () {
   ================================================================ */
   var _lastTimestamp = 0;
   var _bgFrame = 0;
+  var _wasBulletTime = false;
   var loop = function (timestamp) {
     statsBeginFrame();
 
     /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
     var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
-    /* timeScale: 60fps=1.0, 30fps=2.0, 120fps=0.5 — 让游戏逻辑速度与帧率解耦 */
-    var timeScale = delta / 16.67;
 
-    /* ── 弹性拖拽平滑阻尼 (每帧约逼近10%) ── */
-    _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * 0.1;
-    _smoothDrag.y += (_dragOffset.y - _smoothDrag.y) * 0.1;
+    /* ── 子弹时间检测：拖拽断线头时进入 ── */
+    var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isWebParticle);
+    /* timeScale: 正常=帧率补偿，子弹时间=0.15 */
+    var timeScale = _isBulletTime ? 0.0 : delta / 16.67;
+    _currentTimeScale = timeScale;
 
-    /* ── 更新 & 绘制 Sylvan 背景（始终运行，包括IDLE） ── */
-    _bgFrame++;
-    statsTimeStart('bgUpd');
-    updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
-    statsTimeEnd();
-    /* 移动端每 3 帧渲染一次背景（约 20fps），桌面端每帧渲染 */
-    if (!IS_MOBILE || _bgFrame % 3 === 0) {
-      statsTimeStart('bgRnd');
-      renderSylvanBackground();
+    /* ── 背景变暗切换（只在状态变化时调用一次） ── */
+    if (_isBulletTime !== _wasBulletTime) {
+      _wasBulletTime = _isBulletTime;
+      bgConfig.darken = _isBulletTime ? 0.72 : P.bgDarken / 100;
+      applyBgPresentation();
+      applyBgVignette(_isBulletTime);
+    }
+
+    /* ── 弹性拖拽平滑阻尼：按时间缩放，避免低帧更慢 ── */
+    var dragLerp = 1 - Math.pow(0.9, Math.max(0, timeScale));
+    _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * dragLerp;
+    _smoothDrag.y += (_dragOffset.y - _smoothDrag.y) * dragLerp;
+
+    /* ── 更新 & 绘制 Sylvan 背景（子弹时间时冻结背景动画） ── */
+    if (!_isBulletTime) {
+      _bgFrame++;
+      statsTimeStart('bgUpd');
+      updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
       statsTimeEnd();
+      var _bgInterval = IS_MOBILE ? 3 : 2;
+      if (_bgFrame % _bgInterval === 0) {
+        statsTimeStart('bgRnd');
+        renderSylvanBackground();
+        statsTimeEnd();
+      }
     }
 
     if (gameState === 'IDLE' || gameState === 'GAME_OVER') {
@@ -1373,20 +1877,97 @@ window.onload = function () {
 
     statsTimeStart('anim');
     captureThrownStickPrev();
+    var isPoopStunned = poopStunTimer > 0;
+
+    /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
+    if (!isPoopStunned && !wrappingTarget && userPriorityTarget) {
+      if (userPriorityTarget.type === 'object') {
+        if (!getActivePriorityObject()) {
+          clearPriorityTarget();
+          pauseAndClearCurrentTarget();
+        } else {
+          _autoTarget.x = userPriorityTarget.obj.particle.pos.x;
+          _autoTarget.y = userPriorityTarget.obj.particle.pos.y;
+          target = _autoTarget;
+        }
+      } else if (userPriorityTarget.type === 'point') {
+        _autoTarget.x = userPriorityTarget.point.x;
+        _autoTarget.y = userPriorityTarget.point.y;
+        target = _autoTarget;
+        if (spider.thorax.pos.dist2(_autoTarget) <= 14 * 14) {
+          clearPriorityTarget();
+          pauseAndClearCurrentTarget();
+        }
+      }
+    }
+
+    /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
+    if (_autoPlayPause > 0) { _autoPlayPause -= timeScale; }
+    if (!isPoopStunned && autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
+      if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
+        pauseAndClearCurrentTarget();
+      } else {
+        if (!autoChaseTarget) {
+          var _bestObj = null, _bestD2 = Infinity;
+          var _tx = spider.thorax.pos;
+          for (var _oi = 0; _oi < thrownObjects.length; _oi++) {
+            var _o = thrownObjects[_oi];
+            if (!isTargetObjectChaseable(_o)) continue;
+            var _odx = _o.particle.pos.x - _tx.x, _ody = _o.particle.pos.y - _tx.y;
+            var _od2 = _odx * _odx + _ody * _ody;
+            if (_od2 < _bestD2) { _bestD2 = _od2; _bestObj = _o; }
+          }
+          autoChaseTarget = _bestObj;
+        }
+        if (autoChaseTarget) {
+          _autoTarget.x = autoChaseTarget.particle.pos.x;
+          _autoTarget.y = autoChaseTarget.particle.pos.y;
+          target = _autoTarget;
+        } else {
+          target = null;
+        }
+      }
+    }
 
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
     var moving = false; moveDir = null;
-    if (isWrapping) {
+    if (isPoopStunned) {
+      target = null;
+    } else if (isWrapping) {
       target = null;
     } else if (target) {
       var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > arriveThreshold) {
+      if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
         var scaledSpeed = moveSpeed * timeScale;
-        var nx = (dx / dist) * scaledSpeed, ny = (dy / dist) * scaledSpeed;
-        moveDir = new Vec2(dx / dist, dy / dist);
+        var dirX = dx / dist, dirY = dy / dist;
+
+        /* 玩家优先目标导航：绕开其他掉落物，不在路上触发打包 */
+        if (userPriorityTarget) {
+          var priorityObj = getActivePriorityObject();
+          var avoidRadius = 68;
+          for (var ai = 0; ai < thrownObjects.length; ai++) {
+            var aobj = thrownObjects[ai];
+            if (!aobj || aobj === priorityObj) continue;
+            if (aobj.state !== 'stuck' && aobj.state !== 'sticking' && aobj.state !== 'freeing' && aobj.state !== 'wrapping') continue;
+            var ap = aobj.particle.pos;
+            var adx = tx.x - ap.x;
+            var ady = tx.y - ap.y;
+            var ad2 = adx * adx + ady * ady;
+            if (ad2 <= 1 || ad2 > avoidRadius * avoidRadius) continue;
+            var ad = Math.sqrt(ad2);
+            var repel = (1 - ad / avoidRadius) * 1.45;
+            dirX += (adx / ad) * repel;
+            dirY += (ady / ad) * repel;
+          }
+          var dirL = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+          dirX /= dirL; dirY /= dirL;
+        }
+
+        var nx = dirX * scaledSpeed, ny = dirY * scaledSpeed;
+        moveDir = new Vec2(dirX, dirY);
         for (var p = 0; p < spider.particles.length; p++) {
           spider.particles[p].pos.x += nx; spider.particles[p].pos.y += ny;
           spider.particles[p].lastPos.x += nx; spider.particles[p].lastPos.y += ny;
@@ -1397,9 +1978,9 @@ window.onload = function () {
     /* feet */
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
-      if (fs.cooldown > 0) fs.cooldown--;
+      if (fs.cooldown > 0) fs.cooldown -= timeScale;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED);
+        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : timeScale));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
@@ -1427,17 +2008,20 @@ window.onload = function () {
     }
     reposeAllLegs(spider, footState);
 
-    integrateThrownObjects();
+    if (!_isBulletTime) integrateThrownObjects();
     statsTimeEnd();
 
     /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
     statsTimeStart('phys');
     var physicsIters = 11;
-    countSimStats(physicsIters);
-    sim.frame(
-      physicsIters,
-      USE_LEGACY_COLLISION ? null : _constraintAlive
-    );
+    var physicsSteps = _isBulletTime ? 1 : Math.max(1, Math.min(3, Math.round(timeScale)));
+    countSimStats(physicsIters * physicsSteps);
+    for (var psi = 0; psi < physicsSteps; psi++) {
+      sim.frame(
+        physicsIters,
+        USE_LEGACY_COLLISION ? null : _constraintAlive
+      );
+    }
     _resyncFootParticles();
     reposeAllLegs(spider, footState);
     statsTimeEnd();
@@ -1448,24 +2032,35 @@ window.onload = function () {
 
     updateFootTriggers();
 
-    /* 断网红闪帧计数 */
-    _breakFrame++;
-    if (webBreakFlashes.length > 0) {
-      var flashWrite = 0;
-      for (var fwi = 0; fwi < webBreakFlashes.length; fwi++) {
-        if (_breakFrame - webBreakFlashes[fwi].t < 20) webBreakFlashes[flashWrite++] = webBreakFlashes[fwi];
+    /* 断网红闪帧计数（子弹时间时暂停计数，避免红闪提前消失） */
+    if (!_isBulletTime) {
+      _breakFrame += timeScale;
+      if (webBreakFlashes.length > 0) {
+        var flashWrite = 0;
+        for (var fwi = 0; fwi < webBreakFlashes.length; fwi++) {
+          if (_breakFrame - webBreakFlashes[fwi].t < 20) webBreakFlashes[flashWrite++] = webBreakFlashes[fwi];
+        }
+        webBreakFlashes.length = flashWrite;
       }
-      webBreakFlashes.length = flashWrite;
     }
 
-    /* wave system */
-    updateLevelTimer();
-    updateLevelSpawner();
-    checkWebIntegrity();
+    /* animT：子弹时间时冻结，其他时候每帧 +1 保持动画连续 */
+    if (!_isBulletTime) {
+      for (var _ai = 0; _ai < thrownObjects.length; _ai++) {
+        if (thrownObjects[_ai]) thrownObjects[_ai].animT += timeScale;
+      }
+    }
 
-    queryThrownStick();
-    tryCollectObjects();
-    if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
+    /* wave system + 投掷物更新：子弹时间时全部冻结 */
+    if (!_isBulletTime) {
+      queryThrownStick();
+      updateLevelTimer();
+      updateLevelSpawner();
+      checkWebIntegrity();
+      if (poopStunTimer > 0) poopStunTimer = Math.max(0, poopStunTimer - timeScale);
+      tryCollectObjects();
+      if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
+    }
     statsTimeEnd();
 
     statsTimeStart('other');
@@ -1475,11 +2070,91 @@ window.onload = function () {
     sim.draw();
     statsTimeEnd();
     statsTimeStart('preyRnd');
-    drawThrownObjects(sim.ctx, thrownObjects);
+    drawThrownObjects(sim.ctx, thrownObjects, userPriorityTarget);
     statsTimeEnd();
     statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
+    drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
     statsTimeEnd();
+
+    /* 放射粒子：更新 + 绘制 */
+    if (_burstParticles.length > 0) {
+      statsTimeStart('other');
+      var _ctx = sim.ctx;
+      for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
+        var _bp = _burstParticles[_bpi];
+        var _speedScale = (_bp.speedScale || 1) * timeScale;
+        _bp.x += _bp.vx * _speedScale; _bp.y += _bp.vy * _speedScale;
+        var _drag = _bp.drag || 0.92;
+        var _dragScale = Math.pow(_drag, timeScale);
+        _bp.vx *= _dragScale;
+        _bp.vy *= _dragScale;
+        if (_bp.smoke) {
+          _bp.r += (_bp.grow || 0.1) * _speedScale;
+        }
+        _bp.life -= _bp.decay * _speedScale;
+        if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
+        _ctx.save();
+        _ctx.globalAlpha = _bp.smoke ? _bp.life * (_bp.occlude || 0.82) : _bp.life;
+        if (_bp.smoke) {
+          _ctx.shadowBlur = 30;
+          _ctx.shadowColor = _bp.color;
+        }
+        _ctx.beginPath();
+        _ctx.arc(_bp.x, _bp.y, _bp.smoke ? _bp.r : _bp.r * _bp.life, 0, 2 * Math.PI);
+        _ctx.fillStyle = _bp.color;
+        _ctx.fill();
+        if (_bp.smoke) {
+          _ctx.globalAlpha *= 0.52;
+          _ctx.beginPath();
+          _ctx.arc(_bp.x + _bp.r * 0.08, _bp.y - _bp.r * 0.05, _bp.r * 0.68, 0, 2 * Math.PI);
+          _ctx.fillStyle = '#080606';
+          _ctx.fill();
+        }
+        _ctx.restore();
+      }
+      statsTimeEnd();
+    }
+
+    /* ── 玩家标记：顶层绘制 ── */
+    if (userPriorityTarget) {
+      var markerX, markerY, markerPulse = 0.55 + 0.45 * Math.abs(Math.sin(timestamp * 0.012));
+      var markerFloat = Math.sin(timestamp * 0.006) * 3;
+      var markerObj = null;
+      if (userPriorityTarget.type === 'object' && userPriorityTarget.obj && thrownObjects.indexOf(userPriorityTarget.obj) !== -1) {
+        markerObj = userPriorityTarget.obj;
+        markerX = markerObj.particle.pos.x;
+        markerY = markerObj.particle.pos.y;
+      } else if (userPriorityTarget.type === 'point') {
+        markerX = userPriorityTarget.point.x;
+        markerY = userPriorityTarget.point.y;
+        sim.ctx.save();
+        sim.ctx.strokeStyle = 'rgba(255,255,255,' + markerPulse.toFixed(2) + ')';
+        sim.ctx.lineWidth = 2;
+        sim.ctx.beginPath();
+        sim.ctx.arc(markerX, markerY, 6 + Math.sin(timestamp * 0.02) * 1.2, 0, 2 * Math.PI);
+        sim.ctx.stroke();
+        sim.ctx.beginPath();
+        sim.ctx.arc(markerX, markerY, 1.8, 0, 2 * Math.PI);
+        sim.ctx.fillStyle = 'rgba(255,255,255,' + markerPulse.toFixed(2) + ')';
+        sim.ctx.fill();
+        sim.ctx.restore();
+      }
+
+      if (markerX != null && markerY != null) {
+        var triY = markerY - (markerObj && markerObj.def ? markerObj.def.r * 2.8 : 20) - 10 + markerFloat;
+        sim.ctx.save();
+        sim.ctx.fillStyle = 'rgba(255,245,170,0.95)';
+        sim.ctx.beginPath();
+        sim.ctx.moveTo(markerX, triY + 6);
+        sim.ctx.lineTo(markerX - 6, triY - 4);
+        sim.ctx.lineTo(markerX + 6, triY - 4);
+        sim.ctx.closePath();
+        sim.ctx.fill();
+        sim.ctx.restore();
+      }
+    }
+
     statsEndFrame(timestamp);
     updateStatsPanel();
     requestAnimFrame(loop);

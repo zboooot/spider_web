@@ -113,6 +113,12 @@ var LAYER_DRAW_SCALE = { deep: 0.5, mid: 0.5 };
 var BAKE_FRAC = { bg: 0.92, deep: 1.7, mid: 1.45, fg: 0.8 };
 var CSS_TAIL_FRAC = 0.22;
 
+/* ── 阵风状态机 ── */
+var _gustTarget  = 0.6;   // 当前目标风力
+var _gustCurrent = 0.6;   // 平滑后的当前风力
+var _gustHold    = 0;     // 保持当前目标的剩余帧数
+var _gustSpeed   = 0.008; // 每帧逼近速度（缓起缓落）
+
 /* ── 背景可调参数（供外部面板控制） ── */
 export var bgConfig = {
   blurScale: 1.0,    // 模糊系数倍率，1.0 = 原版默认
@@ -252,6 +258,23 @@ export function applyBgPresentation() {
   if (!wrap) return;
   wrap.style.filter = 'saturate(' + bgConfig.purity + ')';
   if (darkenEl) darkenEl.style.opacity = String(bgConfig.darken);
+}
+
+/* 暗角层：子弹时间时叠加四角变暗效果 */
+export function applyBgVignette(active) {
+  var vigEl = document.getElementById('sylvan-bg-vignette');
+  if (!vigEl) {
+    vigEl = document.createElement('div');
+    vigEl.id = 'sylvan-bg-vignette';
+    vigEl.style.cssText = [
+      'position:absolute', 'inset:0', 'z-index:7', 'pointer-events:none',
+      'opacity:0', 'transition:opacity 0.3s ease',
+      'background:radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.85) 100%)'
+    ].join(';');
+    var wrap = document.getElementById('sylvan-bg-wrap');
+    if (wrap) wrap.appendChild(vigEl);
+  }
+  vigEl.style.opacity = active ? '1' : '0';
 }
 
 export function setBgParticleCount(n) {
@@ -775,11 +798,18 @@ export function updateSylvanBackground(windSpeed, isMouseDown, smoothDrag, mx, m
   var baseScale = 1.2;
   var baseShiftY = -_H * bgConfig.yOffset;
 
-  // 极弱自然呼吸风 0.02~0.05 m/s，偶发细微阵风
-  var baseWind = 0.035 + Math.sin(time * 0.003) * 0.015;
-  var gustRaw = Math.sin(time * 0.008) * Math.sin(time * 0.002 + 1.5);
-  var gust = gustRaw > 0.4 ? (gustRaw - 0.4) * (gustRaw - 0.4) * 0.12 : 0;
-  globalWindForce = (baseWind + gust) * bgConfig.windSpeed;
+  // 阵风状态机：每隔一段时间随机换目标，-2 ~ +2，缓起缓落
+  _gustHold--;
+  if (_gustHold <= 0) {
+    // 新目标：在 -2 ~ +2 之间随机，保持 120~400 帧（约 2~7 秒）
+    _gustTarget = (Math.random() * 1.0 - 0.5);
+    _gustHold   = 120 + Math.floor(Math.random() * 280);
+    // 换目标时随机调整逼近速度，模拟有时风来得急有时来得缓
+    _gustSpeed  = 0.004 + Math.random() * 0.014;
+  }
+  // 平滑插值逼近目标
+  _gustCurrent += (_gustTarget - _gustCurrent) * _gustSpeed;
+  globalWindForce = _gustCurrent * bgConfig.windSpeed;
 
   // 视差计算：归一化鼠标位置 [-0.5, 0.5]
   var pxX = (mx / _W) - 0.5;

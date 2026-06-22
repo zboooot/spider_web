@@ -8,9 +8,9 @@ import { findNearestWebSegment } from '../systems/stickSystem.js';
 /**
  * 获取物体定义参数
  */
-export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
+export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
   var waveCfg = (gameState === 'LEVEL_ACTIVE' || gameState === 'LEVEL_INTRO')
-    ? getLevelCfgFn(currentLevel) : null;
+    ? getWaveCfgFn(currentLevelIndex, currentWaveIndex) : null;
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
     stayFrames: Math.round((waveCfg ? waveCfg.catR : P.caterpillarReleaseSec) * 60),
@@ -20,6 +20,16 @@ export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
     r: 9, collectRadius: 5, weight: P.flyWeight,
     stayFrames: Math.round((waveCfg ? waveCfg.flyR : P.flyReleaseSec) * 60),
     gravity: 0, wrapDur: 80
+  };
+  if (kind === 'poop') return {
+    r: 20, collectRadius: 17, weight: P.caterpillarWeight,
+    stayFrames: Infinity,
+    gravity: P.caterpillarGravity, wrapDur: 120,
+    peelThreshold: 68,
+    peelHoldFrames: 60,
+    peelDrag: 0.985,
+    dragResistance: 0.88,
+    dragFollow: 1.0
   };
   return {
     r: 14, collectRadius: 12, weight: P.leafWeight,
@@ -31,8 +41,8 @@ export function getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel) {
 /**
  * 投掷物体构造函数
  */
-export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentLevel) {
-  var def = getObjectDef(kind, P, gameState, getLevelCfgFn, currentLevel);
+export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
+  var def = getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex);
   this.kind = kind; this.def = def;
   this.state = 'falling';
   this.alpha = 1;
@@ -73,13 +83,19 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.collectCanvas = null;
   this.wrapT = 0;
   this.wrapDur = 0;
+  this.playerDragging = false;
+  this.dragTargetX = 0;
+  this.dragTargetY = 0;
+  this.dragStrain = 0;
+  this.peelVx = 0;
+  this.peelVy = 0;
 
   var sx, sy, svx = 0, svy = 0;
 
-  if (kind === 'boulder') {
+  if (kind === 'boulder' || kind === 'poop') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
-    this.initAngle = (Math.random() - 0.5) * Math.PI * 0.6;
+    this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
   } else if (kind === 'bug') {
     var edge = Math.floor(Math.random() * 4);
     if (edge === 0) { sx = -20; sy = H * 0.05 + Math.random() * H * 0.9; svx = 2.2 + Math.random() * 1.2; svy = (Math.random() - 0.5) * 2; }
@@ -114,6 +130,7 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getLevelCfgFn, currentL
   this.prevX = sx; this.prevY = sy;
   this.particle = new Particle(new Vec2(sx, sy));
   this.particle.lastPos.mutableSet(new Vec2(sx - svx, sy - svy));
+  if (kind === 'bug') this.particle.__isBug = true;
   this.comp = new Composite();
   this.comp.particles.push(this.particle);
   this.comp.drawParticles = function () { };
@@ -156,11 +173,7 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   this.stuckOnConstraint = pt.c;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
-  if (this.kind === 'boulder') {
-    this.stuckAngle = Math.random() * Math.PI * 2;
-  } else {
-    this.stuckAngle = 0;
-  }
+  this.stuckAngle = this.initAngle; /* 粘住后保持下落时的初始角度 */
   this.state = 'sticking'; this.stickT = 0;
 
   /* 粘网冲击 */
@@ -266,6 +279,9 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     this.penetrationDist = 0;
     this.released = true;
     this._releaseFrame = this.animT;
+    this._escapeCount = (this._escapeCount || 0) + 1; /* 挣脱次数累计 */
+    this._reStickDelay = 160 + Math.floor(Math.random() * 120); /* 乱飞多少帧后重新找网 */
+    this._reStickTimer = 0;
     var escapeAngle = Math.atan2(p.pos.y - H / 2, p.pos.x - W / 2) + (Math.random() - 0.5) * 1.2;
     var escapeSpeed = 4 + Math.random() * 2.5;
     this.baseVx = Math.cos(escapeAngle) * escapeSpeed;
@@ -285,6 +301,24 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
       : this.def.weight * 0.45;
     p.lastPos.y = p.pos.y - (currentVy + releaseKick);
   }
+};
+
+ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
+  var p = this.particle;
+  clearObjectConstraints(this);
+  this.stuckOnConstraint = null;
+  this.playerDragging = false;
+  this.dragStrain = 0;
+  this.state = 'falling2';
+  this.alpha = 1;
+  var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
+  var speed = 6.8;
+  this.peelVx = (dragDx / len) * speed;
+  this.peelVy = (dragDy / len) * speed;
+  this.vx = this.peelVx;
+  this.vy = this.peelVy;
+  p.lastPos.x = p.pos.x - this.peelVx;
+  p.lastPos.y = p.pos.y - this.peelVy;
 };
 
 ThrownObj.prototype.destroy = function (sim) {

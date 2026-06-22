@@ -223,14 +223,35 @@ function _drawDangerSegments(ctx, comp, n, now) {
   }
 }
 
+var _brokenEndFrame = 0;
+
+function _drawBrokenEnds(ctx, getBrokenEnds) {
+  _brokenEndFrame++;
+  var brokenEnds = getBrokenEnds ? getBrokenEnds() : [];
+  if (!brokenEnds.length) return;
+  var alpha = 0.35 + 0.65 * Math.abs(Math.sin(_brokenEndFrame * 0.07));
+  ctx.save();
+  ctx.strokeStyle = 'rgba(80,220,100,' + alpha.toFixed(2) + ')';
+  ctx.lineWidth = 1.2;
+  for (var bi = 0; bi < brokenEnds.length; bi++) {
+    var bp = brokenEnds[bi];
+    ctx.beginPath();
+    ctx.arc(bp.pos.x, bp.pos.y, 8.5, 0, 2 * Math.PI);
+    ctx.stroke();
+    statsDc('stroke');
+  }
+  ctx.restore();
+}
+
 /**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, getBrokenEnds) {
   rebuildWebRenderTopology(spiderweb);
 
   spiderweb.drawParticles = function (ctx, comp) {
     _drawWebParticles(ctx, comp);
+    _drawBrokenEnds(ctx, getBrokenEnds);
   };
 
   spiderweb.drawConstraints = function (ctx, comp) {
