@@ -11,6 +11,7 @@ export function assignWebConstraintIds(spiderweb) {
   if (!spiderweb) return;
   var cs = spiderweb.constraints;
   for (var i = 0; i < cs.length; i++) {
+    cs[i].__ci = i;
     var c = cs[i];
     if (!(c instanceof DistanceConstraint)) continue;
     if (c.__webGlobal) continue;

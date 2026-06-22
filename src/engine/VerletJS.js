@@ -185,6 +185,7 @@ VerletJS.prototype.draw = function () {
   this.ctx.clearRect(0, 0, this.width, this.height);
   statsDc('clear');
   for (c in this.composites) {
+    if (this.composites[c].deferDraw) continue;
     if (this.composites[c].drawConstraints)
       this.composites[c].drawConstraints(this.ctx, this.composites[c]);
     else {

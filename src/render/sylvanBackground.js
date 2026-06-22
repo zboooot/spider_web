@@ -88,10 +88,28 @@ export var activeTheme = THEMES[0];
 
 /* ── 内部状态 ── */
 var canvases = {}, ctxs = {};
+var _scratch = {};
+var _bgSharp = null;
 var bokehParticles = [], treesDeep = [], treesMid = [], lightRays = [];
 var time = 0;
 var globalWindForce = 0;
 var _W = 450, _H = 800;
+var _dpr = 1;
+var _bgBakeDone = false;
+var _bgBakeIdleId = null;
+var _bgBakeUseTimeout = false;
+var _BG_BAKE_IDLE_TIMEOUT = 2000;
+
+/* PR1：Canvas 预模糊，去掉合成时大半径 CSS blur（?legacyBg=1 回滚旧路径） */
+var USE_LEGACY_BG = typeof location !== 'undefined'
+  && /(?:^|[?&])legacyBg=1/.test(location.search);
+
+/** 预模糊半径（逻辑 px，约等效旧 CSS blur） */
+var BAKE_BLUR = { bg: 90, deep: 24, mid: 10, fg: 2 };
+/** 半分辨率绘制层（再放大 + 预模糊，减像素量） */
+var LAYER_DRAW_SCALE = { deep: 0.5, mid: 0.5 };
+/** 预模糊后保留极轻 CSS tail，供 blurScale 滑条微调 */
+var CSS_TAIL_RATIO = 0.08;
 
 /* ── 背景可调参数（供外部面板控制） ── */
 export var bgConfig = {
@@ -104,16 +122,122 @@ export var bgConfig = {
   yOffset: 0.10      // 背景整体上移比例（相对画布高度）
 };
 
-/* 基准模糊值（blurScale=1.0时的像素数） */
+/* 基准模糊值（blurScale=1.0时的像素数，legacy 模式 CSS 全量） */
 var BASE_BLURS = { bg: 90, deep: 48, mid: 20, fg: 4 };
 
-export function applyBgBlur() {
+function _bakeBlurPx(key) {
+  return BAKE_BLUR[key] * bgConfig.blurScale;
+}
+
+function _cssBlurPx(key) {
   var s = bgConfig.blurScale;
+  if (USE_LEGACY_BG) return BASE_BLURS[key] * s;
+  return BASE_BLURS[key] * s * CSS_TAIL_RATIO;
+}
+
+function _ensureScratch(key, scale) {
+  if (!_scratch[key]) {
+    _scratch[key] = document.createElement('canvas');
+  }
+  var sw = Math.max(1, Math.round(_W * scale * _dpr));
+  var sh = Math.max(1, Math.round(_H * scale * _dpr));
+  if (_scratch[key].width !== sw) _scratch[key].width = sw;
+  if (_scratch[key].height !== sh) _scratch[key].height = sh;
+  return { canvas: _scratch[key], ctx: _scratch[key].getContext('2d'), scale: scale };
+}
+
+function _scratchDrawSetup(sctx, scale) {
+  sctx.setTransform(_dpr * scale, 0, 0, _dpr * scale, 0, 0);
+}
+
+function _blitWithBakeBlur(displayCtx, scratchCanvas, blurPx) {
+  displayCtx.setTransform(_dpr, 0, 0, _dpr, 0, 0);
+  displayCtx.clearRect(0, 0, _W, _H);
+  if (blurPx > 0) displayCtx.filter = 'blur(' + blurPx + 'px)';
+  displayCtx.drawImage(scratchCanvas, 0, 0, _W, _H);
+  displayCtx.filter = 'none';
+}
+
+function _cancelBgBakeSchedule() {
+  if (_bgBakeIdleId == null) return;
+  if (_bgBakeUseTimeout) clearTimeout(_bgBakeIdleId);
+  else if (typeof cancelIdleCallback === 'function') cancelIdleCallback(_bgBakeIdleId);
+  _bgBakeIdleId = null;
+}
+
+function _applyBgCssFilter() {
   if (!canvases.bg) return;
-  canvases.bg.style.filter   = 'blur(' + (BASE_BLURS.bg   * s) + 'px)';
-  canvases.deep.style.filter = 'blur(' + (BASE_BLURS.deep * s) + 'px)';
-  canvases.mid.style.filter  = 'blur(' + (BASE_BLURS.mid  * s) + 'px)';
-  canvases.fg.style.filter   = 'blur(' + (BASE_BLURS.fg   * s) + 'px)';
+  if (USE_LEGACY_BG || _bgBakeDone) {
+    canvases.bg.style.filter = 'blur(' + _cssBlurPx('bg') + 'px)';
+    return;
+  }
+  /* 烘焙完成前：用 CSS 大 blur 兜底，避免首帧同步烘焙 */
+  canvases.bg.style.filter = 'blur(' + (BASE_BLURS.bg * bgConfig.blurScale) + 'px)';
+}
+
+function _bakeBgFromSharp() {
+  if (USE_LEGACY_BG || !_bgSharp || !ctxs.bg) return;
+  var ctx = ctxs.bg;
+  var w = canvases.bg.width;
+  var h = canvases.bg.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  var blurPx = _bakeBlurPx('bg');
+  if (blurPx > 0) ctx.filter = 'blur(' + blurPx + 'px)';
+  ctx.drawImage(_bgSharp, 0, 0);
+  ctx.filter = 'none';
+  ctx.setTransform(_dpr, 0, 0, _dpr, 0, 0);
+  _bgBakeDone = true;
+  _applyBgCssFilter();
+}
+
+function _runDeferredBgBake() {
+  _bgBakeIdleId = null;
+  _bakeBgFromSharp();
+}
+
+function _scheduleBgBake(urgent) {
+  if (USE_LEGACY_BG || !_bgSharp) return;
+  _cancelBgBakeSchedule();
+  _bgBakeDone = false;
+  _applyBgCssFilter();
+
+  if (urgent) {
+    _runDeferredBgBake();
+    return;
+  }
+
+  if (typeof requestIdleCallback === 'function') {
+    _bgBakeUseTimeout = false;
+    _bgBakeIdleId = requestIdleCallback(function () {
+      _runDeferredBgBake();
+    }, { timeout: _BG_BAKE_IDLE_TIMEOUT });
+  } else {
+    _bgBakeUseTimeout = true;
+    _bgBakeIdleId = setTimeout(_runDeferredBgBake, 16);
+  }
+}
+
+function _renderBakedLayer(key, scale, drawFn) {
+  var sc = _ensureScratch(key, scale);
+  _scratchDrawSetup(sc.ctx, sc.scale);
+  sc.ctx.clearRect(0, 0, _W, _H);
+  drawFn(sc.ctx);
+  sc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  _blitWithBakeBlur(ctxs[key], sc.canvas, _bakeBlurPx(key));
+}
+
+export function applyBgBlur() {
+  if (!canvases.bg) return;
+  var keys = ['deep', 'mid', 'fg'];
+  for (var i = 0; i < keys.length; i++) {
+    canvases[keys[i]].style.filter = 'blur(' + _cssBlurPx(keys[i]) + 'px)';
+  }
+  _applyBgCssFilter();
+  if (!USE_LEGACY_BG && _bgSharp) {
+    if (_bgBakeDone) _bakeBgFromSharp();
+    else _scheduleBgBake(false);
+  }
 }
 
 export function applyBgPresentation() {
@@ -472,8 +596,6 @@ export function initSylvanBackground(W, H, screenShellEl) {
   darkenEl.style.cssText = 'position:absolute;inset:0;z-index:6;pointer-events:none;opacity:0;background:rgba(0,0,0,1);';
 
   var keys = ['bg', 'deep', 'mid', 'fg'];
-  // 原版默认 blurScale=2.0，实际模糊值为基准值×2
-  var blurs = { bg: 90, deep: 48, mid: 20, fg: 4 };
   var opacities = { bg: 0.9, deep: 0.85, mid: 0.9, fg: 0.95 };
   var zindices = { bg: 1, deep: 2, mid: 3, fg: 4 };
 
@@ -481,7 +603,7 @@ export function initSylvanBackground(W, H, screenShellEl) {
     var c = document.createElement('canvas');
     c.id = 'sylvan-canvas-' + key;
     c.style.cssText = [
-      'filter:blur(' + blurs[key] + 'px)',
+      'filter:none',
       'opacity:' + opacities[key],
       'z-index:' + zindices[key],
       'pointer-events:none',
@@ -506,17 +628,21 @@ export function initSylvanBackground(W, H, screenShellEl) {
   _resizeCanvases();
   _createEntities();
   applyBgPresentation();
+  applyBgBlur();
 }
 
 function _resizeCanvases() {
-  var dpr = window.devicePixelRatio || 1;
+  _dpr = window.devicePixelRatio || 1;
   var keys = ['bg', 'deep', 'mid', 'fg'];
   keys.forEach(function (key) {
-    canvases[key].width = Math.round(_W * dpr);
-    canvases[key].height = Math.round(_H * dpr);
+    canvases[key].width = Math.round(_W * _dpr);
+    canvases[key].height = Math.round(_H * _dpr);
     ctxs[key].setTransform(1, 0, 0, 1, 0, 0);
-    ctxs[key].scale(dpr, dpr);
+    ctxs[key].scale(_dpr, _dpr);
   });
+  _bgSharp = null;
+  _bgBakeDone = false;
+  _cancelBgBakeSchedule();
   _initBackgroundMesh();
 }
 
@@ -574,6 +700,15 @@ function _initBackgroundMesh() {
     ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalCompositeOperation = 'source-over';
+
+  if (!USE_LEGACY_BG) {
+    if (!_bgSharp) _bgSharp = document.createElement('canvas');
+    _bgSharp.width = w;
+    _bgSharp.height = h;
+    _bgSharp.getContext('2d').drawImage(canvases.bg, 0, 0);
+    _bgBakeDone = false;
+    _scheduleBgBake(false);
+  }
 }
 
 /* ══════════════════════════════════════════
@@ -618,8 +753,10 @@ function _createEntities() {
 export function switchSylvanTheme(levelIndex) {
   var idx = Math.max(0, Math.min(THEMES.length - 1, levelIndex));
   activeTheme = THEMES[idx];
+  _cancelBgBakeSchedule();
   _initBackgroundMesh();
   _createEntities();
+  applyBgBlur();
 }
 
 /* ══════════════════════════════════════════
@@ -677,19 +814,38 @@ export function getBgEntityCounts() {
 export function renderSylvanBackground() {
   statsSetScene(Object.assign({ bgRendered: true }, getBgEntityCounts()));
 
-  // 深景深：远处树木轮廓
-  ctxs.deep.clearRect(0, 0, _W, _H);
+  if (USE_LEGACY_BG) {
+    ctxs.deep.clearRect(0, 0, _W, _H);
+    statsDc('clear');
+    for (var di = 0; di < treesDeep.length; di++) treesDeep[di].draw(ctxs.deep);
+
+    ctxs.mid.clearRect(0, 0, _W, _H);
+    statsDc('clear');
+    for (var mi = 0; mi < treesMid.length; mi++) treesMid[mi].draw(ctxs.mid);
+    for (var ri = 0; ri < lightRays.length; ri++) lightRays[ri].draw(ctxs.mid);
+
+    ctxs.fg.clearRect(0, 0, _W, _H);
+    statsDc('clear');
+    for (var fi = 0; fi < bokehParticles.length; fi++) bokehParticles[fi].draw(ctxs.fg);
+    return;
+  }
+
+  // 深景深：半分辨率绘制 + Canvas 预模糊
+  _renderBakedLayer('deep', LAYER_DRAW_SCALE.deep, function (ctx) {
+    for (var i = 0; i < treesDeep.length; i++) treesDeep[i].draw(ctx);
+  });
   statsDc('clear');
-  for (var i = 0; i < treesDeep.length; i++) treesDeep[i].draw(ctxs.deep);
 
   // 中景：先树枝、后光束，乘法混合才能作用在已有像素上
-  ctxs.mid.clearRect(0, 0, _W, _H);
+  _renderBakedLayer('mid', LAYER_DRAW_SCALE.mid, function (ctx) {
+    for (var j = 0; j < treesMid.length; j++) treesMid[j].draw(ctx);
+    for (var k = 0; k < lightRays.length; k++) lightRays[k].draw(ctx);
+  });
   statsDc('clear');
-  for (var i = 0; i < treesMid.length; i++) treesMid[i].draw(ctxs.mid);
-  for (var i = 0; i < lightRays.length; i++) lightRays[i].draw(ctxs.mid);
 
-  // 近景：孢子光斑
-  ctxs.fg.clearRect(0, 0, _W, _H);
+  // 近景：全分辨率 + 轻预模糊
+  _renderBakedLayer('fg', 1, function (ctx) {
+    for (var p = 0; p < bokehParticles.length; p++) bokehParticles[p].draw(ctx);
+  });
   statsDc('clear');
-  for (var i = 0; i < bokehParticles.length; i++) bokehParticles[i].draw(ctxs.fg);
 }

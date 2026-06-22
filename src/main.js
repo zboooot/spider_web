@@ -60,7 +60,8 @@ import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX } 
 import { initPanel } from './ui/panel.js';
 
 import {
-  statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel
+  statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
+  statsTimeStart, statsTimeEnd
 } from './debug/renderStats.js';
 import { getBgEntityCounts } from './render/sylvanBackground.js';
 
@@ -1347,21 +1348,28 @@ window.onload = function () {
 
     /* ── 更新 & 绘制 Sylvan 背景（始终运行，包括IDLE） ── */
     _bgFrame++;
+    statsTimeStart('bgUpd');
     updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
+    statsTimeEnd();
     /* 移动端每 3 帧渲染一次背景（约 20fps），桌面端每帧渲染 */
     if (!IS_MOBILE || _bgFrame % 3 === 0) {
+      statsTimeStart('bgRnd');
       renderSylvanBackground();
+      statsTimeEnd();
     }
 
     if (gameState === 'IDLE' || gameState === 'GAME_OVER') {
+      statsTimeStart('other');
       updateLevelTimer();
       countSimStats(0);
+      statsTimeEnd();
       statsEndFrame(timestamp);
       updateStatsPanel();
       requestAnimFrame(loop);
       return;
     }
 
+    statsTimeStart('anim');
     captureThrownStickPrev();
 
     /* body movement */
@@ -1417,8 +1425,10 @@ window.onload = function () {
     }
 
     integrateThrownObjects();
+    statsTimeEnd();
 
     /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
+    statsTimeStart('phys');
     var physicsIters = 11;
     countSimStats(physicsIters);
     sim.frame(
@@ -1426,7 +1436,9 @@ window.onload = function () {
       USE_LEGACY_COLLISION ? null : _constraintAlive
     );
     _resyncFootParticles();
+    statsTimeEnd();
 
+    statsTimeStart('query');
     if (USE_LEGACY_COLLISION) updateSamplePoints(samplePoints);
     else rebuildSpatialIndex();
 
@@ -1450,11 +1462,20 @@ window.onload = function () {
     queryThrownStick();
     tryCollectObjects();
     if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
+    statsTimeEnd();
 
+    statsTimeStart('other');
     updateBlink();
+    statsTimeEnd();
+    statsTimeStart('webRnd');
     sim.draw();
+    statsTimeEnd();
+    statsTimeStart('preyRnd');
     drawThrownObjects(sim.ctx, thrownObjects);
+    statsTimeEnd();
+    statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
+    statsTimeEnd();
     statsEndFrame(timestamp);
     updateStatsPanel();
     requestAnimFrame(loop);

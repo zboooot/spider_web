@@ -25,6 +25,7 @@ function getSpiderHeadFrame(blinkState, wrappingTarget) {
  * 设置蜘蛛的自定义绘制函数
  */
 export function setupSpiderDraw(spider, legConstraintCount, footState, blinkState, getWrappingTarget) {
+  spider.deferDraw = true;
   spider.drawConstraints = function (ctx, comp) {
     var wrappingTarget = getWrappingTarget();
 
