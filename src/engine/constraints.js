@@ -10,12 +10,20 @@ export function DistanceConstraint(a, b, stiffness, distance) {
   this.stiffness = stiffness;
 }
 
+var _dcScratch = new Vec2();
+
 DistanceConstraint.prototype.relax = function (sc) {
-  var n = this.a.pos.sub(this.b.pos), m = n.length2();
-  if (m < 1e-9) return;
-  n.mutableScale(((this.distance * this.distance - m) / m) * this.stiffness * sc);
-  this.a.pos.mutableAdd(n);
-  this.b.pos.mutableSub(n);
+  _dcScratch.x = this.a.pos.x - this.b.pos.x;
+  _dcScratch.y = this.a.pos.y - this.b.pos.y;
+  var m = _dcScratch.x * _dcScratch.x + _dcScratch.y * _dcScratch.y;
+  if (m < 1e-12) return;
+  var s = ((this.distance * this.distance - m) / m) * this.stiffness * sc;
+  _dcScratch.x *= s;
+  _dcScratch.y *= s;
+  this.a.pos.x += _dcScratch.x;
+  this.a.pos.y += _dcScratch.y;
+  this.b.pos.x -= _dcScratch.x;
+  this.b.pos.y -= _dcScratch.y;
 };
 
 DistanceConstraint.prototype.draw = function (ctx) {
@@ -52,20 +60,39 @@ export function AngleConstraint(a, b, c, stiffness) {
   this.a = a;
   this.b = b;
   this.c = c;
-  this.angle = this.b.pos.angle2(this.a.pos, this.c.pos);
+  this.angle = Vec2.angleAt(
+    this.b.pos.x, this.b.pos.y,
+    this.a.pos.x, this.a.pos.y,
+    this.c.pos.x, this.c.pos.y
+  );
   this.stiffness = stiffness;
 }
 
+AngleConstraint.prototype.syncAngle = function () {
+  this.angle = Vec2.angleAt(
+    this.b.pos.x, this.b.pos.y,
+    this.a.pos.x, this.a.pos.y,
+    this.c.pos.x, this.c.pos.y
+  );
+};
+
 AngleConstraint.prototype.relax = function (sc) {
-  var angle = this.b.pos.angle2(this.a.pos, this.c.pos);
+  var angle = Vec2.angleAt(
+    this.b.pos.x, this.b.pos.y,
+    this.a.pos.x, this.a.pos.y,
+    this.c.pos.x, this.c.pos.y
+  );
   var diff = angle - this.angle;
   if (diff <= -Math.PI) diff += 2 * Math.PI;
   else if (diff >= Math.PI) diff -= 2 * Math.PI;
+  var maxStep = 0.42;
+  if (diff > maxStep) diff = maxStep;
+  else if (diff < -maxStep) diff = -maxStep;
   diff *= sc * this.stiffness;
-  this.a.pos = this.a.pos.rotate(this.b.pos, diff);
-  this.c.pos = this.c.pos.rotate(this.b.pos, -diff);
-  this.b.pos = this.b.pos.rotate(this.a.pos, diff);
-  this.b.pos = this.b.pos.rotate(this.c.pos, -diff);
+  this.a.pos.mutableRotate(this.b.pos, diff);
+  this.c.pos.mutableRotate(this.b.pos, -diff);
+  this.b.pos.mutableRotate(this.a.pos, diff);
+  this.b.pos.mutableRotate(this.c.pos, -diff);
 };
 
 AngleConstraint.prototype.draw = function (ctx) {

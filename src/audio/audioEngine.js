@@ -4,6 +4,7 @@
  */
 
 var AC = null;
+var _audioUnlocked = false;
 
 /* ── BGM 状态 ── */
 var masterBgmGain = null;
@@ -27,6 +28,23 @@ var THEME_IDS = ['morning-jade', 'golden-autumn', 'misty-violet', 'cherry-blosso
 function getAC() {
   if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
   return AC;
+}
+
+function unlockAudio(onReady) {
+  try {
+    var ctx = getAC();
+    if (ctx.state === 'suspended') {
+      var p = ctx.resume();
+      if (p && typeof p.then === 'function') {
+        return p.then(function () {
+          _audioUnlocked = true;
+          if (onReady) onReady();
+        }).catch(function () {});
+      }
+    }
+    _audioUnlocked = true;
+    if (onReady) onReady();
+  } catch (e) {}
 }
 
 /* 初始化或复用 masterBgmGain → masterLP → destination 路由 */
@@ -246,7 +264,10 @@ function _stopAllBgmNodes(fadeSec) {
 function playLevelBGM(levelIndex) {
   try {
     var ctx = getAC();
-    if (ctx.state === 'suspended') ctx.resume();
+    if (ctx.state === 'suspended') {
+      if (!_audioUnlocked) return;
+      ctx.resume().catch(function () {});
+    }
     _ensureMasterGain();
 
     var themeId = THEME_IDS[Math.max(0, Math.min(THEME_IDS.length - 1, levelIndex))];
@@ -329,7 +350,7 @@ function playSfxFootstep() {
 function playSfxLand(kind) {
   try {
     var ctx = getAC();
-    var freq = kind === 'boulder' ? 160 : kind === 'bug' ? 280 : 120;
+    var freq = (kind === 'boulder' || kind === 'poop') ? 160 : kind === 'bug' ? 280 : 120;
     var n = makeOscGain('sine', freq, 0.25);
     n.osc.frequency.exponentialRampToValueAtTime(freq * 0.4, ctx.currentTime + 0.18);
     n.gain.gain.setValueAtTime(0.25, ctx.currentTime);
@@ -444,6 +465,61 @@ function playCollectSound(kind) {
   } catch (e) {}
 }
 
+function playSfxPoopBurst() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+
+    var len = Math.floor(ctx.sampleRate * 0.36);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+      var t = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 1.95) * 0.44;
+    }
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 560;
+    lp.Q.value = 0.9;
+    var hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 65;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.18, now + 0.014);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    src.connect(lp); lp.connect(hp); hp.connect(g); g.connect(ctx.destination);
+    src.start(now);
+
+    var toot = makeOscGain('triangle', 132, 0.11);
+    toot.osc.frequency.setValueAtTime(132, now);
+    toot.osc.frequency.linearRampToValueAtTime(112, now + 0.05);
+    toot.osc.frequency.linearRampToValueAtTime(118, now + 0.10);
+    toot.osc.frequency.exponentialRampToValueAtTime(72, now + 0.24);
+    toot.gain.gain.setValueAtTime(0.001, now);
+    toot.gain.gain.linearRampToValueAtTime(0.11, now + 0.012);
+    toot.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    toot.osc.start(now); toot.osc.stop(now + 0.28);
+
+    var wobble = ctx.createOscillator();
+    var wobbleGain = ctx.createGain();
+    wobble.type = 'sine';
+    wobble.frequency.value = 16;
+    wobbleGain.gain.value = 12;
+    wobble.connect(wobbleGain); wobbleGain.connect(toot.osc.frequency);
+    wobble.start(now); wobble.stop(now + 0.18);
+
+    var tail = makeOscGain('sine', 86, 0.045);
+    tail.osc.frequency.exponentialRampToValueAtTime(58, now + 0.18);
+    tail.gain.gain.setValueAtTime(0.001, now + 0.03);
+    tail.gain.gain.linearRampToValueAtTime(0.045, now + 0.06);
+    tail.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    tail.osc.start(now + 0.03); tail.osc.stop(now + 0.24);
+  } catch (e) {}
+}
+
 function playSfxSuccess() {
   try {
     var ctx = getAC();
@@ -493,6 +569,7 @@ function setVolume(v) {
 
 export var audioEngine = {
   getAC: getAC,
+  unlockAudio: unlockAudio,
   startBGM: startBGM,
   stopBGM: stopBGM,
   playLevelBGM: playLevelBGM,
@@ -505,6 +582,7 @@ export var audioEngine = {
   stopAllBugBuzz: stopAllBugBuzz,
   playSfxWrap: playSfxWrap,
   playCollectSound: playCollectSound,
+  playSfxPoopBurst: playSfxPoopBurst,
   playSfxSuccess: playSfxSuccess,
   playSfxGameOver: playSfxGameOver
 };

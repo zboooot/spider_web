@@ -21,6 +21,7 @@ export function bindSlider(key, rebuildType, P, callbacks) {
     if (rebuildType === 'web') { callbacks.buildWeb(); }
     else if (rebuildType === 'spider') { callbacks.buildSpider(); }
     else if (rebuildType === 'motion') { callbacks.onMotionChange(); }
+    else if (rebuildType === 'repair') { callbacks.onRepairChange(); }
   });
 }
 
@@ -51,7 +52,36 @@ export function initPanel(P, DEFAULTS, callbacks) {
   bindSlider('flyReleaseSec', 'object', P, callbacks);
   bindSlider('leafReleaseSec', 'object', P, callbacks);
 
+  /* 补网配置 */
+  bindSlider('stubReachRadius', 'repair', P, callbacks);
+  bindSlider('stubSnapRadius', 'repair', P, callbacks);
+
+  var repairPatchBtn = document.getElementById('btn-repairPatch');
+  function renderRepairPatchBtn(on) {
+    repairPatchBtn.textContent = on ? 'Patch Repair: ON' : 'Patch Repair: OFF';
+    repairPatchBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    repairPatchBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderRepairPatchBtn(!!P.repairPatch);
+  repairPatchBtn.addEventListener('click', function () {
+    P.repairPatch = P.repairPatch ? 0 : 1;
+    renderRepairPatchBtn(!!P.repairPatch);
+  });
+
   document.getElementById('btn-rebuild').onclick = function () { callbacks.buildWeb(); };
+
+  /* Auto Play 开关 */
+  var autoPlayBtn = document.getElementById('btn-autoplay');
+  function renderAutoPlayBtn(on) {
+    autoPlayBtn.textContent = on ? '🤖 Auto Play: ON' : '🤖 Auto Play: OFF';
+    autoPlayBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    autoPlayBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderAutoPlayBtn(callbacks.isAutoPlayOn());
+  autoPlayBtn.addEventListener('click', function () {
+    var on = callbacks.toggleAutoPlay();
+    renderAutoPlayBtn(on);
+  });
 
   document.getElementById('btn-save').onclick = function () {
     localStorage.setItem('spiderPanelParams', JSON.stringify(P));
@@ -69,14 +99,17 @@ export function initPanel(P, DEFAULTS, callbacks) {
       if (el) { el.value = P[key]; lbl.textContent = P[key]; }
     });
     callbacks.onMotionChange();
+    callbacks.setAutoPlay(true);
+    renderAutoPlayBtn(true);
     callbacks.clearAllObjects();
     callbacks.buildWeb();
     callbacks.buildSpider();
   };
 
   /* 右面板按钮 */
-  // document.getElementById('btn-boulder').onclick = function () { callbacks.launchObject('boulder'); };
-  // document.getElementById('btn-bug').onclick = function () { callbacks.launchObject('bug'); };
-  // document.getElementById('btn-drop').onclick = function () { callbacks.launchObject('drop'); };
+  document.getElementById('btn-boulder').onclick = function () { callbacks.launchObject('boulder'); };
+  document.getElementById('btn-bug').onclick = function () { callbacks.launchObject('bug'); };
+  document.getElementById('btn-drop').onclick = function () { callbacks.launchObject('drop'); };
+  document.getElementById('btn-poop').onclick = function () { callbacks.launchObject('poop'); };
   document.getElementById('btn-clearObj').onclick = callbacks.clearAllObjects;
 }

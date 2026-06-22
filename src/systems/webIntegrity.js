@@ -1,4 +1,6 @@
 import { DistanceConstraint } from '../engine/constraints.js';
+import { ptSegDistSq } from '../physics/CollisionMath.js';
+import { isWebConstraintAlive } from '../physics/SpatialIndexService.js';
 
 /**
  * 网完整性检测系统
@@ -21,13 +23,14 @@ export function ptToSegDist2(px, py, ax, ay, bx, by) {
 /**
  * 判断格子是否被约束覆盖
  */
-export function cellCovered(gx, gy, spiderweb, coverD) {
+export function cellCovered(gx, gy, spiderweb, coverD, spatialIndex) {
   if (!spiderweb) return false;
   var D2 = coverD * coverD;
   var cs = spiderweb.constraints;
   for (var i = 0; i < cs.length; i++) {
     var c = cs[i];
     if (!(c instanceof DistanceConstraint)) continue;
+    if (spatialIndex && !isWebConstraintAlive(c, spatialIndex)) continue;
     if (ptToSegDist2(gx, gy, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < D2) return true;
   }
   return false;
@@ -60,6 +63,112 @@ export function scanWebCells(webGridList, spiderweb, coverD) {
     if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) covered++;
   }
   return covered;
+}
+
+/** 建网时分批扫描（warmup） */
+export const WEB_BUILD_BATCH = 50;
+
+/**
+ * 断丝后运行时重扫：每帧最多 batchSize 格，worst-case 比较次数 ≈ batchSize × 约束数
+ * Phase A 目标：≤5000 次/帧 → batchSize=7（660 约束时约 4620）
+ */
+export const WEB_RESCAN_BATCH = 7;
+
+/**
+ * 分批扫描格子，返回本批覆盖数与下一索引
+ * @returns {{ covered: number, nextIdx: number, done: boolean }}
+ */
+/**
+ * 通过 Spatial Index 判断格点是否被覆盖（Phase B）
+ */
+export function cellCoveredSpatial(gx, gy, spatialIndex, queryBuf, coverD) {
+  if (!spatialIndex) return false;
+  var d2 = coverD * coverD;
+  var count = spatialIndex.queryAABB(gx - coverD, gx + coverD, gy - coverD, gy + coverD, queryBuf);
+  for (var i = 0; i < count; i++) {
+    var id = queryBuf[i];
+    if (!spatialIndex.isAliveId(id)) continue;
+    var c = spatialIndex.getConstraint(id);
+    if (!c || !isWebConstraintAlive(c, spatialIndex)) continue;
+    if (ptSegDistSq(gx, gy, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) return true;
+  }
+  return false;
+}
+
+/**
+ * 断丝后标记受影响完整度格（线段 AABB 外扩 coverD）
+ */
+export function markDirtyCellsFromSegment(ax, ay, bx, by, pad, webGridList) {
+  var minX = (ax < bx ? ax : bx) - pad;
+  var maxX = (ax > bx ? ax : bx) + pad;
+  var minY = (ay < by ? ay : by) - pad;
+  var maxY = (ay > by ? ay : by) + pad;
+  return markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList);
+}
+
+/**
+ * 矩形区域批量标记 dirty 格（AoE 断丝等）
+ */
+export function markDirtyRegionFromAABB(minX, minY, maxX, maxY, webGridList) {
+  var dirty = [];
+  if (!webGridList || !webGridList.length) return dirty;
+  for (var k = 0; k < webGridList.length; k++) {
+    var g = webGridList[k];
+    if (g.x >= minX && g.x <= maxX && g.y >= minY && g.y <= maxY) dirty.push(k);
+  }
+  return dirty;
+}
+
+/**
+ * 处理 dirty 格队列（每帧最多 batchSize 个）
+ * @returns {{ done: boolean, comparisons: number }}
+ */
+export function tickDirtyCells(state, spatialIndex, queryBuf, coverD, batchSize) {
+  var dirty = state.dirtyIndices;
+  if (!dirty.length || !state.webGridList) return { done: true, comparisons: 0 };
+  var comparisons = 0;
+  var processed = 0;
+  while (processed < batchSize && dirty.length) {
+    var idx = dirty.shift();
+    if (state.dirtyFlags) state.dirtyFlags[idx] = 0;
+    var g = state.webGridList[idx];
+    var was = state.cellCovered[idx];
+    var count = spatialIndex.queryAABB(
+      g.x - coverD, g.x + coverD, g.y - coverD, g.y + coverD, queryBuf
+    );
+    comparisons += count;
+    var now = false;
+    var d2 = coverD * coverD;
+    for (var i = 0; i < count; i++) {
+      var id = queryBuf[i];
+      if (!spatialIndex.isAliveId(id)) continue;
+      var c = spatialIndex.getConstraint(id);
+      if (!c || !isWebConstraintAlive(c, spatialIndex)) continue;
+      comparisons++;
+      if (ptSegDistSq(g.x, g.y, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) {
+        now = true;
+        break;
+      }
+    }
+    var nowVal = now ? 1 : 0;
+    state.cellCovered[idx] = nowVal;
+    if (was && !nowVal) state.coveredCount--;
+    else if (!was && nowVal) state.coveredCount++;
+    processed++;
+  }
+  return { done: dirty.length === 0, comparisons: comparisons };
+}
+
+export function scanWebCellsBatch(webGridList, spiderweb, coverD, startIdx, batchSize, spatialIndex) {
+  if (!webGridList || webGridList.length === 0) {
+    return { covered: 0, nextIdx: 0, done: true };
+  }
+  var covered = 0;
+  var end = Math.min(startIdx + batchSize, webGridList.length);
+  for (var k = startIdx; k < end; k++) {
+    if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD, spatialIndex)) covered++;
+  }
+  return { covered: covered, nextIdx: end, done: end >= webGridList.length };
 }
 
 /**
@@ -115,13 +224,14 @@ export function countWebDC(spiderweb) {
 /**
  * 统计孤立粒子数
  */
-export function countIsolatedParticles(spiderweb) {
+export function countIsolatedParticles(spiderweb, spatialIndex) {
   if (!spiderweb) return 0;
   var connected = {};
   var _pid = 0;
   for (var i = 0; i < spiderweb.constraints.length; i++) {
     var c = spiderweb.constraints[i];
     if (!(c instanceof DistanceConstraint)) continue;
+    if (spatialIndex && !isWebConstraintAlive(c, spatialIndex)) continue;
     var idA = c.a.__pid || (c.a.__pid = ++_pid);
     var idB = c.b.__pid || (c.b.__pid = ++_pid);
     connected[idA] = true;

@@ -29,15 +29,17 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
   var radialTensorMul     = opts.radialTensorMul     != null ? opts.radialTensorMul     : 0.85;
   var spiralTensorMul     = opts.spiralTensorMul     != null ? opts.spiralTensorMul     : 1.0;
   var centerTensionBoost  = opts.centerTensionBoost  != null ? opts.centerTensionBoost  : 0.08;
-
+  var SKIP_INNER = 2; /* 最内2圈不生成粒子和螺旋线，径向线汇聚到hub */
+  var effectiveDepth = Math.max(2, depth - SKIP_INNER);
   var tensor = 0.3,
     stride = (2 * Math.PI) / segments,
-    n = segments * depth,
-    rStride = radius / n,
+    n = segments * effectiveDepth,
+    rStride = radius / (segments * depth), /* 保持原半径步长比例 */
     i, c;
 
   var comp = new Composite();
 
+  /* ── 只生成有效圈的粒子（最内SKIP_INNER圈不生成） ── */
   for (i = 0; i < n; ++i) {
     var theta = i * stride + Math.cos(i * 0.4) * 0.05 + Math.cos(i * 0.05) * 0.2;
     var sr = radius - rStride * i + Math.cos(i * 0.1) * 20;
@@ -48,8 +50,14 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
     )));
   }
 
+  /* ── 中心 hub（不固定，随物理振动） ── */
+  var hub = new Particle(new Vec2(origin.x, origin.y));
+  comp.particles.push(hub);
+
+  /* ── 锚点：外圈每隔 pinStep 固定 ── */
   for (i = 0; i < segments; i += pinStep) comp.pin(i);
 
+  /* ── 约束：螺旋线 + 径向线 ── */
   for (i = 0; i < n - 1; ++i) {
     /* ── 环向捕捉丝：粒子 i → i+1（同圈内相邻）──────────────────── */
     var sc = new DistanceConstraint(comp.particles[i], comp.particles[i + 1], stiffness * spiralStiffnessMul);
@@ -60,14 +68,19 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
     var off = i + segments;
     var rc = new DistanceConstraint(
       comp.particles[i],
-      off < n - 1 ? comp.particles[off] : comp.particles[n - 1],
+      off < n ? comp.particles[off] : hub,
       stiffness * radialStiffnessMul
     );
     rc.isRadial = true;
-    /* 当前粒子所在圈层（0=最外圈，depth-1=最内圈），归一化到 0~1 */
-    rc._ringDepth = Math.floor(i / segments) / Math.max(1, depth - 1);
+    /* 当前粒子所在圈层（0=最外圈，effectiveDepth-1=最内有效圈），归一化到 0~1 */
+    rc._ringDepth = Math.floor(i / segments) / Math.max(1, effectiveDepth - 1);
     comp.constraints.push(rc);
   }
+  /* 最内圈最后一个粒子的径向线补上 */
+  var hubLink = new DistanceConstraint(comp.particles[n - 1], hub, stiffness * radialStiffnessMul);
+  hubLink.isRadial = true;
+  hubLink._ringDepth = 1;
+  comp.constraints.push(hubLink);
 
   /* 闭合最外圈的环向丝 */
   var closure = new DistanceConstraint(comp.particles[0], comp.particles[segments - 1], stiffness * spiralStiffnessMul);
@@ -87,6 +100,7 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
     }
   }
 
+  comp.__isWeb = true;
   sim.composites.push(comp);
   return comp;
 }
