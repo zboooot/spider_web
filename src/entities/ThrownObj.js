@@ -145,6 +145,7 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
   this.comp.constraints.push(this.cA);
   this.comp.constraints.push(this.cB);
   this.stuckOnConstraint = pt.c;
+  this._stickIsRadial = !!pt.c.isRadial;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
   if (this.kind === 'boulder') {

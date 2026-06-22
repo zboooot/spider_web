@@ -58,10 +58,21 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
     }
 
     var footDraw = [];
+    var _maxFootJump2 = 48 * 48;
+    if (!spider._footDrawPrev) spider._footDrawPrev = [];
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       var drawCX = fs.current.x, drawCY = fs.current.y;
+      var prev = spider._footDrawPrev[fi];
+      if (prev) {
+        var fjdx = drawCX - prev.x, fjdy = drawCY - prev.y;
+        if (fjdx * fjdx + fjdy * fjdy > _maxFootJump2) {
+          drawCX = prev.x + fjdx * 0.4;
+          drawCY = prev.y + fjdy * 0.4;
+        }
+      }
       footDraw.push({ x: drawCX, y: drawCY });
+      spider._footDrawPrev[fi] = { x: drawCX, y: drawCY };
     }
 
     var tx2 = spider.thorax.pos.x + thoraxDX, ty2 = spider.thorax.pos.y + thoraxDY;
@@ -147,13 +158,14 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
     var fdx = tx - ax, fdy = ty - ay, fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
     var fnx = fdx / fl, fny = fdy / fl, prx = -fny, pry = fnx;
 
-    // Replace old spider body with provided image head while keeping size similar.
     var headFrame = getSpiderHeadFrame(blinkState, wrappingTarget);
     if (headFrame.complete && headFrame.naturalWidth > 0) {
       var imgW = 36.8;
       var imgH = imgW * (headFrame.naturalHeight / headFrame.naturalWidth);
-      var imgCX = ax + fnx * 4;
-      var imgCY = ay + fny * 4;
+      var shakeOff = (blinkState && blinkState.headShake > 0)
+        ? Math.sin(blinkState.headShake * 1.8) * blinkState.headShakeAmp : 0;
+      var imgCX = ax + fnx * 4 + prx * shakeOff;
+      var imgCY = ay + fny * 4 + pry * shakeOff;
       ctx.drawImage(headFrame, imgCX - imgW * 0.5, imgCY - imgH * 0.5, imgW, imgH);
     }
   };

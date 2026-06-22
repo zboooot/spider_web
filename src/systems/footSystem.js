@@ -17,16 +17,56 @@ export function shuffle(o) {
   return o;
 }
 
+/* ─── Foothold 唯一身份 key ─────────────────────────────────────────── */
+
+/**
+ * 为网络节点生成唯一 key
+ */
+export function getNodeFootholdKey(particle) {
+  if (!particle || !particle.__pid) return null;
+  return 'node:' + particle.__pid;
+}
+
+/**
+ * 为网络线段生成唯一 key（t 离散到 4 档，方向无关）
+ * @param {object} pa
+ * @param {object} pb
+ * @param {number} t  0~1
+ */
+export function getSegmentFootholdKey(pa, pb, t) {
+  if (!pa || !pb || !pa.__pid || !pb.__pid) return null;
+  var minPid = Math.min(pa.__pid, pb.__pid);
+  var maxPid = Math.max(pa.__pid, pb.__pid);
+  /* 离散到 4 档: 0.25 / 0.5 / 0.75 / 1.0 → 用 round(t*4)/4 */
+  var bucket = Math.round(t * 4) / 4;
+  return 'seg:' + minPid + '-' + maxPid + '@' + bucket;
+}
+
+/**
+ * 从候选点对象生成 foothold key
+ */
+export function getCandidateFootholdKey(cand) {
+  if (!cand) return null;
+  if (cand.type === 'node') return getNodeFootholdKey(cand.particle);
+  if (cand.type === 'segment') return getSegmentFootholdKey(cand.pa, cand.pb, cand.t);
+  return null;
+}
+
+/* ─── Sample points ─────────────────────────────────────────────────── */
+
 /**
  * 获取网约束上的采样点
+ * t 离散到固定槽位 [0.25, 0.5, 0.75]，减少"几乎重合"的 foothold 候选
  */
 export function getWebSamplePoints(webComposite, N) {
   var pts = [];
+  /* 固定槽位，忽略传入的 N 参数（保留参数以免旧调用出错） */
+  var slots = [0.25, 0.5, 0.75];
   for (var i in webComposite.constraints) {
     var c = webComposite.constraints[i];
     if (!(c instanceof DistanceConstraint)) continue;
-    for (var s = 1; s < N; s++) {
-      var t = s / N;
+    for (var si = 0; si < slots.length; si++) {
+      var t = slots[si];
       pts.push({ type: 'segment', pa: c.a, pb: c.b, t: t, x: 0, y: 0 });
     }
   }
@@ -44,10 +84,13 @@ export function updateSamplePoints(pts) {
   }
 }
 
+/* ─── findStepTarget ─────────────────────────────────────────────────── */
+
 /**
  * 寻找最佳落脚目标
+ * @param {Set|null} occupiedFootholds  其他腿已占用的 foothold key 集合（硬排除）
  */
-export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos) {
+export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds) {
   var stepR = maxStepR || 42, minR = 16;
   var MIN_LEG_SEP = 14;
   var MIN_STEP_PROGRESS = 20;
@@ -97,6 +140,15 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   }
   if (!cands.length) return null;
 
+  /* 硬排除：同 foothold key 已被其他腿占用 */
+  if (occupiedFootholds && occupiedFootholds.size > 0) {
+    cands = cands.filter(function (c) {
+      var k = getCandidateFootholdKey(c);
+      return !k || !occupiedFootholds.has(k);
+    });
+    if (!cands.length) return null;
+  }
+
   function sideOk(cand) {
     var side = (cand.x - thorax.x) * rightX + (cand.y - thorax.y) * rightY;
     return isRightLeg ? side >= sideMargin : side <= -sideMargin;
@@ -135,6 +187,8 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
 
   var CROSS_PENALTY = 8000;
   var SIDE_PENALTY  = 3000;
+  /* segment 相比 node 额外惩罚：运动时 300，静止时 800 */
+  var SEG_PENALTY   = preferStable ? 800 : 300;
 
   function score(cand) {
     var cx = cand.x, cy = cand.y;
@@ -168,12 +222,18 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
       }
     }
 
-    if (preferStable && cand.type === 'segment') penalty += 64;
+    /* node 优先：segment 额外惩罚，鼓励优先踩节点 */
+    if (cand.type === 'segment') penalty += SEG_PENALTY;
+
     return base + penalty;
   }
 
-  var freeCands = cands.filter(function (c) { return !tooCloseToOccupied(c.x, c.y); });
-  var pool = freeCands.length ? freeCands : cands;
+  /* 分两档候选池：
+     hardFree  = foothold 唯一 + 距离够远（首选）
+     hardOnly  = foothold 唯一 + 允许接近（退路）
+     不再有回退到"允许共享"的选项 */
+  var hardFree = cands.filter(function (c) { return !tooCloseToOccupied(c.x, c.y); });
+  var pool = hardFree.length ? hardFree : cands;
 
   var best = null, bs = Number.POSITIVE_INFINITY;
   for (var ci = 0; ci < pool.length; ci++) {
@@ -182,6 +242,8 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   }
   return best || null;
 }
+
+/* ─── liftFoot ───────────────────────────────────────────────────────── */
 
 /**
  * 抬脚：解除约束
@@ -198,13 +260,45 @@ export function liftFoot(fs, spider) {
   fs.landedSeg = null;
 }
 
+/* ─── landFoot ───────────────────────────────────────────────────────── */
+
 /**
  * 落脚：建立约束
+ * @param {Array|null} footState  全部腿状态，用于二次冲突校验；可选
  */
-export function landFoot(fs, spider, spiderweb) {
+export function landFoot(fs, spider, spiderweb, footState) {
   var sp = fs.targetStepPoint;
   fs.targetStepPoint = null;
   if (!sp) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+
+  /* ── 二次 foothold key 冲突检查（最终保险丝） ── */
+  if (footState) {
+    var myKey = getCandidateFootholdKey(sp);
+    if (myKey) {
+      for (var ci = 0; ci < footState.length; ci++) {
+        var other = footState[ci];
+        if (other === fs) continue;
+        /* 检查已着陆的脚 */
+        var otherKey = null;
+        if (other.landedNode) otherKey = getNodeFootholdKey(other.landedNode);
+        else if (other.landedSeg) otherKey = getSegmentFootholdKey(other.landedSeg.pa, other.landedSeg.pb, other.landedSeg.t);
+        if (otherKey && otherKey === myKey) {
+          liftFoot(fs, spider);
+          fs.cooldown = Math.max(fs.cooldown || 0, 18);
+          return;
+        }
+        /* 检查另一条腿正在飞向的目标 */
+        if (other.targetStepPoint) {
+          var targetKey = getCandidateFootholdKey(other.targetStepPoint);
+          if (targetKey && targetKey === myKey) {
+            liftFoot(fs, spider);
+            fs.cooldown = Math.max(fs.cooldown || 0, 18);
+            return;
+          }
+        }
+      }
+    }
+  }
 
   if (sp.type === 'node') {
     if (!sp.particle || !sp.particle.__pid) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
@@ -254,6 +348,8 @@ export function landFoot(fs, spider, spiderweb) {
   }
 }
 
+/* ─── triggerStep ────────────────────────────────────────────────────── */
+
 /**
  * 触发迈步
  */
@@ -263,10 +359,28 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
 
   var occupied = [];
   var occupiedSegments = [];
+  /* 收集已占用的 foothold key 集合（包含已着陆 + 正在飞向的目标） */
+  var occupiedFootholds = new Set();
+
   for (var oi = 0; oi < footState.length; oi++) {
     if (oi === i) continue;
     var other = footState[oi];
     occupied.push({ x: other.current.x, y: other.current.y });
+
+    /* 收集 foothold key：已着陆 */
+    if (other.landedNode) {
+      var nk = getNodeFootholdKey(other.landedNode);
+      if (nk) occupiedFootholds.add(nk);
+    } else if (other.landedSeg) {
+      var sk = getSegmentFootholdKey(other.landedSeg.pa, other.landedSeg.pb, other.landedSeg.t);
+      if (sk) occupiedFootholds.add(sk);
+    }
+    /* 收集 foothold key：正飞向的目标（同帧防抢） */
+    if (other.targetStepPoint) {
+      var tk = getCandidateFootholdKey(other.targetStepPoint);
+      if (tk) occupiedFootholds.add(tk);
+    }
+
     if (other.stepping) continue;
     var hip = spider.legChains && spider.legChains[oi] && spider.legChains[oi][0]
       ? spider.legChains[oi][0].pos
@@ -274,7 +388,7 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
     occupiedSegments.push({ hx: hip.x, hy: hip.y, fx: other.current.x, fy: other.current.y });
   }
 
-  var sp = findStepTarget(spiderweb, i, spider, md || null, samplePoints, occupied, occupiedSegments, maxStepR, preferStable, { x: fs.current.x, y: fs.current.y });
+  var sp = findStepTarget(spiderweb, i, spider, md || null, samplePoints, occupied, occupiedSegments, maxStepR, preferStable, { x: fs.current.x, y: fs.current.y }, occupiedFootholds);
   if (!sp) return;
   var dx = sp.x - fs.current.x, dy = sp.y - fs.current.y;
   if (dx * dx + dy * dy < 400) return;

@@ -75,8 +75,8 @@ export function initPanel(P, DEFAULTS, callbacks) {
   };
 
   /* 右面板按钮 */
-  document.getElementById('btn-boulder').onclick = function () { callbacks.launchObject('boulder'); };
-  document.getElementById('btn-bug').onclick = function () { callbacks.launchObject('bug'); };
-  document.getElementById('btn-drop').onclick = function () { callbacks.launchObject('drop'); };
+  // document.getElementById('btn-boulder').onclick = function () { callbacks.launchObject('boulder'); };
+  // document.getElementById('btn-bug').onclick = function () { callbacks.launchObject('bug'); };
+  // document.getElementById('btn-drop').onclick = function () { callbacks.launchObject('drop'); };
   document.getElementById('btn-clearObj').onclick = callbacks.clearAllObjects;
 }
