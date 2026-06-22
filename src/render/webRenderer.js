@@ -1,7 +1,11 @@
 import { DistanceConstraint } from '../engine/constraints.js';
 import { getNextPid } from '../systems/footSystem.js';
 import { statsDc } from '../debug/renderStats.js';
-import { spatialIndex } from '../physics/SpatialIndexService.js';
+import { spatialIndex, isWebConstraintAlive } from '../physics/SpatialIndexService.js';
+
+function _aliveWebSeg(c) {
+  return c instanceof DistanceConstraint && isWebConstraintAlive(c, spatialIndex);
+}
 
 /**
  * 设置蜘蛛网的自定义绘制函数
@@ -15,9 +19,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     var connected = {};
     for (var ci = 0; ci < comp.constraints.length; ci++) {
       var c = comp.constraints[ci];
-      if (!(c instanceof DistanceConstraint)) continue;
-      if (c.__webGlobal) continue;
-      if (c.__webId && !spatialIndex.isAliveId(c.__webId)) continue;
+      if (!_aliveWebSeg(c)) continue;
       var idA = c.a.__pid || (c.a.__pid = getNextPid());
       var idB = c.b.__pid || (c.b.__pid = getNextPid());
       connected[idA] = true;
@@ -46,7 +48,9 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       var obj = thrownObjects[ti];
       if (obj.kind === 'drop') continue;
       if ((obj.state === 'stuck' || obj.state === 'freeing') && obj.stuckOnConstraint) {
-        var ci2 = comp.constraints.indexOf(obj.stuckOnConstraint);
+        var bc = obj.stuckOnConstraint;
+        if (!_aliveWebSeg(bc)) continue;
+        var ci2 = comp.constraints.indexOf(bc);
         if (ci2 === -1) continue;
         var ramp = Math.max(0, obj.stayFrames - 72);
         var danger = 0;
@@ -60,9 +64,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     var pToCI = {};
     for (var ci = 0; ci < n; ci++) {
       var cc = comp.constraints[ci];
-      if (!(cc instanceof DistanceConstraint)) continue;
-      if (cc.__webGlobal) continue;
-      if (cc.__webId && !spatialIndex.isAliveId(cc.__webId)) continue;
+      if (!_aliveWebSeg(cc)) continue;
       var pa_id = cc.a.__pid || (cc.a.__pid = getNextPid());
       var pb_id = cc.b.__pid || (cc.b.__pid = getNextPid());
       if (!pToCI[pa_id]) pToCI[pa_id] = [];
@@ -77,7 +79,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       var d0 = dangerRaw[ci];
       if (!dangerFinal[ci] || dangerFinal[ci] < d0) dangerFinal[ci] = d0;
       var cc = comp.constraints[ci];
-      if (!(cc instanceof DistanceConstraint)) continue;
+      if (!_aliveWebSeg(cc)) continue;
       var pts = [cc.a.__pid, cc.b.__pid];
       for (var pi = 0; pi < pts.length; pi++) {
         var nbrs = pToCI[pts[pi]] || [];
@@ -86,7 +88,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
           var d1 = d0 * 0.45;
           if (!dangerFinal[ni3] || dangerFinal[ni3] < d1) dangerFinal[ni3] = d1;
           var cc1 = comp.constraints[ni3];
-          if (!(cc1 instanceof DistanceConstraint)) continue;
+          if (!_aliveWebSeg(cc1)) continue;
           var pts2 = [cc1.a.__pid, cc1.b.__pid];
           for (var pi2 = 0; pi2 < pts2.length; pi2++) {
             var nbrs2 = pToCI[pts2[pi2]] || [];
@@ -100,11 +102,11 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       }
     }
 
-    /* Step D-pre：断裂红闪 */
+    /* Step D-pre：断裂红闪（仅存活线段） */
     if (webBreakFlashes.length > 0) {
       for (var ci3 = 0; ci3 < n; ci3++) {
         var cfl = comp.constraints[ci3];
-        if (!(cfl instanceof DistanceConstraint)) continue;
+        if (!_aliveWebSeg(cfl)) continue;
         var mcx = (cfl.a.pos.x + cfl.b.pos.x) * 0.5;
         var mcy = (cfl.a.pos.y + cfl.b.pos.y) * 0.5;
         var bestFlash = 0;
@@ -131,8 +133,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     for (var i = 0; i < n; i++) {
       var c = comp.constraints[i];
       if (c instanceof DistanceConstraint) {
-        if (c.__webGlobal) continue;
-        if (c.__webId && !spatialIndex.isAliveId(c.__webId)) continue;
+        if (!_aliveWebSeg(c)) continue;
         ctx.beginPath(); ctx.moveTo(c.a.pos.x, c.a.pos.y); ctx.lineTo(c.b.pos.x, c.b.pos.y);
         var d = dangerFinal[i] || 0;
         if (d > 0) {

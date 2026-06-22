@@ -51,6 +51,12 @@ SpatialIndexService.prototype.isAliveId = function (id) {
   return id > 0 && id < this.isAlive.length && this.isAlive[id] === 1;
 };
 
+/** 网线段是否仍存活（无 __webId 的约束视为存活，兼容 Pin 等） */
+export function isWebConstraintAlive(c, index) {
+  if (!c || c.__webId == null) return true;
+  return index && index.isAliveId(c.__webId);
+}
+
 SpatialIndexService.prototype.getConstraint = function (id) {
   return this.idToConstraint[id] || null;
 };

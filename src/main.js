@@ -594,7 +594,7 @@ window.onload = function () {
     for (var k = webGridBuildIdx; k < end; k++) {
       var cov;
       if (USE_LEGACY_COLLISION) {
-        cov = cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD);
+        cov = cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD, null);
       } else {
         cov = cellCoveredSpatial(webGridList[k].x, webGridList[k].y, spatialIndex, spatialQueryBuf, webGridCoverD);
       }
@@ -641,14 +641,14 @@ window.onload = function () {
     if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
-    var pct = Math.round(loss * 100);
-    if (pct > webLossPct) webLossPct = pct;
+    webLossPct = Math.round(loss * 100);
   }
 
   function tickWebRescan() {
     if (!webRescanActive || !webGridList) return;
     var batch = scanWebCellsBatch(
-      webGridList, spiderweb, webGridCoverD, webRescanIdx, WEB_RESCAN_BATCH
+      webGridList, spiderweb, webGridCoverD, webRescanIdx, WEB_RESCAN_BATCH,
+      USE_LEGACY_COLLISION ? null : spatialIndex
     );
     webRescanCover += batch.covered;
     webRescanIdx = batch.nextIdx;
@@ -668,16 +668,17 @@ window.onload = function () {
       if (dbgEl) dbgEl.textContent = 'WEB 100%';
       return;
     }
-    if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) continueWebGridBuild();
-    if (USE_LEGACY_COLLISION) {
+    if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) {
+      continueWebGridBuild();
+    } else if (USE_LEGACY_COLLISION) {
       if (webRescanActive) tickWebRescan();
     } else if (webIntegrityState.dirtyIndices.length) {
       rebuildSpatialIndex();
       webIntegrityState.webGridList = webGridList;
-      var dirtyResult = tickDirtyCells(
+      tickDirtyCells(
         webIntegrityState, spatialIndex, spatialQueryBuf, webGridCoverD, WEB_RESCAN_BATCH
       );
-      if (dirtyResult.done) _applyWebCover(webIntegrityState.coveredCount);
+      _applyWebCover(webIntegrityState.coveredCount);
     }
     var dbgEl = document.getElementById('dbg-web');
     if (dbgEl) dbgEl.textContent = 'WEB ' + Math.max(0, Math.round(100 - webLossPct * 2)) + '%';

@@ -1,5 +1,6 @@
 import { DistanceConstraint } from '../engine/constraints.js';
 import { ptSegDistSq } from '../physics/CollisionMath.js';
+import { isWebConstraintAlive } from '../physics/SpatialIndexService.js';
 
 /**
  * 网完整性检测系统
@@ -22,13 +23,14 @@ export function ptToSegDist2(px, py, ax, ay, bx, by) {
 /**
  * 判断格子是否被约束覆盖
  */
-export function cellCovered(gx, gy, spiderweb, coverD) {
+export function cellCovered(gx, gy, spiderweb, coverD, spatialIndex) {
   if (!spiderweb) return false;
   var D2 = coverD * coverD;
   var cs = spiderweb.constraints;
   for (var i = 0; i < cs.length; i++) {
     var c = cs[i];
     if (!(c instanceof DistanceConstraint)) continue;
+    if (spatialIndex && !isWebConstraintAlive(c, spatialIndex)) continue;
     if (ptToSegDist2(gx, gy, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < D2) return true;
   }
   return false;
@@ -84,8 +86,10 @@ export function cellCoveredSpatial(gx, gy, spatialIndex, queryBuf, coverD) {
   var d2 = coverD * coverD;
   var count = spatialIndex.queryAABB(gx - coverD, gx + coverD, gy - coverD, gy + coverD, queryBuf);
   for (var i = 0; i < count; i++) {
-    var c = spatialIndex.getConstraint(queryBuf[i]);
-    if (!c) continue;
+    var id = queryBuf[i];
+    if (!spatialIndex.isAliveId(id)) continue;
+    var c = spatialIndex.getConstraint(id);
+    if (!c || !isWebConstraintAlive(c, spatialIndex)) continue;
     if (ptSegDistSq(gx, gy, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) return true;
   }
   return false;
@@ -136,29 +140,33 @@ export function tickDirtyCells(state, spatialIndex, queryBuf, coverD, batchSize)
     var now = false;
     var d2 = coverD * coverD;
     for (var i = 0; i < count; i++) {
-      var c = spatialIndex.getConstraint(queryBuf[i]);
-      if (!c) continue;
+      var id = queryBuf[i];
+      if (!spatialIndex.isAliveId(id)) continue;
+      var c = spatialIndex.getConstraint(id);
+      if (!c || !isWebConstraintAlive(c, spatialIndex)) continue;
       comparisons++;
       if (ptSegDistSq(g.x, g.y, c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y) < d2) {
         now = true;
         break;
       }
     }
-    state.cellCovered[idx] = now;
-    if (was && !now) state.coveredCount--;
-    else if (!was && now) state.coveredCount++;
+    var nowVal = now ? 1 : 0;
+    state.cellCovered[idx] = nowVal;
+    if (was && !nowVal) state.coveredCount--;
+    else if (!was && nowVal) state.coveredCount++;
+    processed++;
   }
   return { done: dirty.length === 0, comparisons: comparisons };
 }
 
-export function scanWebCellsBatch(webGridList, spiderweb, coverD, startIdx, batchSize) {
+export function scanWebCellsBatch(webGridList, spiderweb, coverD, startIdx, batchSize, spatialIndex) {
   if (!webGridList || webGridList.length === 0) {
     return { covered: 0, nextIdx: 0, done: true };
   }
   var covered = 0;
   var end = Math.min(startIdx + batchSize, webGridList.length);
   for (var k = startIdx; k < end; k++) {
-    if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD)) covered++;
+    if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, coverD, spatialIndex)) covered++;
   }
   return { covered: covered, nextIdx: end, done: end >= webGridList.length };
 }
@@ -177,13 +185,14 @@ export function countWebDC(spiderweb) {
 /**
  * 统计孤立粒子数
  */
-export function countIsolatedParticles(spiderweb) {
+export function countIsolatedParticles(spiderweb, spatialIndex) {
   if (!spiderweb) return 0;
   var connected = {};
   var _pid = 0;
   for (var i = 0; i < spiderweb.constraints.length; i++) {
     var c = spiderweb.constraints[i];
     if (!(c instanceof DistanceConstraint)) continue;
+    if (spatialIndex && !isWebConstraintAlive(c, spatialIndex)) continue;
     var idA = c.a.__pid || (c.a.__pid = ++_pid);
     var idB = c.b.__pid || (c.b.__pid = ++_pid);
     connected[idA] = true;

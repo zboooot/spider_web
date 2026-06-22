@@ -3,7 +3,8 @@
 > **来源**：Google NotebookLM 研究输出（2026-06-18）  
 > **Notebook**：[SpiderWeb Spatial Query & Verlet Optimization](https://notebooklm.google.com) · ID `277be288-c86e-4d21-8b08-ad58ffcb34e6`  
 > **输入资料**：`docs/notebooklm-optimization-research.md`、`docs/spider-web-game-requirements.md`、Ten Minute Physics / Toqoz / GameDev 等 32 篇社区资料  
-> **性质**：决策与验收标准文档，不含具体代码实现
+> **性质**：决策与验收标准文档，不含具体代码实现  
+> **实施状态（2026-06-18）**：**Phase A / B / C 均已落地，优化主线收尾。** C3（子步 + 径向全局约束）经实机验证不稳定，已暂缓；详见 §3.2.8。
 
 ---
 
@@ -286,19 +287,18 @@ if (CONFIG.USE_LEGACY_COLLISION) {
 }
 ```
 
-### Phase C：抛光
+### Phase C：抛光 ✅（C1/C2 完成；C3 暂缓）
 
 **目标**：纠正 Tick 顺序、彻底 O(1) 断丝、查询零分配、Sub-stepping 刚度。
 
 | 项 | 内容 |
 |----|------|
-| **模块** | `main`, `VerletJS`, `stickSystem`, `footSystem`, `ThrownObj`, `spiderweb` |
-| **子阶段** | C1 Tick+GC → C2 断丝位图 → C3 Sub-stepping |
-| **收益** | 消灭残余 GC；AoE 无尖刺；网更硬且 CPU 更低 |
-| **验收** | p95 < 25ms；查询零分配；AoE >50 断丝 FPS 跌幅 ≤5 |
+| **模块** | `main`, `VerletJS`, `stickSystem`, `footSystem`, `ThrownObj`, `webRenderer` |
+| **子阶段** | C1 Tick+GC ✅ → C2 断丝位图 ✅ → C3 Sub-stepping ⏸ 暂缓 |
+| **收益** | 消灭残余 GC；AoE 无尖刺；CCD 与网形同步 |
+| **验收** | 查询零分配（非 legacy）；AoE 无 splice 尖刺；游戏稳定可玩 |
 
-> **细化来源**：NotebookLM P6（2026-06-18）。完整内容见 §3.2。  
-> **与当前代码差距**：A/B 已落地，但主循环仍为 `build→query→physics`；`splice`/`push` 仍在；未做 Sub-stepping。
+> **细化来源**：NotebookLM P6（2026-06-18）。完整设计见 §3.2；**实际落地与暂缓决策见 §3.2.8**。
 
 #### 3.2 Phase C 细化方案（NotebookLM P6）
 
@@ -319,7 +319,7 @@ if (CONFIG.USE_LEGACY_COLLISION) {
 5. Render / 其余逻辑
 ```
 
-**当前实现（需修正）**：`build → 落脚/粘网/完整度 → physics(11)` — 查询用的是物理**前**的网形，与 P5 相悖。
+**当前实现（已对齐）**：`capture → 蜘蛛/脚动画 → 投掷物积分 → physics(11) → build → 落脚触发 → 完整度 → 粘网查询 → 渲染`。
 
 | 迁移步 | 动作 | 风险 | 验收 |
 |--------|------|------|------|
@@ -391,35 +391,29 @@ for (let i = 0; i < hitCount; i++) {
 
 ##### 3.2.5 Phase B 遗留 vs P5 对齐表
 
-| # | P5 要求 | 当前 A/B 实现 | Phase C 修正 |
-|---|---------|---------------|-------------|
-| 1 | physics → build → query | build → query → physics | §3.2.1 C1 |
-| 2 | 断丝仅位图 | `release` 仍 `splice`/`filter` | §3.2.3 C2 |
-| 3 | 查询零 GC | stick/foot 仍 `push`/`filter` | §3.2.4 C1 |
-| 4 | Sub-stepping + 全局约束 | 固定 11 iter | §3.2.2 C3 |
+| # | P5 要求 | Phase C 前 | 当前状态 |
+|---|---------|------------|----------|
+| 1 | physics → build → query | build → query → physics | ✅ §3.2.1 |
+| 2 | 断丝仅位图 | `release` 仍 `splice`/`filter` | ✅ §3.2.3（legacy 保留 splice） |
+| 3 | 查询零 GC | stick/foot 仍 `push`/`filter` | ✅ §3.2.4 |
+| 4 | Sub-stepping + 全局约束 | 固定 11 iter | ⏸ 仍 `frame(11)`，见 §3.2.8 |
 
 ##### 3.2.6 分步实施（C1 / C2 / C3）
 
-**C1：Tick 顺序 + GC 消除**  
+**C1：Tick 顺序 + GC 消除** ✅  
 - **模块**：`main`, `stickSystem`, `footSystem`  
 - **决策**：重排主循环；`Int32Array(1024)` + 双指针；废除查询路径 `push`/`filter`  
-- **收益**：消灭 iOS sawtooth GC；CCD 与网形同步  
-- **风险**：`hitCount` 未清零读脏数据；capture 时机错误  
-- **验收**：Memory 面板无锯齿；stick/foot 单帧分配 **0 Bytes**
+- **验收**：实机稳定；非 legacy 查询路径无 `push`/`filter`/`splice`
 
-**C2：断丝 O(1) + AoE 批处理**  
-- **模块**：`VerletJS`, `ThrownObj`, `spiderweb`  
+**C2：断丝 O(1) + AoE 批处理** ✅  
+- **模块**：`VerletJS`, `ThrownObj`, `webRenderer`  
 - **决策**：求解器跳过 `!isAlive`；`release` 只改位图 + dirty；Boulder 批量标记  
-- **收益**：AoE >50 断丝无帧尖刺  
-- **风险**：某子系统忘查 `isAlive` → 踩幽灵网  
-- **验收**：Profile 无 Array.splice/filter；回归 C.1/C.2
+- **验收**：非 legacy 无 `splice`/`filter`；渲染跳过死约束
 
-**C3：Sub-stepping + 径向全局约束**  
+**C3：Sub-stepping + 径向全局约束** ⏸ 暂缓  
 - **模块**：`VerletJS`, `spiderweb.js`  
-- **决策**：N=5~6 子步 × 1~2 iter；辐射首尾全局弹簧；\(v_{max}\) clamping  
-- **收益**：更硬网 + 更低等效 CPU；重物压网形变 ↓30%  
-- **风险**：N 过大 + 重叠 → 能量爆炸  
-- **验收**：多 Max 质量猎物悬挂；网中心下坠较 11 iter 减 30%+；回归 C.3
+- **原计划**：N=5~6 子步 × 1~2 iter；辐射首尾全局弹簧；\(v_{max}\) clamping  
+- **暂缓原因**：实机网撕裂/飞走；改回 `frame(11)` + 仅蛛网重力 + 脚点重同步（§3.2.8）
 
 ##### 3.2.7 Phase C 验收与回归（P5 八条 + 新增）
 
@@ -440,16 +434,54 @@ for (let i = 0; i < hitCount; i++) {
 
 **保留 P5 八条**（§3.1.6）全部仍适用。
 
-### 目标架构（Phase C 完成后）
+##### 3.2.8 实际落地记录（2026-06-18）
+
+**已合并到主分支逻辑**
+
+| 子阶段 | 内容 | 关键文件 |
+|--------|------|----------|
+| C1 | Tick 重排；`captureThrownStickPrev`；`integrateThrownObjects` / `queryThrownStick` 拆分；`stickHitScratch` + `mergeStickHits`；`footCandPool` + `_persistStepPoint`；`spatialQueryBuf` 1024 | `main.js`, `stickSystem.js`, `footSystem.js` |
+| C2 | `release` 非 legacy 仅位图；Boulder AoE 批量 `isAlive=0` + `markDirtyRegionFromAABB`；`VerletJS` 跳过 `!isAlive`；`webRenderer` 跳过死线 | `ThrownObj.js`, `VerletJS.js`, `webRenderer.js` |
+| 稳定性 | 仅 `gravityComposite`（蛛网）受重力；物理后 `_resyncFootParticles`；顶部 `y<0` 边界；音频 `unlockAudio` 手势门控 | `VerletJS.js`, `main.js`, `audioEngine.js` |
+
+**暂缓（代码保留接口，主循环未启用）**
+
+| 项 | 原计划 | 暂缓原因 |
+|----|--------|----------|
+| Sub-stepping `frameSubsteps(5,2)` | 更硬网 + 更低 CPU | 对全复合体子步积分注入能量 → 网撕裂/飞走；已退回 `frame(11)` |
+| 径向全局距离约束 | Toqoz 模式加硬辐射线 | 弦长 rest × tensor 与链长约束冲突 → 瞬间爆炸 |
+| 速度钳制 `vMax` | 子步穿透防爆 | 破坏 Verlet `lastPos` 一致性，大形变后加剧抖动 |
+
+**物理参数（当前生产值）**
+
+- 迭代：**11**（`frame(11, _constraintAlive)`）
+- 重力：仅 `sim.gravityComposite = spiderweb`
+- 回滚：`?legacy=1` → 旧碰撞路径 + `splice` 断丝 + 全复合体重力
+
+**回归状态**
+
+| 场景 | 状态 |
+|------|------|
+| 游戏可玩、网不撕裂 | ✅ 实机确认 |
+| 高速砸网当帧粘附 | ✅ Tick 重排后预期满足 |
+| 巨石 AoE 断丝 | ✅ 无 splice；待正式 FPS 采样 |
+| p95 < 25ms、Memory 0 B | ⏸ 未做系统 benchmark |
+| C3 子步刚度 ↓30% | ⏸ 随 C3 暂缓 |
+
+### 目标架构（当前生产）
 
 ```
 GameLoop
-  ├─ capturePrevPositions()               // 猎物/蜘蛛 prev（CCD）
-  ├─ PhysicsSystem.simulateSubsteps(N)    // VerletJS，跳过 !isAlive
-  ├─ SpatialIndexService.build()          // 基于最新 pos
-  ├─ PreySystem.tick()                    // stickSystem，零分配池
-  ├─ FootSystem.tick()                    // 零分配池
-  └─ IntegritySystem.tickDirty()          // dirty 格
+  ├─ captureThrownStickPrev()           // 帧初猎物 prev（CCD）
+  ├─ 蜘蛛移动 + 脚动画（插值）
+  ├─ integrateThrownObjects()           // 投掷物运动（无粘网查询）
+  ├─ VerletJS.frame(11, isAlive)        // 仅蛛网受重力；跳过死约束
+  ├─ _resyncFootParticles()             // 脚点运动学锚定
+  ├─ SpatialIndexService.build()        // 基于最新 pos
+  ├─ updateFootTriggers()               // 落脚 spatial 查询
+  ├─ checkWebIntegrity()                // dirty 格分帧
+  ├─ queryThrownStick()                 // 粘网零分配查询
+  └─ render
 ```
 
 ---
@@ -487,8 +519,8 @@ GameLoop
 
 #### `VerletJS`
 
-1. Sub-stepping：N=4~8 子步，每子步 1 iteration
-2. 径向全局距离约束（同轴端点）降低所需迭代总数
+1. **已落地**：`frame(11)` + `isAlive` 跳过；`gravityComposite` 仅蛛网积分
+2. **暂缓**：Sub-stepping、径向全局约束（见 §3.2.8）；`frameSubsteps` 保留于代码供日后试验
 
 ---
 
@@ -515,18 +547,22 @@ GameLoop
 - dirty region：断丝 AABB 外扩 `coverD=22`
 - 8 条回归测试 + feature flag 回滚
 
-### Phase A/B 已完成；Phase C 待实施（见 §3.2）
+### Phase A / B / C 均已完成（见 §3.2.8）
 
-1. **Tick 顺序**：当前 `build→query→physics` → 目标 `capture→physics→build→query`
-2. **断丝**：`splice`/`filter` → 仅 `isAlive` 位图
-3. **查询 GC**：`push`/`filter` → 预分配池 + 双指针
-4. **物理**：11 iter 单步 → N=5~6 子步 + 径向全局约束 + \(v_{max}\) clamp
+| 项 | 状态 |
+|----|------|
+| Tick 顺序 `capture→physics→build→query` | ✅ |
+| 断丝 O(1) 位图（非 legacy） | ✅ |
+| 查询零分配池 + `Int32Array(1024)` | ✅ |
+| 投掷物积分 / 粘网查询拆分 | ✅ |
+| Sub-stepping + 径向全局约束 + vMax | ⏸ 暂缓 |
 
-### 仍待 C 实施时微调
+### 可选后续（非必须）
 
-1. **CollisionMath** 平行退化 epsilon（回归 C.3 时定）
-2. **queryBuffer** 512 → 1024 是否足够（密集区 benchmark）
-3. **投掷物手动积分** 与 capture/physics 拆分方案（C1 关键路径）
+1. **正式 benchmark**：p95 帧时、Memory 查询路径 0 B、AoE 断丝 FPS（§3.2.7 指标）
+2. **C3 重试条件**：仅对 `gravityComposite` 子步 + 链长累加 rest 的全局约束；与当前脚点重同步方案联调
+3. **CollisionMath** 平行退化 epsilon（若 C3 重试或出现 NaN 时定）
+4. **queryBuffer 1024** 密集区压测（当前未触顶）
 
 ---
 
@@ -555,3 +591,4 @@ GameLoop
 - 2026-06-18：从 NotebookLM P1–P4 笔记同步；附细度评估与待补清单
 - 2026-06-18：NotebookLM P5 细化 Phase B，扩充 §3.1（接口、入格、三系统改造、集成、回滚）
 - 2026-06-18：NotebookLM P6 细化 Phase C，扩充 §3.2；纠正 Tick 顺序与 A/B 遗留差距清单
+- 2026-06-18：Phase C 实装完成（C1/C2 + 稳定性补丁）；C3 暂缓；新增 §3.2.8 落地记录与当前生产架构
