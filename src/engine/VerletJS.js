@@ -90,8 +90,11 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
   var friction = this.friction, gndFric = this.groundFriction, h = this.height - 1;
   var gravComp = this.gravityComposite;
   for (c in this.composites) {
-    if (gravComp && this.composites[c] !== gravComp) continue;
-    var pts = this.composites[c].particles;
+    var comp = this.composites[c];
+    /* 仅蛛网受重力；蜘蛛等其余复合体仍做 Verlet 积分以保留关节惯性 */
+    var gx = (!gravComp || comp === gravComp) ? gX : 0;
+    var gy = (!gravComp || comp === gravComp) ? gY : 0;
+    var pts = comp.particles;
     for (i in pts) {
       var p = pts[i];
       var velX = (p.pos.x - p.lastPos.x) * friction;
@@ -107,8 +110,8 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
       }
       p.lastPos.x = p.pos.x;
       p.lastPos.y = p.pos.y;
-      p.pos.x += gX + velX;
-      p.pos.y += gY + velY;
+      p.pos.x += gx + velX;
+      p.pos.y += gy + velY;
     }
   }
   if (this.draggedEntity) this.draggedEntity.pos.mutableSet(this.mouse);

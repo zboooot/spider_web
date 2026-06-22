@@ -1,8 +1,6 @@
 import { Vec2 } from '../engine/Vec2.js';
-import { DistanceConstraint, AngleConstraint } from '../engine/constraints.js';
+import { DistanceConstraint } from '../engine/constraints.js';
 import { audioEngine } from '../audio/audioEngine.js';
-
-var LEG_BEND_SIGN = [1, -1, 1, -1];
 
 /**
  * 落脚点搜索的全局粒子 ID 计数器
@@ -231,112 +229,6 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   return best;
 }
 
-function _findDistLen(spider, a, b) {
-  var cs = spider.constraints;
-  for (var i = 0; i < cs.length; i++) {
-    var c = cs[i];
-    if (!(c instanceof DistanceConstraint)) continue;
-    if (c.a === a && c.b === b) return c.distance;
-    if (c.a === b && c.b === a) return c.distance;
-  }
-  return a.pos.dist(b.pos);
-}
-
-function _legSegLengths(spider, legIndex) {
-  var chain = spider.legChains[legIndex];
-  if (!chain || !chain.length) return [];
-  var lens = [];
-  var prev = spider.thorax;
-  for (var ci = 0; ci < chain.length; ci++) {
-    lens.push(_findDistLen(spider, prev, chain[ci]));
-    prev = chain[ci];
-  }
-  return lens;
-}
-
-/**
- * 按脚端目标重排腿链，避免脚被传送后角度约束拧成麻花
- */
-export function reposeLegChain(spider, legIndex, footX, footY) {
-  var chain = spider.legChains[legIndex];
-  if (!chain || !chain.length) return;
-  var thorax = spider.thorax.pos;
-  var segLens = _legSegLengths(spider, legIndex);
-  if (!segLens.length) return;
-
-  var totalLen = 0;
-  for (var si = 0; si < segLens.length; si++) totalLen += segLens[si];
-  if (totalLen < 0.5) return;
-
-  var dx = footX - thorax.x;
-  var dy = footY - thorax.y;
-  var dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist < 0.5) return;
-
-  var ux = dx / dist;
-  var uy = dy / dist;
-  var bendSign = LEG_BEND_SIGN[legIndex] || 1;
-  var perpX = -uy * bendSign;
-  var perpY = ux * bendSign;
-  var bendAmp = Math.min(14, dist * 0.2);
-
-  var cum = 0;
-  for (var ji = 0; ji < chain.length; ji++) {
-    cum += segLens[ji];
-    var t = cum / totalLen;
-    var bend = Math.sin(t * Math.PI) * bendAmp;
-    var px = thorax.x + ux * dist * t + perpX * bend;
-    var py = thorax.y + uy * dist * t + perpY * bend;
-    if (ji === chain.length - 1) {
-      px = footX;
-      py = footY;
-    }
-    chain[ji].pos.x = px;
-    chain[ji].pos.y = py;
-    chain[ji].lastPos.x = px;
-    chain[ji].lastPos.y = py;
-  }
-}
-
-export function retargetLegAngles(spider, legIndex) {
-  var chain = spider.legChains[legIndex];
-  if (!chain || chain.length < 5) return;
-  var p1 = chain[0];
-  var p2 = chain[1];
-  var p3 = chain[2];
-  var p4 = chain[3];
-  var foot = chain[4];
-  var triples = [
-    [spider.thorax, p1, p2],
-    [p1, p2, p3],
-    [p2, p3, p4],
-    [p3, p4, foot],
-    [spider.head, spider.thorax, p1]
-  ];
-  var cs = spider.constraints;
-  for (var ci = 0; ci < cs.length; ci++) {
-    var c = cs[ci];
-    if (!(c instanceof AngleConstraint)) continue;
-    for (var ti = 0; ti < triples.length; ti++) {
-      var tr = triples[ti];
-      if (c.a === tr[0] && c.b === tr[1] && c.c === tr[2]) {
-        c.syncAngle();
-        break;
-      }
-    }
-  }
-}
-
-export function reposeAllLegs(spider, footState) {
-  if (!spider || !footState) return;
-  for (var fi = 0; fi < footState.length; fi++) {
-    var fs = footState[fi];
-    if (!fs || !fs.current) continue;
-    reposeLegChain(spider, fi, fs.current.x, fs.current.y);
-    retargetLegAngles(spider, fi);
-  }
-}
-
 /**
  * 抬脚：解除约束
  */
@@ -377,11 +269,6 @@ export function landFoot(fs, spider) {
     fs.landedSeg = _persistStepPoint(sp);
   }
   fs.targetStepPoint = null;
-  var legIdx = spider.legs.indexOf(fs.particle);
-  if (legIdx !== -1) {
-    reposeLegChain(spider, legIdx, fs.particle.pos.x, fs.particle.pos.y);
-    retargetLegAngles(spider, legIdx);
-  }
 }
 
 /**
@@ -417,6 +304,4 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
   fs.stepping = true;
   fs.t = 0;
   fs.cooldown = STEP_COOLDOWN;
-  reposeLegChain(spider, i, fs.current.x, fs.current.y);
-  retargetLegAngles(spider, i);
 }

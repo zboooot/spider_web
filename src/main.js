@@ -11,7 +11,7 @@ import { ThrownObj, clearObjectConstraints } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
-  liftFoot, landFoot, triggerStep, reposeAllLegs
+  liftFoot, landFoot, triggerStep
 } from './systems/footSystem.js';
 
 import {
@@ -1602,8 +1602,9 @@ window.onload = function () {
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       if (!fs || !fs.particle) continue;
-      fs.particle.pos.mutableSet(fs.current);
-      fs.particle.lastPos.mutableSet(fs.current);
+      /* 只钉住位置，保留 lastPos 以维持脚端 Verlet 速度，腿链才能甩起来 */
+      fs.particle.pos.x = fs.current.x;
+      fs.particle.pos.y = fs.current.y;
     }
   }
 
@@ -1983,10 +1984,10 @@ window.onload = function () {
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
-        fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+        fs.particle.pos.mutableSet(fs.current);
         if (fs.t >= 1) {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
-          fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+          fs.particle.pos.mutableSet(fs.current);
           fs.stepping = false;
           landFoot(fs, spider);
         }
@@ -2005,7 +2006,6 @@ window.onload = function () {
         if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
       }
     }
-    reposeAllLegs(spider, footState);
 
     if (!_isBulletTime) integrateThrownObjects();
     statsTimeEnd();
@@ -2022,7 +2022,6 @@ window.onload = function () {
       );
     }
     _resyncFootParticles();
-    reposeAllLegs(spider, footState);
     statsTimeEnd();
 
     statsTimeStart('query');

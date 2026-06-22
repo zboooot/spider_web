@@ -146,9 +146,8 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
     var ax = ax2, ay = ay2;
     var tx = tx2, ty = ty2;
     var fdx = tx - ax, fdy = ty - ay, fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
-    var fnx = fdx / fl, fny = fdy / fl, prx = -fny, pry = fnx;
+    var fnx = fdx / fl, fny = fdy / fl;
 
-    // Replace old spider body with provided image head while keeping size similar.
     var headFrame = getSpiderHeadFrame(blinkState, wrappingTarget);
     if (headFrame.complete && headFrame.naturalWidth > 0) {
       var imgW = 36.8;
