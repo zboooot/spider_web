@@ -45,7 +45,8 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         var ci2 = comp.constraints.indexOf(obj.stuckOnConstraint);
         if (ci2 === -1) continue;
         var ramp = Math.max(0, obj.stayFrames - 72);
-        var active = (obj.state === 'freeing') || (obj.stayTimer > ramp);
+        var beingPulled = obj.state === 'stuck' && (obj._pickupTension || 0) > 0.08;
+        var active = (obj.state === 'freeing') || (obj.stayTimer > ramp) || beingPulled;
         if (active) dangerRaw[ci2] = 1;
       }
     }

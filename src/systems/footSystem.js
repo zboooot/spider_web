@@ -12,14 +12,16 @@ var DEFAULT_GAIT_TUNE = {
   forwardMinProgressMove: 18,
   forwardMinProgressIdle: 10,
   forwardProgressPenalty: 18,
-  holdNodeBase: 11,
-  holdNodeScale: 0.08,
-  holdNodeMin: 6,
-  holdNodeMax: 12,
-  holdSegBase: 14,
-  holdSegScale: 0.1,
-  holdSegMin: 8,
-  holdSegMax: 16
+  holdNodeBase: 4,
+  holdNodeScale: 0.04,
+  holdNodeMin: 2,
+  holdNodeMax: 5,
+  holdSegBase: 5,
+  holdSegScale: 0.05,
+  holdSegMin: 2,
+  holdSegMax: 6,
+  rejectCooldownShort: 4,
+  rejectCooldownLong: 8
 };
 
 function _getGaitTune() {
@@ -35,6 +37,12 @@ function _getGaitTune() {
 var _pid = 0;
 export function getNextPid() { return ++_pid; }
 export function getPidCounter() { return _pid; }
+
+function _persistStepPoint(sp) {
+  if (!sp) return null;
+  if (sp.type === 'node') return { type: 'node', particle: sp.particle, x: sp.x, y: sp.y };
+  return { type: 'segment', pa: sp.pa, pb: sp.pb, t: sp.t, x: sp.x, y: sp.y };
+}
 
 /**
  * 工具函数：洗牌
@@ -56,15 +64,11 @@ export function getNodeFootholdKey(particle) {
 
 /**
  * 为网络线段生成唯一 key（t 离散到 4 档，方向无关）
- * @param {object} pa
- * @param {object} pb
- * @param {number} t  0~1
  */
 export function getSegmentFootholdKey(pa, pb, t) {
   if (!pa || !pb || !pa.__pid || !pb.__pid) return null;
   var minPid = Math.min(pa.__pid, pb.__pid);
   var maxPid = Math.max(pa.__pid, pb.__pid);
-  /* 离散到 4 档: 0.25 / 0.5 / 0.75 / 1.0 → 用 round(t*4)/4 */
   var bucket = Math.round(t * 4) / 4;
   return 'seg:' + minPid + '-' + maxPid + '@' + bucket;
 }
@@ -87,7 +91,6 @@ export function getCandidateFootholdKey(cand) {
  */
 export function getWebSamplePoints(webComposite, N) {
   var pts = [];
-  /* 固定槽位，忽略传入的 N 参数（保留参数以免旧调用出错） */
   var slots = [0.25, 0.5, 0.75];
   for (var i in webComposite.constraints) {
     var c = webComposite.constraints[i];
@@ -111,13 +114,141 @@ export function updateSamplePoints(pts) {
   }
 }
 
+/* ─── Candidate collection ───────────────────────────────────────────── */
+
+/**
+ * 从 spatial index 局部查询候选（性能路径）
+ * 返回统一格式 candidates，供 findStepTarget 评分使用
+ *
+ * @param {object} webComp
+ * @param {object} thorax        Vec2-like，蜘蛛胸部位置
+ * @param {number} minR          最小搜索半径
+ * @param {number} stepR         最大搜索半径
+ * @param {object} spatialOpts   { index: SpatialIndexService, queryBuf: Int32Array }
+ * @param {object} aliveParticles  已知存活粒子 pid→true（外部预建）
+ * @param {object} aliveEdges      已知存活边 'pidA-pidB'→true（外部预建）
+ * @returns {Array} candidates
+ */
+function collectCandidatesSpatial(webComp, thorax, minR, stepR, spatialOpts, aliveParticles, aliveEdges) {
+  var cands = [];
+  var minR2 = minR * minR, stepR2 = stepR * stepR;
+  var index = spatialOpts.index;
+  var queryBuf = spatialOpts.queryBuf;
+  var count = index.queryAABB(
+    thorax.x - stepR, thorax.x + stepR,
+    thorax.y - stepR, thorax.y + stepR,
+    queryBuf
+  );
+  var slots = [0.25, 0.5, 0.75];
+  for (var qi = 0; qi < count; qi++) {
+    var id = queryBuf[qi];
+    if (!index.isAliveId(id)) continue;
+    var c = index.getConstraint(id);
+    if (!c) continue;
+
+    /* node candidates from both endpoints */
+    var pidA = c.a.__pid || (c.a.__pid = getNextPid());
+    var pidB = c.b.__pid || (c.b.__pid = getNextPid());
+    aliveParticles[pidA] = true;
+    aliveParticles[pidB] = true;
+    var eKey = pidA < pidB ? pidA + '-' + pidB : pidB + '-' + pidA;
+    aliveEdges[eKey] = true;
+
+    var d2A = c.a.pos.dist2(thorax);
+    if (d2A >= minR2 && d2A <= stepR2) {
+      cands.push({ type: 'node', particle: c.a, x: c.a.pos.x, y: c.a.pos.y });
+    }
+    var d2B = c.b.pos.dist2(thorax);
+    if (d2B >= minR2 && d2B <= stepR2) {
+      cands.push({ type: 'node', particle: c.b, x: c.b.pos.x, y: c.b.pos.y });
+    }
+
+    /* segment sample candidates */
+    for (var si = 0; si < slots.length; si++) {
+      var t = slots[si];
+      var sx = c.a.pos.x + (c.b.pos.x - c.a.pos.x) * t;
+      var sy = c.a.pos.y + (c.b.pos.y - c.a.pos.y) * t;
+      var ddx = sx - thorax.x, ddy = sy - thorax.y;
+      var d2 = ddx * ddx + ddy * ddy;
+      if (d2 >= minR2 && d2 <= stepR2) {
+        cands.push({ type: 'segment', pa: c.a, pb: c.b, t: t, x: sx, y: sy });
+      }
+    }
+  }
+  return cands;
+}
+
+/**
+ * 全量扫描候选（fallback / legacy 路径）
+ * 当 spatial index 不可用，或 spatial 结果为空时使用
+ *
+ * @param {object} webComp
+ * @param {object} thorax
+ * @param {Array}  samplePoints  预计算的 segment 采样点列表
+ * @param {number} minR
+ * @param {number} stepR
+ * @param {object} aliveParticles  输出：收集到的存活粒子 pid 集合
+ * @param {object} aliveEdges      输出：收集到的存活边 key 集合
+ * @returns {Array} candidates
+ */
+function collectCandidatesFullScan(webComp, thorax, samplePoints, minR, stepR, aliveParticles, aliveEdges) {
+  var minR2 = minR * minR, stepR2 = stepR * stepR;
+  var cands = [];
+
+  for (var ai = 0; ai < webComp.constraints.length; ai++) {
+    var ac = webComp.constraints[ai];
+    if (!(ac instanceof DistanceConstraint)) continue;
+    var pidA = ac.a.__pid || (ac.a.__pid = getNextPid());
+    var pidB = ac.b.__pid || (ac.b.__pid = getNextPid());
+    aliveParticles[pidA] = true;
+    aliveParticles[pidB] = true;
+    var eKey = pidA < pidB ? pidA + '-' + pidB : pidB + '-' + pidA;
+    aliveEdges[eKey] = true;
+  }
+
+  for (var i in webComp.particles) {
+    var wp = webComp.particles[i];
+    var d2 = wp.pos.dist2(thorax);
+    if (d2 >= minR2 && d2 <= stepR2) {
+      if (!wp.__pid || !aliveParticles[wp.__pid]) continue;
+      cands.push({ type: 'node', particle: wp, x: wp.pos.x, y: wp.pos.y });
+    }
+  }
+  for (var si = 0; si < samplePoints.length; si++) {
+    var sp = samplePoints[si];
+    var ddx = sp.x - thorax.x, ddy = sp.y - thorax.y;
+    var d2s = ddx * ddx + ddy * ddy;
+    if (d2s >= minR2 && d2s <= stepR2) {
+      var paPid = sp.pa.__pid, pbPid = sp.pb.__pid;
+      if (!paPid || !pbPid) continue;
+      if (!aliveParticles[paPid] || !aliveParticles[pbPid]) continue;
+      var spEdgeKey = paPid < pbPid ? paPid + '-' + pbPid : pbPid + '-' + paPid;
+      if (!aliveEdges[spEdgeKey]) continue;
+      cands.push(sp);
+    }
+  }
+  return cands;
+}
+
 /* ─── findStepTarget ─────────────────────────────────────────────────── */
 
 /**
  * 寻找最佳落脚目标
- * @param {Set|null} occupiedFootholds  其他腿已占用的 foothold key 集合（硬排除）
+ *
+ * @param {object}   webComp
+ * @param {number}   legIndex
+ * @param {object}   spiderComp
+ * @param {object}   moveDir
+ * @param {Array}    samplePoints        全量采样点（spatial 不可用时使用）
+ * @param {Array}    occupiedPositions   其他腿当前位置（软间距）
+ * @param {Array}    occupiedSegments    其他腿连线（交叉惩罚）
+ * @param {number}   maxStepR            最大搜索半径覆盖
+ * @param {boolean}  preferStable        偏向稳定落点（加大 segment 惩罚）
+ * @param {object}   currentFootPos      当前脚位置（forward progress 参考）
+ * @param {Set|null} occupiedFootholds   其他腿占用的 foothold key（硬排除）
+ * @param {object}   spatialOpts         { index, queryBuf }，为 null 则全量扫描
  */
-export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds) {
+export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds, spatialOpts) {
   if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.findStepTargetCalls = (window._spiderStats.findStepTargetCalls || 0) + 1;
   var tune = _getGaitTune();
   var stepR = maxStepR || 42, minR = 16;
@@ -143,41 +274,27 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   var moveFwdBias = isFrontLeg ? 30 : 18;
   if (moveDir) { ix += moveDir.x * moveFwdBias; iy += moveDir.y * moveFwdBias; }
 
+  /* ── 候选收集：优先 spatial，fallback 全量扫描 ── */
   var aliveParticles = {};
   var aliveEdges = {};
-  for (var ai = 0; ai < webComp.constraints.length; ai++) {
-    var ac = webComp.constraints[ai];
-    if (!(ac instanceof DistanceConstraint)) continue;
-    var pidA = ac.a.__pid || (ac.a.__pid = getNextPid());
-    var pidB = ac.b.__pid || (ac.b.__pid = getNextPid());
-    aliveParticles[pidA] = true;
-    aliveParticles[pidB] = true;
-    var eKey = pidA < pidB ? pidA + '-' + pidB : pidB + '-' + pidA;
-    aliveEdges[eKey] = true;
+  var cands;
+
+  if (spatialOpts && spatialOpts.index) {
+    /* spatial 路径：局部 AABB 查询，更快 */
+    cands = collectCandidatesSpatial(webComp, thorax, minR, stepR, spatialOpts, aliveParticles, aliveEdges);
+    /* 若 spatial 结果为空（冷启动/边界情况），fallback 到全量扫描 */
+    if (!cands.length) {
+      cands = collectCandidatesFullScan(webComp, thorax, samplePoints, minR, stepR, aliveParticles, aliveEdges);
+      if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.spatialFallbacks = (window._spiderStats.spatialFallbacks || 0) + 1;
+    }
+  } else {
+    /* legacy 全量扫描路径 */
+    cands = collectCandidatesFullScan(webComp, thorax, samplePoints, minR, stepR, aliveParticles, aliveEdges);
   }
 
-  var cands = [];
-  for (var i in webComp.particles) {
-    var wp = webComp.particles[i], d2 = wp.pos.dist2(thorax);
-    if (d2 >= minR * minR && d2 <= stepR * stepR) {
-      if (!wp.__pid || !aliveParticles[wp.__pid]) continue;
-      cands.push({ type: 'node', particle: wp, x: wp.pos.x, y: wp.pos.y });
-    }
-  }
-  for (var si = 0; si < samplePoints.length; si++) {
-    var sp = samplePoints[si], ddx = sp.x - thorax.x, ddy = sp.y - thorax.y, d2 = ddx * ddx + ddy * ddy;
-    if (d2 >= minR * minR && d2 <= stepR * stepR) {
-      var paPid = sp.pa.__pid, pbPid = sp.pb.__pid;
-      if (!paPid || !pbPid) continue;
-      if (!aliveParticles[paPid] || !aliveParticles[pbPid]) continue;
-      var spEdgeKey = paPid < pbPid ? paPid + '-' + pbPid : pbPid + '-' + paPid;
-      if (!aliveEdges[spEdgeKey]) continue;
-      cands.push(sp);
-    }
-  }
   if (!cands.length) return null;
 
-  /* 硬排除：同 foothold key 已被其他腿占用 */
+  /* ── 硬排除：同 foothold key 已被其他腿占用 ── */
   if (occupiedFootholds && occupiedFootholds.size > 0) {
     cands = cands.filter(function (c) {
       var k = getCandidateFootholdKey(c);
@@ -186,6 +303,7 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
     if (!cands.length) return null;
   }
 
+  /* ── 评分辅助函数 ── */
   function sideOk(cand) {
     var side = (cand.x - thorax.x) * rightX + (cand.y - thorax.y) * rightY;
     return isRightLeg ? side >= sideMargin : side <= -sideMargin;
@@ -227,7 +345,10 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   var SEG_PENALTY = preferStable ? tune.segPenaltyStable : (moveLen > 0.2 ? tune.segPenaltyMoving : tune.segPenaltyLowMove);
   var FORWARD_MIN_PROGRESS = moveLen > 0.2 ? tune.forwardMinProgressMove : tune.forwardMinProgressIdle;
 
-  function score(cand, mode) {
+  /**
+   * 候选评分 — 保留当前分支全部评分规则
+   */
+  function scoreCandidate(cand, mode) {
     mode = mode || {};
     var cx = cand.x, cy = cand.y;
     var dx = cx - ix, dy = cy - iy;
@@ -265,7 +386,7 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
       }
     }
 
-    /* node 优先：segment 额外惩罚，鼓励优先踩节点 */
+    /* node 优先：segment 额外惩罚 */
     if (cand.type === 'segment') penalty += SEG_PENALTY;
 
     return base + penalty;
@@ -274,6 +395,7 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   var hardFree = cands.filter(function (c) { return !tooCloseToOccupied(c.x, c.y); });
   var pool = hardFree.length ? hardFree : cands;
 
+  /* tiered relax：先严格，再逐步放宽 */
   var tierModes = [
     { relaxCross: false, relaxSide: false, relaxProgress: false },
     { relaxCross: true,  relaxSide: false, relaxProgress: false },
@@ -284,7 +406,7 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   for (var tm = 0; tm < tierModes.length; tm++) {
     var mode = tierModes[tm];
     for (var ci = 0; ci < pool.length; ci++) {
-      var s = score(pool[ci], mode);
+      var s = scoreCandidate(pool[ci], mode);
       if (s < bs) { best = pool[ci]; bs = s; }
     }
     if (best) break;
@@ -321,7 +443,9 @@ export function landFoot(fs, spider, spiderweb, footState) {
   var sp = fs.targetStepPoint;
   var stepLen = fs && fs.from && fs.targetPos ? fs.from.dist(fs.targetPos) : 0;
   fs.targetStepPoint = null;
-  if (!sp) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1; return; }
+  var cdShort = tune.rejectCooldownShort || 4;
+  var cdLong  = tune.rejectCooldownLong  || 8;
+  if (!sp) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, cdShort); if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1; return; }
 
   /* ── 二次 foothold key 冲突检查（最终保险丝） ── */
   if (footState) {
@@ -330,22 +454,20 @@ export function landFoot(fs, spider, spiderweb, footState) {
       for (var ci = 0; ci < footState.length; ci++) {
         var other = footState[ci];
         if (other === fs) continue;
-        /* 检查已着陆的脚 */
         var otherKey = null;
         if (other.landedNode) otherKey = getNodeFootholdKey(other.landedNode);
         else if (other.landedSeg) otherKey = getSegmentFootholdKey(other.landedSeg.pa, other.landedSeg.pb, other.landedSeg.t);
         if (otherKey && otherKey === myKey) {
           liftFoot(fs, spider);
-          fs.cooldown = Math.max(fs.cooldown || 0, 18);
+          fs.cooldown = Math.max(fs.cooldown || 0, cdLong);
           if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1;
           return;
         }
-        /* 检查另一条腿正在飞向的目标 */
         if (other.targetStepPoint) {
           var targetKey = getCandidateFootholdKey(other.targetStepPoint);
           if (targetKey && targetKey === myKey) {
             liftFoot(fs, spider);
-            fs.cooldown = Math.max(fs.cooldown || 0, 18);
+            fs.cooldown = Math.max(fs.cooldown || 0, cdLong);
             if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.landFootRejects = (window._spiderStats.landFootRejects || 0) + 1;
             return;
           }
@@ -355,7 +477,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
   }
 
   if (sp.type === 'node') {
-    if (!sp.particle || !sp.particle.__pid) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+    if (!sp.particle || !sp.particle.__pid) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, cdShort); return; }
     if (spiderweb) {
       var alive = false;
       var wcs = spiderweb.constraints;
@@ -364,7 +486,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
         if (!(wc instanceof DistanceConstraint)) continue;
         if (wc.a === sp.particle || wc.b === sp.particle) { alive = true; break; }
       }
-      if (!alive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+      if (!alive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, cdShort); return; }
     }
     liftFoot(fs, spider);
     audioEngine.playSfxFootstep();
@@ -375,7 +497,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
     fs.landedNode = sp.particle;
     fs.holdFrames = Math.max(tune.holdNodeMin, Math.min(tune.holdNodeMax, tune.holdNodeBase - stepLen * tune.holdNodeScale));
   } else {
-    if (!sp.pa || !sp.pb) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+    if (!sp.pa || !sp.pb) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, cdShort); return; }
     if (spiderweb) {
       var paAlive = false, pbAlive = false, edgeAlive = false;
       var paPid2 = sp.pa.__pid, pbPid2 = sp.pb.__pid;
@@ -391,7 +513,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
         }
         if (paAlive && pbAlive && edgeAlive) break;
       }
-      if (!paAlive || !pbAlive || !edgeAlive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, 12); return; }
+      if (!paAlive || !pbAlive || !edgeAlive) { liftFoot(fs, spider); fs.cooldown = Math.max(fs.cooldown || 0, cdShort); return; }
     }
     liftFoot(fs, spider);
     audioEngine.playSfxFootstep();
@@ -402,7 +524,7 @@ export function landFoot(fs, spider, spiderweb, footState) {
     spider.constraints.push(cB);
     fs.constraintA = cA;
     fs.constraintB = cB;
-    fs.landedSeg = sp;
+    fs.landedSeg = _persistStepPoint(sp);
     fs.holdFrames = Math.max(tune.holdSegMin, Math.min(tune.holdSegMax, tune.holdSegBase - stepLen * tune.holdSegScale));
   }
 }
@@ -410,16 +532,12 @@ export function landFoot(fs, spider, spiderweb, footState) {
 /* ─── triggerStep ────────────────────────────────────────────────────── */
 
 /**
- * 触发迈步
+ * 收集当前腿的占用上下文（其他腿的位置、foothold、连线）
+ * @returns {{ occupied, occupiedSegments, occupiedFootholds }}
  */
-export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, maxStepR, preferStable) {
-  var tune = _getGaitTune();
-  var fs = footState[i];
-  if (!fs || fs.stepping || fs.cooldown > 0) return;
-
+function buildOccupiedStepContext(i, footState, spider) {
   var occupied = [];
   var occupiedSegments = [];
-  /* 收集已占用的 foothold key 集合（包含已着陆 + 正在飞向的目标） */
   var occupiedFootholds = new Set();
 
   for (var oi = 0; oi < footState.length; oi++) {
@@ -427,7 +545,6 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
     var other = footState[oi];
     occupied.push({ x: other.current.x, y: other.current.y });
 
-    /* 收集 foothold key：已着陆 */
     if (other.landedNode) {
       var nk = getNodeFootholdKey(other.landedNode);
       if (nk) occupiedFootholds.add(nk);
@@ -435,7 +552,6 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
       var sk = getSegmentFootholdKey(other.landedSeg.pa, other.landedSeg.pb, other.landedSeg.t);
       if (sk) occupiedFootholds.add(sk);
     }
-    /* 收集 foothold key：正飞向的目标（同帧防抢） */
     if (other.targetStepPoint) {
       var tk = getCandidateFootholdKey(other.targetStepPoint);
       if (tk) occupiedFootholds.add(tk);
@@ -448,13 +564,47 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
     occupiedSegments.push({ hx: hip.x, hy: hip.y, fx: other.current.x, fy: other.current.y });
   }
 
-  var sp = findStepTarget(spiderweb, i, spider, md || null, samplePoints, occupied, occupiedSegments, maxStepR, preferStable, { x: fs.current.x, y: fs.current.y }, occupiedFootholds);
+  return { occupied: occupied, occupiedSegments: occupiedSegments, occupiedFootholds: occupiedFootholds };
+}
+
+/**
+ * 触发迈步
+ *
+ * @param {number}  i             腿索引
+ * @param {object}  md            移动方向 Vec2（可为 null）
+ * @param {Array}   footState     全部腿状态
+ * @param {object}  spiderweb     网 composite
+ * @param {object}  spider        蜘蛛 composite
+ * @param {Array}   samplePoints  全量采样点（spatial 不可用时 fallback）
+ * @param {object}  moveDir       移动方向（用于 minStepDist 判断）
+ * @param {number}  STEP_COOLDOWN 迈步冷却帧数
+ * @param {number}  maxStepR      最大搜索半径覆盖（可选）
+ * @param {boolean} preferStable  偏好稳定点（可选）
+ * @param {object}  spatialOpts   { index, queryBuf }，null 则 fallback 全量（可选）
+ */
+export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, maxStepR, preferStable, spatialOpts) {
+  var tune = _getGaitTune();
+  var fs = footState[i];
+  if (!fs || fs.stepping || fs.cooldown > 0) return;
+
+  var ctx = buildOccupiedStepContext(i, footState, spider);
+
+  var sp = findStepTarget(
+    spiderweb, i, spider, md || null, samplePoints,
+    ctx.occupied, ctx.occupiedSegments,
+    maxStepR, preferStable,
+    { x: fs.current.x, y: fs.current.y },
+    ctx.occupiedFootholds,
+    spatialOpts || null
+  );
   if (!sp) return;
+
   var hip = spider.legChains && spider.legChains[i] && spider.legChains[i][0]
     ? spider.legChains[i][0].pos
     : spider.particles[0].pos;
   var hdx = sp.x - hip.x, hdy = sp.y - hip.y;
   if (hdx * hdx + hdy * hdy > tune.maxHipTargetDist * tune.maxHipTargetDist) return;
+
   var dx = sp.x - fs.current.x, dy = sp.y - fs.current.y;
   var minStepDist = moveDir ? tune.minStepDistMove : tune.minStepDistIdle;
   if (dx * dx + dy * dy < minStepDist * minStepDist) return;
@@ -462,7 +612,7 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
   liftFoot(fs, spider);
   fs.from = new Vec2(fs.current.x, fs.current.y);
   fs.targetPos = new Vec2(sp.x, sp.y);
-  fs.targetStepPoint = sp;
+  fs.targetStepPoint = _persistStepPoint(sp);
   fs.stepping = true;
   fs.t = 0;
   fs.cooldown = STEP_COOLDOWN;

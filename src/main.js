@@ -29,6 +29,12 @@ import {
 
 import { audioEngine } from './audio/audioEngine.js';
 
+import {
+  SpatialIndexService,
+  assignWebConstraintIds,
+  resetWebConstraintIds
+} from './physics/SpatialIndexService.js';
+
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
 import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot } from './render/objectRenderer.js';
@@ -69,7 +75,7 @@ window.onload = function () {
   var DEFAULTS = {
     webRadius: 1.45, webSegs: 30, webDepth: 11, webStiff: 0.6,
     radialWobbleScale: 0.55, spiralWobbleScale: 1.0,
-    moveSpeed: 2.4, stepSpeed: 0.22, stepThresh: 20, restThresh: 50,
+    moveSpeed: 1.8, stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
     legStiff: 0.3, jointStiff: 0.35,
     stickDelayMin: 0.10, stickDelayMax: 0.45, stickCatchRadius: 18,
     stickMidBias: 0.8, stickHistory: 40,
@@ -127,8 +133,8 @@ window.onload = function () {
   var PICKUP_TENSION_RELEASE_RATE = 0.05;
   var STUCK_PLUCK_THRESHOLD = 0.72;
   var STUCK_BREAK_THRESHOLD = 1.1;
-  var STUCK_FORCE_THRESHOLD_BOULDER = 12;
-  var STUCK_FORCE_THRESHOLD_BUG = 10;
+  var STUCK_FORCE_THRESHOLD_BOULDER = 14;
+  var STUCK_FORCE_THRESHOLD_BUG = 12;
   var STUCK_OVERFORCE_BOULDER = 15;
   var STUCK_OVERFORCE_BUG = 12;
   var _pickupDrag = null;
@@ -292,14 +298,15 @@ window.onload = function () {
   var _webDrawApi = null;
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
-  var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 22;
+  var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
   var _targetMarker = { x: 0, y: 0, age: 0, active: false };
   var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
-  var _locomotionState = 'ACTIVE';
-  var _lockedTopologyVersion = 0;
   var _samplePointsTopologyVersion = -1;
-  var _gaitCursor = 0;
-  var _dbg = { needStepFrames: 0, stuckFrames: 0, topoRefreshCount: 0 };
+  var _dbg = { topoRefreshCount: 0, spatialFallbacks: 0 };
+
+  var _spatialIndex = new SpatialIndexService();
+  var _spatialQueryBuf = new Int32Array(1024);
+  var _spatialTopologyVersion = -1;
   var _gaitTuneDefaults = {
     minStepDistMove: 28,
     minStepDistIdle: 22,
@@ -321,8 +328,6 @@ window.onload = function () {
   };
   if (typeof window !== 'undefined') window._spiderStats = _dbg;
   if (typeof window !== 'undefined') window._gaitTune = Object.assign({}, _gaitTuneDefaults, window._gaitTune || {});
-  var _gaitOrderIdle = [0, 2, 1, 3];
-  var _gaitOrderMove = [0, 3, 1, 2];
 
   /* ── blink + mood ── */
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0 };
@@ -374,7 +379,40 @@ window.onload = function () {
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
+    _samplePointsTopologyVersion = -1;
+    resetWebConstraintIds();
+    assignWebConstraintIds(spiderweb);
+    _rebuildStepSpatialIndex();
     _webDrawApi = setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return _logicalTimeMs; });
+  }
+
+  function _rebuildStepSpatialIndex() {
+    if (!spiderweb) return;
+    var pad = webRad * 1.1 || 300;
+    _spatialIndex.build(spiderweb, {
+      minX: webCx - pad, minY: webCy - pad,
+      maxX: webCx + pad, maxY: webCy + pad
+    });
+    _spatialIndex.syncAliveFromWeb(spiderweb);
+    _spatialTopologyVersion = spiderweb._topologyVersion || 0;
+  }
+
+  function _getStepSpatialOpts() {
+    return { index: _spatialIndex, queryBuf: _spatialQueryBuf };
+  }
+
+  function _syncStepSearchTopology() {
+    if (!spiderweb) return;
+    var curVer = spiderweb._topologyVersion || 0;
+    if (curVer !== _samplePointsTopologyVersion) {
+      samplePoints = getWebSamplePoints(spiderweb, 4);
+      _samplePointsTopologyVersion = curVer;
+      _dbg.topoRefreshCount++;
+    }
+    if (curVer !== _spatialTopologyVersion) {
+      _rebuildStepSpatialIndex();
+    }
+    updateSamplePoints(samplePoints);
   }
 
   function _collectAliveWebPoints() {
@@ -448,7 +486,7 @@ window.onload = function () {
         particle: lp, current: new Vec2(ip.x, ip.y), from: new Vec2(ip.x, ip.y),
         targetPos: new Vec2(ip.x, ip.y), targetStepPoint: null,
         landedNode: null, landedSeg: null, constraintA: null, constraintB: null,
-        stepping: false, t: 1, cooldown: 999, holdFrames: 0, phase: [0, 0.5, 0.5, 0][idx] || 0
+        stepping: false, t: 1, cooldown: idx * 6
       };
     });
     _spawnAnim.active = true;
@@ -456,63 +494,7 @@ window.onload = function () {
     _spawnAnim.fromY = spawnFromY;
     _spawnAnim.toY = cy;
     _spawnAnim.duration = 52;
-    _locomotionState = 'SPAWNING';
-    _lockedTopologyVersion = 0;
-    _gaitCursor = 0;
     setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
-  }
-
-  function _isFootFootholdValid(fs) {
-    if (!spiderweb) return false;
-    var wcs = spiderweb.constraints;
-    if (fs.landedNode) {
-      for (var wi = 0; wi < wcs.length; wi++) {
-        var wc = wcs[wi];
-        if (!(wc instanceof DistanceConstraint)) continue;
-        if (wc.a === fs.landedNode || wc.b === fs.landedNode) return true;
-      }
-      return false;
-    }
-    if (fs.landedSeg) {
-      var pa = fs.landedSeg.pa, pb = fs.landedSeg.pb;
-      if (!pa || !pb) return false;
-      var paAlive = false, pbAlive = false;
-      for (var wi2 = 0; wi2 < wcs.length; wi2++) {
-        var wc2 = wcs[wi2];
-        if (!(wc2 instanceof DistanceConstraint)) continue;
-        if (wc2.a === pa || wc2.b === pa) paAlive = true;
-        if (wc2.a === pb || wc2.b === pb) pbAlive = true;
-        if (paAlive && pbAlive) return true;
-      }
-    }
-    return false;
-  }
-
-  function _shouldLockIdle() {
-    if (_spawnAnim.active || target || wrappingTarget || !spider || !footState.length) return false;
-    var lockR2 = Math.max(18, REST_THRESH - 8);
-    lockR2 *= lockR2;
-    for (var fi = 0; fi < footState.length; fi++) {
-      var fs = footState[fi];
-      if (fs.stepping || fs.cooldown > 0 || fs.holdFrames > 0) return false;
-      if (!(fs.landedNode || fs.landedSeg)) return false;
-      if (!_isFootFootholdValid(fs)) return false;
-      if (fs.current.dist2(spider.thorax.pos) > lockR2) return false;
-    }
-    return true;
-  }
-
-  function _shouldUnlockIdle() {
-    if (_spawnAnim.active || target || wrappingTarget || !spider) return true;
-    if ((spiderweb._topologyVersion || 0) !== _lockedTopologyVersion) return true;
-    var unlockR2 = (REST_THRESH + 8) * (REST_THRESH + 8);
-    for (var fi = 0; fi < footState.length; fi++) {
-      var fs = footState[fi];
-      if (fs.stepping) return true;
-      if (!_isFootFootholdValid(fs)) return true;
-      if (fs.current.dist2(spider.thorax.pos) > unlockR2) return true;
-    }
-    return false;
   }
 
   function _drawTargetMarker(ctx) {
@@ -550,25 +532,32 @@ window.onload = function () {
     ctx.restore();
   }
 
-  function _slotDistanceInOrder(legIndex, order, cursor) {
-    for (var oi = 0; oi < order.length; oi++) {
-      if (order[(cursor + oi) % order.length] === legIndex) return oi;
+  var _playerExplicitTarget = null;
+
+  function resolveMovementTarget() {
+    if (wrappingTarget) return { target: null, source: 'wrap' };
+    if (_playerExplicitTarget) return { target: _playerExplicitTarget, source: 'player' };
+    var aiResult = _spiderAI.update(spider, spiderweb, thrownObjects, _aiPlayerInputThisFrame);
+    if (aiResult) {
+      var snapped = _snapPointToWeb(aiResult.x, aiResult.y) || aiResult;
+      return { target: snapped, source: 'ai' };
     }
-    return order.length;
+    return { target: null, source: null };
   }
 
-  function _isPhaseEligible(legIndex, fs, moving, swingCount, emergencyStep, speedNorm) {
-    if (emergencyStep) return true;
-    var sn = speedNorm || 0;
-    var order = moving ? _gaitOrderMove : _gaitOrderIdle;
-    var slotDist = _slotDistanceInOrder(legIndex, order, _gaitCursor);
-    if (slotDist === 0) return true;
-    var slotWindow = moving ? (sn >= 0.5 ? 2 : 1) : 0;
-    if (slotDist <= slotWindow) return true;
-    if (moving && swingCount === 0 && slotDist <= slotWindow + 1) return true;
-    var phaseThreshold = 0.75 + (1 - sn) * 0.2;
-    if ((fs.phase || 0) >= phaseThreshold) return true;
-    return false;
+  function applyResolvedTarget(resolved) {
+    if (resolved.source === 'wrap') {
+      target = null;
+      _aiOwnsTarget = false;
+      return;
+    }
+    if (resolved.target) {
+      target = resolved.target;
+      _aiOwnsTarget = resolved.source === 'ai';
+    } else {
+      if (!_playerExplicitTarget) target = null;
+      _aiOwnsTarget = false;
+    }
   }
 
   /* initial build */
@@ -626,7 +615,7 @@ window.onload = function () {
     + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
     + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Survive for 3 minutes. If the web breaks, you lose.</div>'
     + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
-    + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px" id="btn-gameplay-test">Gameplay Test</button>'
+    + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px;display:none" id="btn-gameplay-test">Gameplay Test</button>'
   );
   document.getElementById('btn-start-game').onclick = startGameFromBeginning;
   document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
@@ -638,8 +627,8 @@ window.onload = function () {
     if (_pointerMoved) return;
     var r = canvas.getBoundingClientRect();
     var rawTarget = new Vec2((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
-    target = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
-    _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
+    _playerExplicitTarget = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
+    _targetMarker.x = _playerExplicitTarget.x; _targetMarker.y = _playerExplicitTarget.y; _targetMarker.age = 0; _targetMarker.active = true;
     _aiPlayerInputThisFrame = true;
   });
 
@@ -661,8 +650,8 @@ window.onload = function () {
       if (!_pointerMoved && Math.sqrt(ddx * ddx + ddy * ddy) < TAP_MOVE_THRESHOLD) {
         var r = canvas.getBoundingClientRect();
         var rawTarget = new Vec2((t.clientX - r.left) * (W / r.width), (t.clientY - r.top) * (H / r.height));
-        target = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
-        _targetMarker.x = target.x; _targetMarker.y = target.y; _targetMarker.age = 0; _targetMarker.active = true;
+        _playerExplicitTarget = _snapPointToWeb(rawTarget.x, rawTarget.y) || rawTarget;
+        _targetMarker.x = _playerExplicitTarget.x; _targetMarker.y = _playerExplicitTarget.y; _targetMarker.age = 0; _targetMarker.active = true;
         _aiPlayerInputThisFrame = true;
       }
     }
@@ -1817,35 +1806,36 @@ window.onload = function () {
       }
       if (_spawnAnim.t >= 1) {
         _spawnAnim.active = false;
-        _locomotionState = 'ACTIVE';
         for (var sfi2 = 0; sfi2 < footState.length; sfi2++) footState[sfi2].cooldown = sfi2 * 5;
-        triggerStep(0, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
-        triggerStep(2, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+        triggerStep(0, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _getStepSpatialOpts());
+        triggerStep(2, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _getStepSpatialOpts());
         setTimeout(function () {
           if (footState) {
-            triggerStep(1, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
-            triggerStep(3, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN);
+            triggerStep(1, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _getStepSpatialOpts());
+            triggerStep(3, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _getStepSpatialOpts());
           }
         }, 180);
       }
     }
 
-    /* AI locomotion — runs only when no player target is active */
-    if (!wrappingTarget && !_spawnAnim.active && spider) {
-      var _aiResult = _spiderAI.update(spider, spiderweb, thrownObjects, _aiPlayerInputThisFrame);
-      if (_aiResult && !target) {
-        target = _snapPointToWeb(_aiResult.x, _aiResult.y) || _aiResult;
-        _aiOwnsTarget = true;
-      }
-      if (!target) _aiOwnsTarget = false;
+    /* target arbitration: player > gameplay > AI */
+    if (!_spawnAnim.active && spider) {
+      var _resolved = resolveMovementTarget();
+      applyResolvedTarget(_resolved);
       blinkState.mood = _spiderAI.mood;
       if (_spiderAI.mood === 'startled' && blinkState.headShake === 0) {
         blinkState.headShake = 18;
         blinkState.headShakeAmp = 3.5;
       }
     }
-    if (_aiPlayerInputThisFrame) _aiOwnsTarget = false;
-    _aiPlayerInputThisFrame = false;
+    if (_aiPlayerInputThisFrame) {
+      _aiOwnsTarget = false;
+      _aiPlayerInputThisFrame = false;
+    } else {
+      _aiPlayerInputThisFrame = false;
+    }
+    if (target && !_playerExplicitTarget && !_aiOwnsTarget) _playerExplicitTarget = null;
+    if (_playerExplicitTarget && target === null) _playerExplicitTarget = null;
 
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
@@ -1853,32 +1843,19 @@ window.onload = function () {
     if (isWrapping) {
       target = null;
     } else if (target) {
-      _locomotionState = 'ACTIVE';
       var tx = spider.thorax.pos;
-      var desiredDx = target.x - tx.x, desiredDy = target.y - tx.y;
-      var desiredDist = Math.sqrt(desiredDx * desiredDx + desiredDy * desiredDy);
-      var desiredDir = desiredDist > 0.001 ? new Vec2(desiredDx / desiredDist, desiredDy / desiredDist) : null;
-      var moveAnchor = _snapPointToWeb(target.x, target.y, tx, _aiOwnsTarget ? 28 : 42, desiredDir);
-      if (!moveAnchor) {
-        target = null;
-      } else {
-        var dx = moveAnchor.x - tx.x, dy = moveAnchor.y - tx.y;
+      var dx = target.x - tx.x, dy = target.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold) {
         moving = true;
-        var scaledSpeed = (_aiOwnsTarget ? 0.6 : moveSpeed) * timeScale;
+        var scaledSpeed = moveSpeed * timeScale;
         var nx = (dx / dist) * scaledSpeed, ny = (dy / dist) * scaledSpeed;
         moveDir = new Vec2(dx / dist, dy / dist);
         for (var p = 0; p < spider.particles.length; p++) {
           spider.particles[p].pos.x += nx; spider.particles[p].pos.y += ny;
           spider.particles[p].lastPos.x += nx; spider.particles[p].lastPos.y += ny;
         }
-      } else target = null;
-      }
-    }
-
-    if (_locomotionState === 'IDLE_LOCKED' && _shouldUnlockIdle()) {
-      _locomotionState = 'ACTIVE';
+      } else { target = null; _playerExplicitTarget = null; }
     }
 
     /* 断网红闪帧计数 */
@@ -1902,137 +1879,46 @@ window.onload = function () {
     updateBlink();
     sim.frame(_adaptIter);
 
-    /* ── 物理帧结束后，用最新网形态刷新采样点再做步态决策 ── */
-    /* 拓扑变化时重建 samplePoints，防止旧 segment 候选残留 */
-    var _currentTopoVer = spiderweb ? (spiderweb._topologyVersion || 0) : 0;
-    if (_currentTopoVer !== _samplePointsTopologyVersion) {
-      samplePoints = getWebSamplePoints(spiderweb, 4);
-      _samplePointsTopologyVersion = _currentTopoVer;
-      _dbg.topoRefreshCount++;
-    }
-    updateSamplePoints(samplePoints);
+    /* ── 物理帧结束后，统一刷新 samplePoints + spatial index ── */
+    _syncStepSearchTopology();
 
     /* feet */
-    var swingCount = 0;
-    for (var _si = 0; _si < footState.length; _si++) if (footState[_si].stepping) swingCount++;
-
-    var _speedNorm = (moving && !_aiOwnsTarget) ? 1.0 : (_aiOwnsTarget ? 0.6 : 0.0);
-    var maxSwing = _speedNorm >= 0.5 ? 2 : 1;
-    var _phaseRateBase = 0.06 + _speedNorm * 0.14;
-
-    var _curStepSpeed = _aiOwnsTarget ? 0.06 : STEP_SPEED;
-    var _segMaxJump2 = 36 * 36;
-    var _maxLegReach2 = 66 * 66;
-    var _safeLegReach = 60;
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
-      if (fs.cooldown > 0) fs.cooldown = Math.max(0, fs.cooldown - timeScale);
-      if (fs.holdFrames > 0) fs.holdFrames = Math.max(0, fs.holdFrames - timeScale);
-      if (!fs.stepping && _locomotionState !== 'IDLE_LOCKED' && !_spawnAnim.active) {
-        fs.phase = Math.min(1.4, (fs.phase || 0) + _phaseRateBase * timeScale);
-      }
+      if (fs.cooldown > 0) fs.cooldown -= timeScale;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + _curStepSpeed * timeScale);
+        fs.t = Math.min(1, fs.t + STEP_SPEED * timeScale);
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
-        fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
-        var _hipStep = spider.legChains && spider.legChains[fi] && spider.legChains[fi][0]
-          ? spider.legChains[fi][0].pos
-          : spider.thorax.pos;
-        var _sdx = fs.current.x - _hipStep.x, _sdy = fs.current.y - _hipStep.y;
-        var _s2 = _sdx * _sdx + _sdy * _sdy;
-        if (_s2 > _maxLegReach2) {
-          var _sl = Math.sqrt(_s2) || 1;
-          liftFoot(fs, spider);
-          fs.targetStepPoint = null;
-          fs.stepping = false;
-          fs.t = 1;
-          fs.current.x = _hipStep.x + _sdx / _sl * _safeLegReach;
-          fs.current.y = _hipStep.y + _sdy / _sl * _safeLegReach;
-          fs.particle.pos.mutableSet(fs.current);
-          fs.particle.lastPos.mutableSet(fs.current);
-          fs.cooldown = Math.max(fs.cooldown || 0, 8);
-          _dbg.legRecoveries = (_dbg.legRecoveries || 0) + 1;
-          continue;
-        }
+        fs.particle.pos.mutableSet(fs.current);
         if (fs.t >= 1) {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
-          fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+          fs.particle.pos.mutableSet(fs.current);
           fs.stepping = false;
           landFoot(fs, spider, spiderweb, footState);
         }
       } else {
         if (fs.landedNode) {
-          fs.current.x = fs.landedNode.pos.x;
-          fs.current.y = fs.landedNode.pos.y;
+          if (fs.landedNode.pos) {
+            fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y;
+          } else fs.landedNode = null;
         } else if (fs.landedSeg) {
           var sp = fs.landedSeg;
-          var newSegX = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t;
-          var newSegY = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t;
-          var jdx = newSegX - fs.current.x, jdy = newSegY - fs.current.y;
-          if (jdx * jdx + jdy * jdy > _segMaxJump2) {
-            fs.current.x += jdx * 0.35;
-            fs.current.y += jdy * 0.35;
-          } else {
-            fs.current.x = newSegX;
-            fs.current.y = newSegY;
-          }
+          if (sp.pa && sp.pb && sp.pa.pos && sp.pb.pos) {
+            fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t;
+            fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t;
+          } else fs.landedSeg = null;
         }
         if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
 
-        var _hip = spider.legChains && spider.legChains[fi] && spider.legChains[fi][0]
-          ? spider.legChains[fi][0].pos
-          : spider.thorax.pos;
-        var _ldx = fs.current.x - _hip.x, _ldy = fs.current.y - _hip.y;
-        var _l2 = _ldx * _ldx + _ldy * _ldy;
-        if (_l2 > _maxLegReach2 && (fs.cooldown <= 0 || _l2 > _maxLegReach2 * 1.5)) {
-          var _ll = Math.sqrt(_l2) || 1;
-          liftFoot(fs, spider);
-          fs.targetStepPoint = null;
-          fs.stepping = false;
-          fs.t = 1;
-          fs.current.x = _hip.x + _ldx / _ll * _safeLegReach;
-          fs.current.y = _hip.y + _ldy / _ll * _safeLegReach;
-          fs.particle.pos.mutableSet(fs.current);
-          fs.particle.lastPos.mutableSet(fs.current);
-          fs.cooldown = Math.max(fs.cooldown || 0, 8);
-          _dbg.legRecoveries = (_dbg.legRecoveries || 0) + 1;
-        }
-
         var drift2 = fs.current.dist2(spider.thorax.pos);
         var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
-        var ps = partner && partner.stepping;
-        if (!ps && swingCount < maxSwing && !_spawnAnim.active && fs.holdFrames <= 0 && _locomotionState !== 'IDLE_LOCKED') {
-          var _stepThresh = _aiOwnsTarget ? 9  : STEP_THRESH;
-          var _restThresh = _aiOwnsTarget ? 64 : REST_THRESH;
-          var _maxStepR   = _aiOwnsTarget ? 24 : undefined;
-          var movingNeedStep = target && drift2 > _stepThresh * _stepThresh;
-          var idleNeedStep = !target && drift2 > _restThresh * _restThresh;
-          var needStep = movingNeedStep || idleNeedStep;
-          if (needStep) {
-            _dbg.needStepFrames++;
-            var emergencyStep = drift2 > (target ? _stepThresh * _stepThresh * 1.8 : _restThresh * _restThresh * 1.35);
-            var phaseOk = _isPhaseEligible(fi, fs, !!target, swingCount, emergencyStep, _speedNorm);
-            if (phaseOk) {
-              if (movingNeedStep) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _maxStepR);
-              else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, Math.max(18, _restThresh - 6), true);
-              if (fs.stepping) {
-                fs.phase = 0;
-                _gaitCursor = (_gaitCursor + 1) % _gaitOrderIdle.length;
-                swingCount++;
-              } else {
-                _dbg.stuckFrames++;
-              }
-            }
-          }
+        if (!(partner && partner.stepping)) {
+          if (target && drift2 > STEP_THRESH * STEP_THRESH) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, _getStepSpatialOpts());
+          else if (!target && drift2 > REST_THRESH * REST_THRESH) triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, true, _getStepSpatialOpts());
         }
       }
-    }
-
-    if (_locomotionState !== 'IDLE_LOCKED' && _shouldLockIdle()) {
-      _locomotionState = 'IDLE_LOCKED';
-      _lockedTopologyVersion = spiderweb._topologyVersion || 0;
     }
 
     sim.draw();

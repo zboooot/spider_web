@@ -90,7 +90,11 @@ VerletJS.prototype.frame = function (step) {
       pts[i].pos.mutableAdd(vel);
     }
   }
-  if (this.draggedEntity) this.draggedEntity.pos.mutableSet(this.mouse);
+  if (this.draggedEntity) {
+    var _dp = this.draggedEntity.pos;
+    _dp.x += (this.mouse.x - _dp.x) * 0.08;
+    _dp.y += (this.mouse.y - _dp.y) * 0.08;
+  }
   var sc = 1 / step;
   for (c in this.composites) {
     var cs = this.composites[c].constraints;
