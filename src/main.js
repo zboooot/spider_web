@@ -1632,6 +1632,7 @@ window.onload = function () {
 
   function getInventoryTarget(kind) {
     var slot = document.getElementById('inv-' + kind);
+    if (!slot) return null;
     var slotRect = slot.getBoundingClientRect();
     var stageRect = screenShellEl.getBoundingClientRect();
     return {
@@ -1667,6 +1668,7 @@ window.onload = function () {
     var p = obj.particle;
     var startPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
     var targetPos = getInventoryTarget(obj.kind);
+    if (!targetPos) targetPos = startPos; /* 无对应 inventory slot 时原地收集 */
     var snapshot = buildCollectSnapshot(obj);
     if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
     clearObjectConstraints(obj);

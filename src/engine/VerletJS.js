@@ -19,6 +19,7 @@ export function VerletJS(width, height, canvas) {
   this.stubReachRadius = 200;   /* stub 拖拽最大范围（由 P.stubReachRadius 覆盖） */
   this.onRepairDrop = null;     /* 回调：function(stub, snapTarget) */
   this.selectionRadius = 20;
+  this.stubSelectionRadius = 44; /* stub 专用选中半径，适配移动端手指 */
   this.highlightColor = "#4f545c";
 
   var _this = this;
@@ -127,9 +128,15 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
     }
   }
   if (this.draggedEntity) {
-    var _dp = this.draggedEntity.pos;
-    _dp.x += (this.mouse.x - _dp.x) * 0.08;
-    _dp.y += (this.mouse.y - _dp.y) * 0.08;
+    if (this.draggedEntity.__isStub) {
+      /* stub 直接跟手 */
+      this.draggedEntity.pos.mutableSet(this.mouse);
+    } else {
+      /* 其他实体弹性跟随 */
+      var _dp = this.draggedEntity.pos;
+      _dp.x += (this.mouse.x - _dp.x) * 0.08;
+      _dp.y += (this.mouse.y - _dp.y) * 0.08;
+    }
     this.snapTarget = null;
     /* 断线头拖拽时：检测附近存活网节点，吸附 */
     if (this.draggedEntity.__isWebParticle && this.draggedEntity.__isStub) {
@@ -293,17 +300,42 @@ VerletJS.prototype.draw = function () {
 };
 
 VerletJS.prototype.nearestEntity = function () {
-  var c, i, d2N = 0, entity = null, csN = null, entityComp = null;
+  var c, i;
+  var stubR2 = this.stubSelectionRadius * this.stubSelectionRadius;
+
+  /* 第一优先级：找最近的 stub（选中半径更大，适配手指） */
+  var bestStub = null, bestStubD2 = Infinity, bestStubCs = null, bestStubComp = null;
   for (c in this.composites) {
     var ps = this.composites[c].particles;
     for (i in ps) {
-      if (ps[i]._noSimDrag) continue;
+      if (!ps[i].__isStub) continue;
       var d2 = ps[i].pos.dist2(this.mouse);
-      if (d2 <= this.selectionRadius * this.selectionRadius && (entity == null || d2 < d2N)) {
-        entity = ps[i];
+      if (d2 <= stubR2 && d2 < bestStubD2) {
+        bestStub = ps[i];
+        bestStubD2 = d2;
+        bestStubCs = this.composites[c].constraints;
+        bestStubComp = this.composites[c];
+      }
+    }
+  }
+  if (bestStub) {
+    bestStub.__isWebParticle = true;
+    return bestStub;
+  }
+
+  /* 第二优先级：找最近的其他可拖拽粒子 */
+  var baseR2 = this.selectionRadius * this.selectionRadius;
+  var entity = null, d2N = 0, csN = null, entityComp = null;
+  for (c in this.composites) {
+    var ps2 = this.composites[c].particles;
+    for (i in ps2) {
+      if (ps2[i]._noSimDrag) continue;
+      var d2b = ps2[i].pos.dist2(this.mouse);
+      if (d2b <= baseR2 && (entity == null || d2b < d2N)) {
+        entity = ps2[i];
         csN = this.composites[c].constraints;
         entityComp = this.composites[c];
-        d2N = d2;
+        d2N = d2b;
       }
     }
   }
@@ -320,11 +352,11 @@ VerletJS.prototype.nearestEntity = function () {
       if (csN[i].a === entity || csN[i].b === entity) connCount++;
     }
     if (connCount >= 2) return null;
-    if (!entity.__isStub) return null; /* 只有 stub 可拖拽 */
-    entity.__isWebParticle = true; /* 标记断线头粒子，供子弹时间检测 */
+    if (!entity.__isStub) return null;
+    entity.__isWebParticle = true;
   } else {
     entity.__isWebParticle = false;
-    return null; /* 玩家不允许拖拽蜘蛛或其他非网实体 */
+    return null;
   }
   return entity;
 };
