@@ -2969,20 +2969,17 @@ window.onload = function () {
   /* ================================================================
      MAIN LOOP
   ================================================================ */
+  var FIXED_STEP_MS = 1000 / 60;
+  var MAX_CATCHUP_STEPS = 4;
   var _lastTimestamp = 0;
+  var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
   var _wasBulletTime = false;
-  var loop = function (timestamp) {
-    statsBeginFrame();
-
-    /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
-    var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
-    _lastTimestamp = timestamp;
-
+  function fixedUpdate() {
     /* ── 子弹时间检测：拖拽断线头时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isWebParticle);
-    /* timeScale: 正常=帧率补偿，子弹时间=0.15 */
-    var timeScale = _isBulletTime ? 0.0 : delta / 16.67;
+    /* 固定 60Hz 逻辑步：正常每步=1 帧，子弹时间冻结玩法逻辑 */
+    var timeScale = _isBulletTime ? 0.0 : 1.0;
     _currentTimeScale = timeScale;
 
     /* ── 背景变暗切换（只在状态变化时调用一次） ── */
@@ -3017,10 +3014,7 @@ window.onload = function () {
       updateLevelTimer();
       countSimStats(0);
       statsTimeEnd();
-      statsEndFrame(timestamp);
-      updateStatsPanel();
-      requestAnimFrame(loop);
-      return;
+      return timeScale;
     }
 
     /* spawn descent animation */
@@ -3284,6 +3278,11 @@ window.onload = function () {
     statsTimeStart('other');
     updateBlink();
     statsTimeEnd();
+
+    return timeScale;
+  }
+
+  function renderFrame(timestamp, updateScale) {
     statsTimeStart('webRnd');
     sim.draw();
     statsTimeEnd();
@@ -3320,10 +3319,10 @@ window.onload = function () {
       var _ctx = sim.ctx;
       for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
         var _bp = _burstParticles[_bpi];
-        var _speedScale = (_bp.speedScale || 1) * timeScale;
+        var _speedScale = (_bp.speedScale || 1) * updateScale;
         _bp.x += _bp.vx * _speedScale; _bp.y += _bp.vy * _speedScale;
         var _drag = _bp.drag || 0.92;
-        var _dragScale = Math.pow(_drag, timeScale);
+        var _dragScale = Math.pow(_drag, updateScale);
         _bp.vx *= _dragScale;
         _bp.vy *= _dragScale;
         if (_bp.smoke) {
@@ -3390,6 +3389,30 @@ window.onload = function () {
         sim.ctx.fill();
         sim.ctx.restore();
       }
+    }
+
+  }
+
+  var loop = function (timestamp) {
+    statsBeginFrame();
+
+    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
+    _lastTimestamp = timestamp;
+    _fixedAccumulatorMs += elapsedMs;
+
+    var steps = 0;
+    var updateScale = 0;
+    while (_fixedAccumulatorMs >= FIXED_STEP_MS && steps < MAX_CATCHUP_STEPS) {
+      updateScale += fixedUpdate();
+      _fixedAccumulatorMs -= FIXED_STEP_MS;
+      steps++;
+    }
+    if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
+      _fixedAccumulatorMs = 0;
+    }
+
+    if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
+      renderFrame(timestamp, updateScale);
     }
 
     statsEndFrame(timestamp);
