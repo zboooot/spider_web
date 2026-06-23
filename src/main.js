@@ -892,9 +892,10 @@ window.onload = function () {
   });
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick || sim.suppressClick) {
+    if (_suppressPriorityClick || sim.suppressClick || _suppressMoveCommand) {
       _suppressPriorityClick = false;
       sim.suppressClick = false;
+      _suppressMoveCommand = false;
       return;
     }
     setPriorityTargetFromClient(e.clientX, e.clientY);
@@ -927,11 +928,12 @@ window.onload = function () {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
-      if (!_suppressPriorityClick && !sim.suppressClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+      if (!_suppressPriorityClick && !sim.suppressClick && !_suppressMoveCommand && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
       sim.suppressClick = false;
+      _suppressMoveCommand = false;
     }
     endPoopPointer();
   }, { passive: true });
@@ -1201,7 +1203,7 @@ window.onload = function () {
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
-    if (pct > webLossPct) webLossPct = pct;
+    webLossPct = pct;
     /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
     _refreshBrokenEnds();
   }
