@@ -65,6 +65,7 @@ import {
   createTutorialController,
   shouldStartTutorial,
   isTutorialInsectKind,
+  canDragTutorialWrappedPrey,
   shouldTriggerTutorialStoneImpact,
   resolveTutorialStoneImpactPoint,
   createTutorialStoneImpact,
@@ -428,6 +429,17 @@ window.onload = function () {
     if (sim.draggedEntity && sim.draggedEntity.__isStub) return false; /* stub 优先 */
     var hit = _findWrappedPreyAt(clientX, clientY);
     if (!hit) return false;
+    if (
+      isTutorialActive()
+      && hit.obj
+      && hit.obj.state === 'wrapped'
+      && isTutorialInsectKind(hit.obj.kind)
+      && !canDragTutorialWrappedPrey(tutorialController.getPhase())
+    ) {
+      _suppressMoveCommand = true;
+      sim.draggedEntity = null;
+      return true;
+    }
     var dragMode = (hit.obj.state === 'stuck' && (hit.obj.kind === 'boulder' || hit.obj.kind === 'bug' || hit.obj.kind === 'drop'))
       ? 'web-drag'
       : 'pluck';

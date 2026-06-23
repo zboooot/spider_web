@@ -39,6 +39,13 @@ export function isTutorialInsectKind(kind) {
   return kind === 'boulder' || kind === 'bug';
 }
 
+export function canDragTutorialWrappedPrey(phase) {
+  return phase === PHASE.WAIT_COLLECT_ONE
+    || phase === PHASE.WAIT_COLLECT_ONE_DRAG
+    || phase === PHASE.WAIT_COLLECT_TWO
+    || phase === PHASE.WAIT_COLLECT_TWO_DRAG;
+}
+
 export var TUTORIAL_STONE_RADIUS = 63;
 
 /** 石头圆盘是否与蛛网圆盘相交（用于判定“进入网区”，非物理碰撞） */

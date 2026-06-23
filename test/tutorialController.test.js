@@ -5,6 +5,7 @@ import {
   createTutorialController,
   shouldStartTutorial,
   isTutorialInsectKind,
+  canDragTutorialWrappedPrey,
   buildBreakersBatch,
   stoneOverlapsWebAt,
   stoneCrossesWebTopBand,
@@ -131,6 +132,16 @@ test('isTutorialInsectKind only allows prey insects', function () {
   assert.equal(isTutorialInsectKind('bug'), true);
   assert.equal(isTutorialInsectKind('drop'), false);
   assert.equal(isTutorialInsectKind('poop'), false);
+});
+
+test('canDragTutorialWrappedPrey only allows guided collect phases', function () {
+  assert.equal(canDragTutorialWrappedPrey('wait_collect_one'), true);
+  assert.equal(canDragTutorialWrappedPrey('wait_collect_one_drag'), true);
+  assert.equal(canDragTutorialWrappedPrey('wait_collect_two'), true);
+  assert.equal(canDragTutorialWrappedPrey('wait_collect_two_drag'), true);
+  assert.equal(canDragTutorialWrappedPrey('wave_one'), false);
+  assert.equal(canDragTutorialWrappedPrey('wave_two'), false);
+  assert.equal(canDragTutorialWrappedPrey('wait_repair_drag'), false);
 });
 
 test('tutorial flow reaches handoff after two collections', function () {
