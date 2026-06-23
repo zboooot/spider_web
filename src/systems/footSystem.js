@@ -606,7 +606,11 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
   if (hdx * hdx + hdy * hdy > tune.maxHipTargetDist * tune.maxHipTargetDist) return;
 
   var dx = sp.x - fs.current.x, dy = sp.y - fs.current.y;
-  var minStepDist = moveDir ? tune.minStepDistMove : tune.minStepDistIdle;
+  var stepMoveLen = md ? Math.sqrt(md.x * md.x + md.y * md.y) : 0;
+  /* 闲逛步态：preferStable + 缩步幅 → 允许更小的落脚距离 */
+  var minStepDist = (preferStable && stepMoveLen > 0 && maxStepR != null)
+    ? tune.minStepDistIdle
+    : (stepMoveLen > 0.2 ? tune.minStepDistMove : tune.minStepDistIdle);
   if (dx * dx + dy * dy < minStepDist * minStepDist) return;
 
   liftFoot(fs, spider);

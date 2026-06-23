@@ -14,6 +14,7 @@ import {
   liftFoot, landFoot, triggerStep,
   getNextPid
 } from './systems/footSystem.js';
+import { createSpiderAI } from './systems/spiderAI.js';
 
 import {
   getWebOuterR, inWebZone, radialRatioAt,
@@ -280,7 +281,13 @@ window.onload = function () {
   var DEFAULTS = {
     webRadius: 1.45, webSegs: 30, webDepth: 11, webStiff: 0.6,
     radialWobbleScale: 0.55, spiralWobbleScale: 1.0,
-    moveSpeed: 1.8, stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
+    moveSpeed: 1.8,
+    idleMoveRatio: 0.06,
+    idleStepThresh: 20,
+    idleStepSpeed: 0.09,
+    idleStepCooldown: 11,
+    idleStepReach: 34,
+    stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
     legStiff: 0.3, jointStiff: 0.35,
     stickDelayMin: 0.10, stickDelayMax: 0.45, stickCatchRadius: 18,
     stickMidBias: 0.8, stickHistory: 40,
@@ -537,7 +544,7 @@ window.onload = function () {
   var _webDrawApi = null;
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
-  var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
+  var target = null, idleTarget = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
   var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
   var _samplePointsTopologyVersion = -1;
   var _gaitTuneDefaults = {
@@ -564,6 +571,8 @@ window.onload = function () {
   /* ── blink + mood ── */
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0 };
   var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
+  var spiderAI = createSpiderAI();
+  var idleWanderActive = false;
   var isGameplayTestMode = false;
 
   function updateBlink() {
@@ -708,6 +717,7 @@ window.onload = function () {
     _spawnAnim.toY = cy;
     _spawnAnim.duration = 52;
     setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
+    spiderAI.reset(spiderweb);
     var _spatialOpts = USE_LEGACY_COLLISION ? null : { index: spatialIndex, queryBuf: spatialQueryBuf };
     setTimeout(function () {
       triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
@@ -815,6 +825,8 @@ window.onload = function () {
   var webBreakFlashes = [];
   var _breakFrame = 0;
   var _burstParticles = []; /* 打包完成放射粒子 */
+  var _wrapSplashParticles = []; /* 打包中白色线状飞溅（顶层绘制） */
+  var _wrapSplashTimer = 0;
   var _currentTimeScale = 1.0; /* 子弹时间：供投掷物积分使用 */
   var _webDisplayPct = 100;   /* 当前显示值 */
   var _webTargetPct = 100;    /* 目标值 */
@@ -1018,6 +1030,86 @@ window.onload = function () {
     return true;
   }
 
+  function spawnWrapSplashParticles(anchorX, anchorY) {
+    var ringR = 10 + Math.random() * 16;
+    for (var i = 0; i < 3; i++) {
+      var ang = Math.random() * Math.PI * 2;
+      var spd = 2.0 + Math.random() * 2.8;
+      var vx = Math.cos(ang) * spd;
+      var vy = Math.sin(ang) * spd * 0.72 - (0.55 + Math.random() * 1.35);
+      var sx = anchorX + Math.cos(ang) * ringR * 0.35;
+      var sy = anchorY + Math.sin(ang) * ringR * 0.35;
+      _wrapSplashParticles.push({
+        x: sx,
+        y: sy,
+        prevX: sx - vx * 0.45,
+        prevY: sy - vy * 0.45,
+        vx: vx,
+        vy: vy,
+        life: 0.62 + Math.random() * 0.16,
+        decay: 0.04 + Math.random() * 0.016,
+        len: 5.5 + Math.random() * 5,
+        width: 1.35 + Math.random() * 0.75,
+        grav: 0.15 + Math.random() * 0.07,
+        drag: 0.982 + Math.random() * 0.012,
+        color: '#ffffff'
+      });
+    }
+  }
+
+  function updateAndDrawWrapSplashParticles(ctx, dt) {
+    if (_wrapSplashParticles.length === 0) return;
+    for (var i = _wrapSplashParticles.length - 1; i >= 0; i--) {
+      var p = _wrapSplashParticles[i];
+      p.vy += p.grav * dt;
+      var dragScale = Math.pow(p.drag, dt);
+      p.vx *= dragScale;
+      p.vy *= dragScale;
+      var nx = p.x + p.vx * dt;
+      var ny = p.y + p.vy * dt;
+      p.life -= p.decay * dt;
+      if (p.life <= 0) {
+        _wrapSplashParticles.splice(i, 1);
+        continue;
+      }
+      var tdx = nx - p.prevX;
+      var tdy = ny - p.prevY;
+      var tLen = Math.sqrt(tdx * tdx + tdy * tdy);
+      var drawLen = p.len * (0.72 + p.life * 0.28);
+      var ux = tLen > 0.001 ? tdx / tLen : 0;
+      var uy = tLen > 0.001 ? tdy / tLen : 1;
+      if (tLen < drawLen) {
+        ux = p.vx;
+        uy = p.vy;
+        var vLen = Math.sqrt(ux * ux + uy * uy) || 1;
+        ux /= vLen;
+        uy /= vLen;
+      }
+      var alpha = Math.min(1, 0.42 + p.life * 0.58);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.width * (0.82 + p.life * 0.18);
+      ctx.lineCap = 'round';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = 'rgba(255,255,255,0.9)';
+      ctx.beginPath();
+      ctx.moveTo(nx - ux * drawLen, ny - uy * drawLen);
+      ctx.lineTo(nx, ny);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.beginPath();
+      ctx.arc(nx, ny, 1.15, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.restore();
+      p.prevX = nx;
+      p.prevY = ny;
+      p.x = nx;
+      p.y = ny;
+    }
+  }
+
   function spawnPoopBurst(x, y) {
     _burstParticles.push({
       x: x, y: y,
@@ -1121,6 +1213,7 @@ window.onload = function () {
 
   function pauseAndClearCurrentTarget() {
     target = null;
+    idleTarget = null;
     autoChaseTarget = null;
     _autoPlayPause = 30; /* 0.5秒停顿 */
   }
@@ -1230,6 +1323,7 @@ window.onload = function () {
     wrappingTarget = null;
     repairQueue = [];
     target = null;
+    idleTarget = null;
     autoChaseTarget = null;
     clearPriorityTarget();
     _endWrappedPickup();
@@ -1250,6 +1344,7 @@ window.onload = function () {
       if (el) el.textContent = '0/' + cfg.targets[k];
     });
     gameState = 'LEVEL_ACTIVE';
+    spiderAI.reset(spiderweb);
     hideOverlay();
     levelTimer = 0;
     webWarmupFrames = 90;
@@ -2006,6 +2101,7 @@ window.onload = function () {
 
     obj._silkLines = null;
     obj._silkSpiral = buildSilkSpiral(obj);
+    _wrapSplashTimer = 0;
   }
 
   function cancelWrappingDueToSupportLoss() {
@@ -2596,6 +2692,14 @@ window.onload = function () {
   function updateFootTriggers() {
     if (poopStunTimer > 0) return;
     var spatialOpts = _spatialOpts();
+    var gaitTarget = target || idleTarget;
+    var isIdleGait = !target && !!idleTarget;
+    var idleStepThresh = P.idleStepThresh != null ? P.idleStepThresh : 20;
+    var stepThreshSq = isIdleGait ? idleStepThresh * idleStepThresh : STEP_THRESH * STEP_THRESH;
+    var stepCooldown = isIdleGait
+      ? (P.idleStepCooldown != null ? P.idleStepCooldown : 11)
+      : STEP_COOLDOWN;
+    var stepReach = isIdleGait ? (P.idleStepReach != null ? P.idleStepReach : 34) : undefined;
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       if (fs.stepping || fs.cooldown > 0) continue;
@@ -2604,15 +2708,15 @@ window.onload = function () {
       var ps = partner && partner.stepping;
       if (ps) continue;
       if (fs.needsEmergencyStep) {
-        if (target) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, spatialOpts);
-        else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, true, spatialOpts);
+        if (gaitTarget) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, isIdleGait, spatialOpts);
+        else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, true, spatialOpts);
         if (fs.stepping) fs.needsEmergencyStep = false;
         continue;
       }
-      if (target && drift2 > STEP_THRESH * STEP_THRESH) {
-        triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, spatialOpts);
-      } else if (!target && drift2 > REST_THRESH * REST_THRESH) {
-        triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, true, spatialOpts);
+      if (gaitTarget && drift2 > stepThreshSq) {
+        triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, isIdleGait, spatialOpts);
+      } else if (!gaitTarget && drift2 > REST_THRESH * REST_THRESH) {
+        triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, undefined, true, spatialOpts);
       }
     }
   }
@@ -3168,6 +3272,10 @@ window.onload = function () {
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
     if (_autoPlayPause > 0) { _autoPlayPause--; }
+    if (!isPoopStunned && !autoPlay && !wrappingTarget && !isRepairing && !userPriorityTarget) {
+      target = null;
+      autoChaseTarget = null;
+    }
     if (!isPoopStunned && autoPlay && !wrappingTarget && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
@@ -3194,20 +3302,43 @@ window.onload = function () {
       }
     }
 
+    /* ── idle wander：无任务目标时在网上随机走动（独立导航，不占用 task target） ── */
+    idleTarget = null;
+    idleWanderActive = false;
+    if (!isPoopStunned && !wrappingTarget && !isRepairing && !userPriorityTarget
+        && gameState === 'LEVEL_ACTIVE' && !target && !_isBulletTime
+        && _autoPlayPause <= 0 && !_spawnAnim.active) {
+      var _idleAiTarget = spiderAI.update(spider, spiderweb, thrownObjects, false, { idleMode: true });
+      if (_idleAiTarget) {
+        _autoTarget.x = _idleAiTarget.x;
+        _autoTarget.y = _idleAiTarget.y;
+        idleTarget = _autoTarget;
+        idleWanderActive = true;
+      }
+      blinkState.mood = spiderAI.mood;
+    }
+
     /* body movement */
     var isWrapping = (wrappingTarget !== null);
     var moving = false; moveDir = null;
+    var bodyTarget = target || idleTarget;
+    var isIdleBodyMove = !target && !!idleTarget;
     if (isPoopStunned) {
       target = null;
+      idleTarget = null;
     } else if (isWrapping) {
       target = null;
-    } else if (target) {
+      idleTarget = null;
+    } else if (bodyTarget) {
       var tx = spider.thorax.pos;
-      var dx = target.x - tx.x, dy = target.y - tx.y;
+      var dx = bodyTarget.x - tx.x, dy = bodyTarget.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
-        var scaledSpeed = moveSpeed;
+        var scaledSpeed = isIdleBodyMove
+          ? moveSpeed * (P.idleMoveRatio != null ? P.idleMoveRatio : 0.06)
+          : moveSpeed;
+        if (isIdleBodyMove) scaledSpeed *= timeScale;
         var dirX = dx / dist, dirY = dy / dist;
 
         /* 玩家优先目标导航：绕开其他掉落物，不在路上触发打包 */
@@ -3238,7 +3369,11 @@ window.onload = function () {
           spider.particles[p].pos.x += nx; spider.particles[p].pos.y += ny;
           spider.particles[p].lastPos.x += nx; spider.particles[p].lastPos.y += ny;
         }
-      } else target = null;
+      } else if (target) {
+        target = null;
+      } else {
+        idleTarget = null;
+      }
     }
 
     /* feet */
@@ -3246,7 +3381,10 @@ window.onload = function () {
       var fs = footState[fi];
       if (fs.cooldown > 0) fs.cooldown--;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : 1));
+        var legStepSpeed = (idleWanderActive && !target)
+          ? (P.idleStepSpeed != null ? P.idleStepSpeed : 0.09)
+          : STEP_SPEED;
+        fs.t = Math.min(1, fs.t + legStepSpeed * ((_isBulletTime || isPoopStunned) ? 0 : 1));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
@@ -3341,7 +3479,18 @@ window.onload = function () {
     statsTimeEnd();
     statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
-    drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
+    drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈 */
+
+    /* 打包飞溅：绘制在猎物/蜘蛛/打包圈之上 */
+    if (!_isBulletTime && wrappingTarget) {
+      _wrapSplashTimer -= timeScale;
+      if (_wrapSplashTimer <= 0) {
+        _wrapSplashTimer = 4;
+        var _wp = wrappingTarget.particle.pos;
+        spawnWrapSplashParticles(_wp.x, _wp.y);
+      }
+    }
+    updateAndDrawWrapSplashParticles(sim.ctx, timeScale);
 
     /* ── 补网修复进度圈 ── */
     if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {

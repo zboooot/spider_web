@@ -19,8 +19,8 @@ import { Vec2 } from '../engine/Vec2.js';
 export function createSpiderAI() {
 
   /* ── internal state ── */
-  var _state       = 'PAUSE';
-  var _stateTimer  = 0;          // frames remaining in current state
+  var _state       = 'WANDER';
+  var _stateTimer  = 240;        // frames remaining in current state
   var _aiTarget    = null;       // Vec2 current navigation target
   var _lastInput   = 9999;       // frames since last player click
   var _idleFrames  = 0;          // frames without player input
@@ -114,10 +114,15 @@ export function createSpiderAI() {
     }
   }
 
-  function nextRandomState(spiderweb) {
+  function nextRandomState(spiderweb, idleMode) {
     var r = Math.random();
-    if      (r < 0.45) enterState('WANDER',  spiderweb);
-    else if (r < 0.75) enterState('PAUSE',   spiderweb);
+    if (idleMode) {
+      if (r < 0.62) enterState('WANDER', spiderweb);
+      else enterState('EXPLORE', spiderweb);
+      return;
+    }
+    if      (r < 0.55) enterState('WANDER',  spiderweb);
+    else if (r < 0.72) enterState('PAUSE',   spiderweb);
     else               enterState('EXPLORE', spiderweb);
   }
 
@@ -132,12 +137,16 @@ export function createSpiderAI() {
      * @param {object} spiderweb     — web composite
      * @param {Array}  thrownObjects — active objects on web
      * @param {boolean} playerHasInput — true if player just clicked this frame
+     * @param {object} [opts]
+     * @param {boolean} [opts.idleMode] — game idle wander: skip input gate, activate immediately
      * @returns {Vec2|null}  target position, or null to stay still
      */
-    update: function (spider, spiderweb, thrownObjects, playerHasInput) {
+    update: function (spider, spiderweb, thrownObjects, playerHasInput, opts) {
+      opts = opts || {};
+      var idleMode = !!opts.idleMode;
 
       /* ── track player input ── */
-      if (playerHasInput) {
+      if (playerHasInput && !idleMode) {
         _lastInput  = 0;
         _idleFrames = 0;
         /* player took over — reset AI to pause so it doesn't fight */
@@ -152,7 +161,7 @@ export function createSpiderAI() {
       _idleFrames++;
 
       /* don't activate until player has been idle long enough */
-      if (_idleFrames < IDLE_BEFORE_AI) {
+      if (!idleMode && _idleFrames < IDLE_BEFORE_AI) {
         api.mood = 'calm';
         return null;
       }
@@ -214,10 +223,10 @@ export function createSpiderAI() {
           var dy2 = _aiTarget.y - spider.thorax.pos.y;
           var arrived = (dx2 * dx2 + dy2 * dy2) < 30 * 30;
           if (arrived || _stateTimer <= 0) {
-            nextRandomState(spiderweb);
+            nextRandomState(spiderweb, idleMode);
           }
         } else if (_stateTimer <= 0) {
-          nextRandomState(spiderweb);
+          nextRandomState(spiderweb, idleMode);
         }
       } else if (_state === 'EXPLORE') {
         if (_aiTarget && spider.thorax) {
@@ -225,14 +234,19 @@ export function createSpiderAI() {
           var ey = _aiTarget.y - spider.thorax.pos.y;
           var earrived = (ex * ex + ey * ey) < 40 * 40;
           if (earrived || _stateTimer <= 0) {
-            nextRandomState(spiderweb);
+            nextRandomState(spiderweb, idleMode);
           }
         } else if (_stateTimer <= 0) {
-          nextRandomState(spiderweb);
+          nextRandomState(spiderweb, idleMode);
         }
       } else if (_state === 'PAUSE') {
+        if (idleMode) {
+          enterState('WANDER', spiderweb);
+          api.mood = mood;
+          return _aiTarget;
+        }
         if (_stateTimer <= 0) {
-          nextRandomState(spiderweb);
+          nextRandomState(spiderweb, idleMode);
         }
         /* occasional mid-pause curiosity twitch: briefly look at a nearby spot */
         if (_stateTimer > 0 && _stateTimer % rnd(60, 90) === 0) {
@@ -247,7 +261,19 @@ export function createSpiderAI() {
     },
 
     /* allow main.js to read current state name for debug / HUD */
-    getState: function () { return _state; }
+    getState: function () { return _state; },
+
+    /** Reset state machine (e.g. on level start). */
+    reset: function (spiderweb) {
+      _state = 'WANDER';
+      _stateTimer = rnd(WANDER_DUR_MIN, WANDER_DUR_MAX);
+      _aiTarget = spiderweb ? pickRandomNode(spiderweb) : null;
+      _lastInput = 9999;
+      _idleFrames = IDLE_BEFORE_AI;
+      _startledCooldown = 0;
+      mood = 'calm';
+      api.mood = mood;
+    }
   };
 
   return api;
