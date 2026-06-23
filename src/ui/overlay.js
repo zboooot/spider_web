@@ -24,7 +24,7 @@ export function hideOverlay() {
 export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel, levelCollected) {
   if (gameState !== 'LEVEL_ACTIVE' && gameState !== 'LEVEL_INTRO') return;
   var cfg = getLevelCfgFn(currentLevel);
-  ['boulder', 'bug', 'drop'].forEach(function (k) {
+  ['boulder', 'bug'].forEach(function (k) {
     var el = document.getElementById('inv-' + k + '-count');
     if (el) {
       el.textContent = levelCollected[k] + '/' + cfg.targets[k];
@@ -47,7 +47,20 @@ export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel
 
 var _PREY_NAMES = { boulder: '毛毛虫!', bug: '苍蝇!', drop: '树叶!' };
 
-export function playCollectFX(sx, sy, collectLayer, kind) {
+export function playFloatingText(sx, sy, collectLayer, text) {
+  if (!text) return;
+  var pop = document.createElement('div');
+  pop.className = 'collect-score-pop';
+  if (text === 'Packed') pop.classList.add('collect-score-pop-packed');
+  pop.textContent = text;
+  pop.style.left = sx + 'px';
+  pop.style.top = (text === 'Packed' ? (sy - 26) : sy) + 'px';
+  pop.style.animation = 'collectScoreAnim 0.6s ease-out forwards';
+  collectLayer.appendChild(pop);
+  setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 650);
+}
+
+export function playCollectFX(sx, sy, collectLayer, kind, labelOverride) {
   var flash = document.createElement('div');
   flash.className = 'collect-flash';
   flash.style.left = sx + 'px';
@@ -56,15 +69,10 @@ export function playCollectFX(sx, sy, collectLayer, kind) {
   collectLayer.appendChild(flash);
   setTimeout(function () { if (flash.parentNode) flash.parentNode.removeChild(flash); }, 400);
 
-  var label = _PREY_NAMES[kind] || '';
+  var label = labelOverride === false
+    ? ''
+    : (typeof labelOverride === 'string' ? labelOverride : (kind === 'drop' ? '' : (_PREY_NAMES[kind] || '')));
   if (label) {
-    var pop = document.createElement('div');
-    pop.className = 'collect-silk-pop';
-    pop.textContent = label;
-    pop.style.left = sx + 'px';
-    pop.style.top = sy + 'px';
-    pop.style.animation = 'collectSilkAnim 0.6s ease-out forwards';
-    collectLayer.appendChild(pop);
-    setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 650);
+    playFloatingText(sx, sy, collectLayer, label);
   }
 }

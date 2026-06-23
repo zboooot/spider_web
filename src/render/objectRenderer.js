@@ -213,16 +213,21 @@ function getRenderedObjectBounds(obj) {
   return { width: def.r * 2, height: def.r * 2 };
 }
 
-function drawSilkSpiralLocal(ctx, obj, progress) {
+function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   if (!obj._silkSpiral || (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop')) return;
   var pts = obj._silkSpiral;
   var drawCount = Math.floor(progress * (pts.length - 1));
   if (drawCount < 1) return;
+  var glow = shimmer || 0;
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 1.5 + glow * 0.35;
+  ctx.strokeStyle = 'rgba(255,255,255,' + (0.92 + glow * 0.06).toFixed(3) + ')';
+  if (glow > 0) {
+    ctx.shadowBlur = 8 + glow * 8;
+    ctx.shadowColor = 'rgba(255,255,255,' + (0.18 + glow * 0.16).toFixed(3) + ')';
+  }
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
   for (var si = 1; si <= drawCount; si++) ctx.lineTo(pts[si].x, pts[si].y);
@@ -230,7 +235,7 @@ function drawSilkSpiralLocal(ctx, obj, progress) {
   var tip = pts[drawCount];
   ctx.beginPath();
   ctx.arc(tip.x, tip.y, 1.8, 0, 2 * Math.PI);
-  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.fillStyle = 'rgba(255,255,255,' + (1 - glow * 0.04).toFixed(3) + ')';
   ctx.fill();
   ctx.restore();
 }
@@ -552,6 +557,9 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
     if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder' || obj.kind === 'poop')) {
       var silkProgress = obj.state === 'wrapping' ? obj.wrapT : 1;
       if (silkProgress > 0) {
+        var silkShimmer = obj.state === 'wrapped'
+          ? (0.5 + 0.5 * Math.sin(obj.animT * 0.18 + (obj._popT || 0) * 0.1)) * 0.7
+          : 0;
         ctx.save();
         ctx.translate(px, py);
         ctx.globalAlpha = obj.alpha;
@@ -562,7 +570,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         }
         if (obj._drawScaleX !== 1 || obj._drawScaleY !== 1) ctx.scale(obj._drawScaleX, obj._drawScaleY);
         ctx.rotate(getRenderedObjectAngle(obj));
-        drawSilkSpiralLocal(ctx, obj, silkProgress);
+        drawSilkSpiralLocal(ctx, obj, silkProgress, silkShimmer);
         ctx.restore();
       }
     }
