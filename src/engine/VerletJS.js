@@ -21,10 +21,10 @@ export function VerletJS(width, height, canvas) {
   this.selectionRadius = 20;
   this.stubSelectionRadius = 44; /* stub 专用选中半径，适配移动端手指 */
   this.webTugRadius = 52;        /* 完整网线拖拽的选中线段半径 */
-  this.webTugStrength = 0.28;    /* 主节点拖拽跟随强度 */
+  this.webTugStrength = 0.36;    /* 主节点拖拽跟随强度 */
   this.webTugNeighborHops = 2;   /* 连带拉扯的跳数 */
-  this.webTugNeighborFalloff = 0.48; /* 每跳力度衰减 */
-  this.webTugSpreadRadius = 96;  /* 以指针为中心的影响半径 */
+  this.webTugNeighborFalloff = 0.54; /* 每跳力度衰减 */
+  this.webTugSpreadRadius = 110;  /* 以指针为中心的影响半径 */
   this.suppressClick = false;    /* stub 拖拽后抑制本次 click/tap */
   this.highlightColor = "#4f545c";
   this._dragPressX = 0;
@@ -188,10 +188,10 @@ function _findWebCompositeForParticle(sim, particle) {
 }
 
 function _applyWebTugPull(sim, primary, mx, my) {
-  var tug = sim.webTugStrength || 0.28;
-  var spreadR = sim.webTugSpreadRadius || 96;
+  var tug = sim.webTugStrength || 0.36;
+  var spreadR = sim.webTugSpreadRadius || 110;
   var maxHop = sim.webTugNeighborHops || 2;
-  var hopFalloff = sim.webTugNeighborFalloff || 0.48;
+  var hopFalloff = sim.webTugNeighborFalloff || 0.54;
   var webComp = _findWebCompositeForParticle(sim, primary);
 
   if (!webComp) {
@@ -216,7 +216,7 @@ function _applyWebTugPull(sim, primary, mx, my) {
     var dx = mx - pt.pos.x;
     var dy = my - pt.pos.y;
     var dist = Math.sqrt(dx * dx + dy * dy);
-    var distW = dist < spreadR ? 1 - dist / spreadR : 0.14;
+    var distW = dist < spreadR ? 1 - dist / spreadR : 0.2;
     var w = item.weight * distW;
     if (w < minWeight) continue;
 

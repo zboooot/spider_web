@@ -585,7 +585,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
 export function drawWrappingOverlay(ctx, thrownObjects) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi];
-    if (obj.state !== 'wrapping') continue;
+    if (obj.state !== 'wrapping' || obj.kind === 'drop') continue;
     var def = obj.def;
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     var wt = obj.wrapT;
@@ -610,5 +610,77 @@ export function drawWrappingOverlay(ctx, thrownObjects) {
     ctx.arc(px + Math.cos(tipAngle) * tr, py + Math.sin(tipAngle) * tr, 2.2, 0, 2 * Math.PI);
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.fill();
+  }
+}
+
+/* ── 叶子收集碎裂 ── */
+var _leafShards = [];
+var LEAF_SHARD_HOLD_FRAMES = 28; /* 碎裂后保持可见的帧数 */
+var LEAF_SHARD_FADE_FRAMES = 18; /* 随后淡出的帧数 */
+
+/* sx/sy/sw/sh: leaf.png 裁剪区（0~1）；ox/oy: 相对叶心的偏移（相对 leafW） */
+var LEAF_SHARD_CUTS = [
+  { sx: 0.02, sy: 0.02, sw: 0.46, sh: 0.44, ox: -0.24, oy: -0.26 },
+  { sx: 0.50, sy: 0.02, sw: 0.48, sh: 0.46, ox:  0.26, oy: -0.24 },
+  { sx: 0.02, sy: 0.46, sw: 0.48, sh: 0.52, ox: -0.22, oy:  0.26 },
+  { sx: 0.48, sy: 0.44, sw: 0.50, sh: 0.54, ox:  0.24, oy:  0.24 },
+  { sx: 0.30, sy: 0.28, sw: 0.40, sh: 0.36, ox:  0.02, oy:  0.02 }
+];
+
+export function spawnLeafShards(x, y, leafR, leafAngle, scatterAngle) {
+  if (!leafImg.complete || leafImg.naturalWidth <= 0) return;
+  var leafW = leafR * 6.08;
+  var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
+  var imgW = leafImg.naturalWidth;
+  var imgH = leafImg.naturalHeight;
+  for (var i = 0; i < LEAF_SHARD_CUTS.length; i++) {
+    var cut = LEAF_SHARD_CUTS[i];
+    var shardAng = scatterAngle + (i / LEAF_SHARD_CUTS.length) * Math.PI * 2 + (Math.random() - 0.5) * 0.55;
+    var spd = 1.1 + Math.random() * 1.5;
+    _leafShards.push({
+      x: x + cut.ox * leafW,
+      y: y + cut.oy * leafH,
+      t: 0,
+      vx: Math.cos(shardAng) * spd,
+      vy: Math.sin(shardAng) * spd * 0.38 + 0.22,
+      angle: leafAngle + (Math.random() - 0.5) * 0.5,
+      angVel: (Math.random() - 0.5) * 0.14,
+      w: cut.sw * leafW,
+      h: cut.sh * leafH,
+      sx: cut.sx * imgW,
+      sy: cut.sy * imgH,
+      sw: cut.sw * imgW,
+      sh: cut.sh * imgH
+    });
+  }
+}
+
+export function updateAndDrawLeafShards(ctx, dt) {
+  if (_leafShards.length === 0) return;
+  for (var i = _leafShards.length - 1; i >= 0; i--) {
+    var s = _leafShards[i];
+    s.vy += 0.12 * dt;
+    s.vx *= Math.pow(0.958, dt);
+    s.vy *= Math.pow(0.993, dt);
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.angle += s.angVel * dt;
+    s.angVel *= Math.pow(0.94, dt);
+    s.t += dt;
+    if (s.t >= LEAF_SHARD_HOLD_FRAMES + LEAF_SHARD_FADE_FRAMES) {
+      _leafShards.splice(i, 1);
+      continue;
+    }
+    var alpha = 1;
+    if (s.t > LEAF_SHARD_HOLD_FRAMES) {
+      alpha = 1 - (s.t - LEAF_SHARD_HOLD_FRAMES) / LEAF_SHARD_FADE_FRAMES;
+    }
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.angle);
+    ctx.drawImage(leafImg, s.sx, s.sy, s.sw, s.sh, -s.w * 0.5, -s.h * 0.5, s.w, s.h);
+    ctx.restore();
+    statsDc('image');
   }
 }

@@ -348,7 +348,7 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
     stayFrames: Math.round(P.leafReleaseSec * 60),
     gravity: Math.min(P.leafGravityMin, P.leafGravityMax) + Math.random() * Math.max(0, Math.abs(P.leafGravityMax - P.leafGravityMin)),
     maxSpeed: P.leafMaxSpeed,
-    wrapDur: 50
+    wrapDur: 40
   };
 }
 

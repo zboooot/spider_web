@@ -44,7 +44,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot, drawWrappingOverlay } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -2251,20 +2251,8 @@ window.onload = function () {
     var leafFxPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
     playCollectFX(leafFxPos.x, leafFxPos.y, collectLayer, obj.kind);
     var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
-    var _colors = ['#aaffaa', '#ffffaa', '#ffffff'];
-    for (var _pi = 0; _pi < 14; _pi++) {
-      var _ang = (_pi / 14) * Math.PI * 2 + Math.random() * 0.3;
-      var _spd = 1.8 + Math.random() * 2.8;
-      _burstParticles.push({
-        x: _bx, y: _by,
-        vx: Math.cos(_ang) * _spd,
-        vy: Math.sin(_ang) * _spd,
-        life: 1.0,
-        decay: 0.045 + Math.random() * 0.025,
-        r: 2.2 + Math.random() * 2.0,
-        color: _colors[Math.floor(Math.random() * _colors.length)]
-      });
-    }
+    var scatterAngle = Math.atan2(_by - spider.thorax.pos.y, _bx - spider.thorax.pos.x);
+    spawnLeafShards(_bx, _by, obj.def.r, obj.angle + (obj._wrapAngle || 0), scatterAngle);
     obj.destroy(sim);
     var idx = thrownObjects.indexOf(obj);
     if (idx !== -1) thrownObjects.splice(idx, 1);
@@ -3744,8 +3732,8 @@ window.onload = function () {
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
     drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈 */
 
-    /* 打包飞溅：绘制在猎物/蜘蛛/打包圈之上 */
-    if (!_isBulletTime && wrappingTarget) {
+    /* 打包飞溅：绘制在猎物/蜘蛛/打包圈之上（叶子收集不显示白色粒子） */
+    if (!_isBulletTime && wrappingTarget && wrappingTarget.kind !== 'drop') {
       _wrapSplashTimer -= timeScale;
       if (_wrapSplashTimer <= 0) {
         _wrapSplashTimer = _wrapSplashInterval;
@@ -3753,6 +3741,7 @@ window.onload = function () {
       }
     }
     updateAndDrawWrapSplashParticles(sim.ctx, timeScale);
+    updateAndDrawLeafShards(sim.ctx, timeScale);
 
     /* ── 补网修复进度圈 ── */
     if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {
