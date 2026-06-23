@@ -141,7 +141,7 @@ function _buildSpiralFromContour(contour, loops, stepsPerLoop) {
 }
 
 export function buildSilkSpiral(obj) {
-  if (obj.kind !== 'bug' && obj.kind !== 'boulder') return null;
+  if (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop') return null;
   var r = obj.def.r;
   var img, drawW, drawH;
   if (obj.kind === 'bug') {
@@ -150,21 +150,35 @@ export function buildSilkSpiral(obj) {
     drawW = flyImg.complete && flyImg.naturalWidth > 0
       ? drawH * (flyImg.naturalWidth / flyImg.naturalHeight)
       : drawH * 0.766;
-  } else {
+  } else if (obj.kind === 'boulder') {
     img = wormImg;
     drawW = r * 6.3;
     drawH = wormImg.complete && wormImg.naturalWidth > 0
       ? drawW * (wormImg.naturalHeight / wormImg.naturalWidth)
       : drawW * 1.509;
+  } else {
+    drawW = r * 2.6;
+    drawH = r * 3.0;
+    img = document.createElement('canvas');
+    img.width = Math.ceil(drawW);
+    img.height = Math.ceil(drawH);
+    var pc = img.getContext('2d');
+    pc.translate(img.width * 0.5, img.height * 0.5);
+    pc.beginPath();
+    pc.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
+    pc.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
+    pc.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
+    pc.fillStyle = '#000';
+    pc.fill();
   }
   var cacheKey = obj.kind + '_' + Math.round(r * 10);
   if (!_silkSpiralCache[cacheKey]) {
-    if (!img.complete || img.naturalWidth === 0) return null;
+    if (obj.kind !== 'poop' && (!img.complete || img.naturalWidth === 0)) return null;
     var contour = _smoothContour(_extractContour(img, drawW, drawH, 180));
     _silkSpiralCache[cacheKey] = contour;
   }
   var contour = _silkSpiralCache[cacheKey];
-  var loops = obj.kind === 'bug' ? 10 : 12;
+  var loops = obj.kind === 'bug' ? 10 : obj.kind === 'poop' ? 11 : 12;
   return _buildSpiralFromContour(contour, loops, 64);
 }
 
@@ -174,6 +188,7 @@ function getRenderedObjectAngle(obj) {
     return baseAngle + (obj._wrapAngle || 0) + Math.PI / 2;
   }
   if (obj.kind === 'bug') return obj.angle + Math.PI / 2 + (obj._wrapAngle || 0);
+  if (obj.kind === 'poop') return obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6;
   return obj.angle + (obj._wrapAngle || 0);
 }
 
@@ -199,7 +214,7 @@ function getRenderedObjectBounds(obj) {
 }
 
 function drawSilkSpiralLocal(ctx, obj, progress) {
-  if (!obj._silkSpiral || (obj.kind !== 'bug' && obj.kind !== 'boulder')) return;
+  if (!obj._silkSpiral || (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop')) return;
   var pts = obj._silkSpiral;
   var drawCount = Math.floor(progress * (pts.length - 1));
   if (drawCount < 1) return;
@@ -264,23 +279,23 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
     ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
     : 0.22;
   var r = def.r;
-  if (obj.cA && obj.cB && (obj.state === 'stuck' || obj.playerDragging)) {
-    var strain = obj.playerDragging ? (obj.dragStrain || 0) : 0;
+  var charge = obj._pickupCharge || 0;
+  if (obj.cA && obj.cB && obj.state === 'stuck') {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = obj.playerDragging
-      ? 'rgba(245,232,205,' + Math.min(0.96, 0.58 + strain * 0.22).toFixed(2) + ')'
+    ctx.strokeStyle = charge > 0
+      ? 'rgba(245,232,205,' + Math.min(0.96, 0.58 + charge * 0.22).toFixed(2) + ')'
       : 'rgba(25,18,14,0.55)';
-    ctx.lineWidth = obj.playerDragging ? (7.0 + strain * 4.6) : 3.2;
+    ctx.lineWidth = charge > 0 ? (7.0 + charge * 4.6) : 3.2;
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(obj.cA.b.pos.x - obj.particle.pos.x, obj.cA.b.pos.y - obj.particle.pos.y);
     ctx.moveTo(0, 0);
     ctx.lineTo(obj.cB.b.pos.x - obj.particle.pos.x, obj.cB.b.pos.y - obj.particle.pos.y);
     ctx.stroke();
-    if (obj.playerDragging) {
-      ctx.globalAlpha = 0.34 + Math.min(0.42, strain * 0.22);
+    if (charge > 0) {
+      ctx.globalAlpha = 0.34 + Math.min(0.42, charge * 0.22);
       ctx.lineWidth += 3.6;
       ctx.stroke();
     }
@@ -292,11 +307,6 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
   ctx.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
   ctx.fillStyle = 'rgba(' + Math.round(18 + pulse * 30) + ',' + Math.round(13 + pulse * 18) + ',' + Math.round(10 + pulse * 14) + ',0.96)';
   ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(-r * 0.12, r * 0.1, r * 1.05, r * 1.3, 0.08, 0, 2 * Math.PI);
-  ctx.strokeStyle = obj.playerDragging ? 'rgba(255,242,220,0.78)' : 'rgba(55,40,34,0.35)';
-  ctx.lineWidth = obj.playerDragging ? 3.8 : 1.6;
-  ctx.stroke();
   applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.9);
 }
 
@@ -539,7 +549,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
       statsDc('stroke');
     }
 
-    if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder')) {
+    if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder' || obj.kind === 'poop')) {
       var silkProgress = obj.state === 'wrapping' ? obj.wrapT : 1;
       if (silkProgress > 0) {
         ctx.save();

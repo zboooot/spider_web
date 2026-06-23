@@ -59,11 +59,11 @@ export function playCollectFX(sx, sy, collectLayer, kind) {
   var label = _PREY_NAMES[kind] || '';
   if (label) {
     var pop = document.createElement('div');
-    pop.className = 'collect-score-pop';
+    pop.className = 'collect-silk-pop';
     pop.textContent = label;
     pop.style.left = sx + 'px';
     pop.style.top = sy + 'px';
-    pop.style.animation = 'collectScoreAnim 0.6s ease-out forwards';
+    pop.style.animation = 'collectSilkAnim 0.6s ease-out forwards';
     collectLayer.appendChild(pop);
     setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 650);
   }

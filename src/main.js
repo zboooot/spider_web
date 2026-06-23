@@ -150,8 +150,10 @@ window.onload = function () {
   var STUCK_BREAK_THRESHOLD = 1.1;
   var STUCK_FORCE_THRESHOLD_BOULDER = 14;
   var STUCK_FORCE_THRESHOLD_BUG = 12;
+  var STUCK_FORCE_THRESHOLD_POOP = 6;
   var STUCK_OVERFORCE_BOULDER = 15;
   var STUCK_OVERFORCE_BUG = 12;
+  var STUCK_OVERFORCE_POOP = 7;
   var _pickupDrag = null;
   var _suppressMoveCommand = false;
 
@@ -166,6 +168,7 @@ window.onload = function () {
   function _getWrappedPickupRadius(obj) {
     if (obj.kind === 'boulder') return obj.def.r * 5.6;
     if (obj.kind === 'drop') return obj.def.r * 5.0;
+    if (obj.kind === 'poop') return obj.def.r * 2.2;
     return obj.def.r * 3.8;
   }
 
@@ -201,8 +204,8 @@ window.onload = function () {
     if (!hit) return false;
     _pickupDrag = {
       obj: hit.obj,
-      startX: hit.pos.x,
-      startY: hit.pos.y,
+      startX: hit.obj.particle.pos.x,
+      startY: hit.obj.particle.pos.y,
       pointerX: hit.pos.x,
       pointerY: hit.pos.y,
       gripDX: hit.pos.x - hit.obj.particle.pos.x,
@@ -211,6 +214,11 @@ window.onload = function () {
     };
     hit.obj._pickupTension = 0;
     hit.obj._pickupCharge = 0;
+    hit.obj.dragStrain = 0;
+    if (hit.obj.kind === 'poop') {
+      hit.obj.playerDragging = true;
+      _suppressPriorityClick = true;
+    }
     _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
@@ -231,6 +239,8 @@ window.onload = function () {
       if (_pickupDrag.obj) {
         _pickupDrag.obj._pickupTension = 0;
         _pickupDrag.obj._pickupCharge = 0;
+        _pickupDrag.obj.dragStrain = 0;
+        _pickupDrag.obj.playerDragging = false;
       }
       _suppressMoveCommand = true;
       _pickupDrag = null;
@@ -470,7 +480,7 @@ window.onload = function () {
         particle: lp, current: new Vec2(ip.x, ip.y), from: new Vec2(ip.x, ip.y),
         targetPos: new Vec2(ip.x, ip.y), targetStepPoint: null,
         landedNode: null, landedSeg: null, constraintA: null, constraintB: null,
-        stepping: false, t: 1, cooldown: idx * 6
+        stepping: false, t: 1, cooldown: idx * 6, needsEmergencyStep: false
       };
     });
     _spawnAnim.active = true;
@@ -550,8 +560,6 @@ window.onload = function () {
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
   var poopStunTimer = 0;
-  var _poopPointerDown = null;
-  var _draggingPoop = null;
   var _suppressPriorityClick = false;
   var WAVE_FALLING = 'WAVE_FALLING';
   var WAVE_PAUSE = 'WAVE_PAUSE';
@@ -684,25 +692,87 @@ window.onload = function () {
     return null;
   }
 
-  function pickPoopAt(x, y) {
-    for (var i = thrownObjects.length - 1; i >= 0; i--) {
-      var obj = thrownObjects[i];
-      if (!obj || obj.kind !== 'poop' || obj.state !== 'stuck') continue;
-      var r = obj.def ? obj.def.r * 2.2 : 18;
-      var dx = obj.particle.pos.x - x;
-      var dy = obj.particle.pos.y - y;
-      if (dx * dx + dy * dy <= r * r) return obj;
-    }
-    return null;
+  function _isWebAttachedState(state) {
+    return state === 'sticking'
+      || state === 'stuck'
+      || state === 'freeing'
+      || state === 'wrapping'
+      || state === 'wrapped';
   }
 
-  function clearPoopDragState() {
-    if (_draggingPoop && _draggingPoop.obj) {
-      _draggingPoop.obj.playerDragging = false;
-      _draggingPoop.obj.dragStrain = 0;
+  function _isWebConstraintAlive(c) {
+    if (!c) return false;
+    if (c.__webId && spatialIndex && typeof spatialIndex.isAliveId === 'function') {
+      return spatialIndex.isAliveId(c.__webId);
     }
-    _draggingPoop = null;
-    _poopPointerDown = null;
+    return !!spiderweb && spiderweb.constraints.indexOf(c) !== -1;
+  }
+
+  function _isSpiderFootNodeAlive(node) {
+    if (!node || !node.pos || !spiderweb) return false;
+    for (var wi = 0; wi < spiderweb.constraints.length; wi++) {
+      var wc = spiderweb.constraints[wi];
+      if (!(wc instanceof DistanceConstraint)) continue;
+      if (!_constraintAlive(wc)) continue;
+      if (wc.a === node || wc.b === node) return true;
+    }
+    return false;
+  }
+
+  function _isSpiderFootSegmentAlive(sp) {
+    if (!sp || !sp.pa || !sp.pb || !sp.pa.pos || !sp.pb.pos || !spiderweb) return false;
+    for (var wi = 0; wi < spiderweb.constraints.length; wi++) {
+      var wc = spiderweb.constraints[wi];
+      if (!(wc instanceof DistanceConstraint)) continue;
+      if (!_constraintAlive(wc)) continue;
+      if ((wc.a === sp.pa && wc.b === sp.pb) || (wc.a === sp.pb && wc.b === sp.pa)) return true;
+    }
+    return false;
+  }
+
+  function _invalidateSpiderFoot(fs) {
+    if (!fs) return;
+    if (wrappingTarget) cancelWrappingDueToSupportLoss();
+    liftFoot(fs, spider);
+    fs.cooldown = 0;
+    fs.needsEmergencyStep = true;
+  }
+
+  function _detachObjectFromBrokenWeb(obj) {
+    if (!obj || !_isWebAttachedState(obj.state) || !obj.particle) return false;
+    if (!obj.stuckOnConstraint && !obj.cA && !obj.cB) return false;
+    var p = obj.particle;
+    var currentVx = p.pos.x - p.lastPos.x;
+    var currentVy = p.pos.y - p.lastPos.y;
+    var detachKick = obj.kind === 'boulder'
+      ? obj.def.weight * 0.405
+      : obj.def.weight * 0.45;
+
+    clearObjectConstraints(obj);
+    obj.stuckOnConstraint = null;
+    obj.state = 'falling2';
+    obj.freeTimer = 0;
+    obj.stayTimer = 0;
+    obj.stickT = 0;
+    obj.playerDragging = false;
+    obj.dragStrain = 0;
+    obj._pickupTension = 0;
+    obj._pickupCharge = 0;
+    p._noSimDrag = false;
+
+    if (_pickupDrag && _pickupDrag.obj === obj) {
+      _pickupDrag = null;
+      sim.draggedEntity = null;
+      obj.dragStrain = 0;
+    }
+
+    if (obj.kind === 'drop' || obj.kind === 'poop') {
+      obj.vx = currentVx;
+      obj.vy = currentVy + detachKick;
+    }
+    p.lastPos.x = p.pos.x - currentVx;
+    p.lastPos.y = p.pos.y - (currentVy + detachKick);
+    return true;
   }
 
   function spawnPoopBurst(x, y) {
@@ -777,79 +847,6 @@ window.onload = function () {
     pauseAndClearCurrentTarget();
   }
 
-  function beginPoopPointer(clientX, clientY) {
-    if (sim.draggedEntity && sim.draggedEntity.__isStub) return; /* stub 优先 */
-    var p = _getCanvasPos(clientX, clientY);
-    var poop = pickPoopAt(p.x, p.y);
-    if (!poop) return;
-    _poopPointerDown = {
-      obj: poop,
-      startX: p.x,
-      startY: p.y,
-      objStartX: poop.particle.pos.x,
-      objStartY: poop.particle.pos.y,
-      active: true
-    };
-  }
-
-  function updatePoopPointer(clientX, clientY) {
-    if (!_poopPointerDown || !_poopPointerDown.active) return;
-    if (thrownObjects.indexOf(_poopPointerDown.obj) === -1 || _poopPointerDown.obj.state !== 'stuck') {
-      clearPoopDragState();
-      return;
-    }
-    var p = _getCanvasPos(clientX, clientY);
-    var dx = p.x - _poopPointerDown.startX;
-    var dy = p.y - _poopPointerDown.startY;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (!_draggingPoop && dist >= 10) {
-      _draggingPoop = {
-        obj: _poopPointerDown.obj,
-        startX: _poopPointerDown.objStartX,
-        startY: _poopPointerDown.objStartY,
-        targetX: _poopPointerDown.objStartX,
-        targetY: _poopPointerDown.objStartY,
-        lastDx: dx,
-        lastDy: dy,
-        holdFrames: 0
-      };
-      _draggingPoop.obj.playerDragging = true;
-      _suppressPriorityClick = true;
-      if (sim.draggedEntity) sim.draggedEntity = null;
-    }
-    if (!_draggingPoop) return;
-    var resistance = _draggingPoop.obj.def.dragResistance || 0.42;
-    _draggingPoop.targetX = _draggingPoop.startX + dx * resistance;
-    _draggingPoop.targetY = _draggingPoop.startY + dy * resistance;
-    _draggingPoop.lastDx = dx;
-    _draggingPoop.lastDy = dy;
-    var peelThreshold = Math.max(1, _draggingPoop.obj.def.peelThreshold);
-    var overThreshold = dist >= peelThreshold;
-    if (overThreshold) _draggingPoop.holdFrames += _currentTimeScale;
-    else _draggingPoop.holdFrames = 0;
-    var holdNeed = Math.max(1, _draggingPoop.obj.def.peelHoldFrames || 60);
-    var holdRatio = Math.min(1, _draggingPoop.holdFrames / holdNeed);
-    _draggingPoop.obj.dragStrain = Math.min(1.45, dist / peelThreshold + holdRatio * 0.45);
-    var peelDx = p.x - _draggingPoop.startX;
-    var peelDy = p.y - _draggingPoop.startY;
-    if (overThreshold && _draggingPoop.holdFrames >= holdNeed) {
-      _draggingPoop.obj.peelOff(peelDx, peelDy);
-      _draggingPoop = null;
-      _poopPointerDown = null;
-    }
-  }
-
-  function endPoopPointer() {
-    if (_draggingPoop && _draggingPoop.obj) {
-      _draggingPoop.obj.playerDragging = false;
-      _draggingPoop.obj.dragStrain = 0;
-      _draggingPoop = null;
-      _poopPointerDown = null;
-      return;
-    }
-    _poopPointerDown = null;
-  }
-
   function setPriorityTarget(x, y) {
     var picked = pickObjectAt(x, y);
     if (picked) {
@@ -887,58 +884,45 @@ window.onload = function () {
   }
 
   /* click to move (desktop) */
-  canvas.addEventListener('mousedown', function (e) {
-    beginPoopPointer(e.clientX, e.clientY);
-  });
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick || sim.suppressClick) {
+    if (_suppressPriorityClick || sim.suppressClick || _touchWasSwipe || _pointerMoved) {
       _suppressPriorityClick = false;
       sim.suppressClick = false;
+      _touchWasSwipe = false;
       return;
     }
     setPriorityTargetFromClient(e.clientX, e.clientY);
   });
-  window.addEventListener('mousemove', function (e) {
-    updatePoopPointer(e.clientX, e.clientY);
-  });
-  window.addEventListener('mouseup', function () {
-    endPoopPointer();
-  });
-
   /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
   screenShellEl.addEventListener('click', function (e) {
     if (e.target === canvas) return;
     if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay')) return;
+    if (_touchWasSwipe || _pointerMoved) { _touchWasSwipe = false; return; }
     setPriorityTargetFromClient(e.clientX, e.clientY);
   });
 
   /* tap to move (iOS / mobile) — touchend with no drag */
   var _touchStartX = 0, _touchStartY = 0;
+  var _touchWasSwipe = false;
   canvas.addEventListener('touchstart', function (e) {
     if (e.touches.length === 1) {
       _touchStartX = e.touches[0].clientX;
       _touchStartY = e.touches[0].clientY;
-      beginPoopPointer(_touchStartX, _touchStartY);
+      _touchWasSwipe = false;
     }
   }, { passive: true });
   canvas.addEventListener('touchend', function (e) {
     if (e.changedTouches.length === 1) {
       var t = e.changedTouches[0];
-      var ddx = t.clientX - _touchStartX;
-      var ddy = t.clientY - _touchStartY;
-      if (!_suppressPriorityClick && !sim.suppressClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+      var isTap = !_pointerMoved;
+      _touchWasSwipe = !isTap;
+      if (!_suppressPriorityClick && !sim.suppressClick && isTap) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
       sim.suppressClick = false;
     }
-    endPoopPointer();
-  }, { passive: true });
-  window.addEventListener('touchmove', function (e) {
-    if (e.touches.length > 0) updatePoopPointer(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  window.addEventListener('touchend', function () {
     endPoopPointer();
   }, { passive: true });
 
@@ -966,7 +950,7 @@ window.onload = function () {
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
-    clearPoopDragState();
+    _endWrappedPickup();
     silkCount = 0;
     refreshSilkHUD();
     totalSilkCount = 0;
@@ -1000,7 +984,7 @@ window.onload = function () {
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
-    clearPoopDragState();
+    _endWrappedPickup();
     currentLevelIndex = n;
     currentWaveIndex = 0;
     currentWavePhase = WAVE_FALLING;
@@ -1184,9 +1168,16 @@ window.onload = function () {
     }
   }
 
-  function _onWebSegmentBroken(c) {
+  function _onWebSegmentBroken(c, opts) {
     if (!c) return;
+    if (c.__mainTrunk) return;
     if (c.__webId) spatialIndex.removeConstraint(c.__webId);
+    for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
+      var obj = thrownObjects[oi];
+      if (!obj || obj === (opts && opts.sourceObj)) continue;
+      if (obj.stuckOnConstraint !== c) continue;
+      _detachObjectFromBrokenWeb(obj);
+    }
     webScanPending = 12;
   }
 
@@ -1597,7 +1588,7 @@ window.onload = function () {
     wrappingTarget = null;
     autoChaseTarget = null;
     clearPriorityTarget();
-    clearPoopDragState();
+    _endWrappedPickup();
     audioEngine.stopAllBugBuzz();
     thrownObjects.forEach(function (o) {
       if (o.collectEl && o.collectEl.parentNode) o.collectEl.parentNode.removeChild(o.collectEl);
@@ -1664,8 +1655,6 @@ window.onload = function () {
     obj.particle.lastPos.x = obj.particle.pos.x;
     obj.particle.lastPos.y = obj.particle.pos.y;
     sim.draggedEntity = null;
-    var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
-    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind);
   }
 
   function beginCollectObject(obj) {
@@ -1732,8 +1721,24 @@ window.onload = function () {
     obj._silkSpiral = buildSilkSpiral(obj);
   }
 
+  function cancelWrappingDueToSupportLoss() {
+    var obj = wrappingTarget;
+    if (!obj) return;
+    wrappingTarget = null;
+    pauseAndClearCurrentTarget();
+    if (obj.state !== 'wrapping') return;
+    obj.state = 'stuck';
+    obj.wrapT = 0;
+    obj.particle._noSimDrag = false;
+    obj.particle.lastPos.mutableSet(obj.particle.pos);
+    obj._silkLines = null;
+  }
+
   function tryCollectObjects() {
     if (wrappingTarget !== null || poopStunTimer > 0) return;
+    for (var fi = 0; fi < footState.length; fi++) {
+      if (footState[fi] && footState[fi].needsEmergencyStep) return;
+    }
     var priorityObj = getActivePriorityObject();
     if (userPriorityTarget) {
       if (userPriorityTarget.type === 'point') return;
@@ -1776,6 +1781,10 @@ window.onload = function () {
       var obj = thrownObjects[oi];
       if (!obj || !obj.def) continue;
       var def = obj.def, p = obj.particle;
+
+      if (_isWebAttachedState(obj.state) && obj.stuckOnConstraint && !_isWebConstraintAlive(obj.stuckOnConstraint)) {
+        _detachObjectFromBrokenWeb(obj);
+      }
 
       if (obj.state === 'falling') {
         if (obj.kind === 'boulder' || obj.kind === 'poop') {
@@ -1877,20 +1886,13 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'stuck') {
-        if (obj.playerDragging && _draggingPoop && _draggingPoop.obj === obj) {
-          p.pos.x = _draggingPoop.targetX;
-          p.pos.y = _draggingPoop.targetY;
-          p.lastPos.x = p.pos.x;
-          p.lastPos.y = p.pos.y;
-          continue;
-        }
         if (_pickupDrag && _pickupDrag.obj === obj) {
           var sTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
           var sTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
           var sPullDx = sTargetGripX - p.pos.x;
           var sPullDy = sTargetGripY - p.pos.y;
           var sAppliedForce = Math.sqrt(sPullDx * sPullDx + sPullDy * sPullDy) * PICKUP_PULL_STRENGTH / Math.max(1, obj.def.r);
-          var sForceThresh = obj.kind === 'boulder' ? STUCK_FORCE_THRESHOLD_BOULDER : STUCK_FORCE_THRESHOLD_BUG;
+          var sForceThresh = obj.kind === 'boulder' ? STUCK_FORCE_THRESHOLD_BOULDER : obj.kind === 'poop' ? STUCK_FORCE_THRESHOLD_POOP : STUCK_FORCE_THRESHOLD_BUG;
           p.pos.x += sPullDx * PICKUP_PULL_STRENGTH;
           p.pos.y += sPullDy * PICKUP_PULL_STRENGTH;
           obj._pickupPullAngle = Math.atan2(sPullDy, sPullDx);
@@ -1900,24 +1902,37 @@ window.onload = function () {
           var sTension = sTensionA + sTensionB;
           obj._pickupTension = sTension;
           obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
-          var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : STUCK_OVERFORCE_BUG;
+          var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : obj.kind === 'poop' ? STUCK_OVERFORCE_POOP : STUCK_OVERFORCE_BUG;
           if (sAppliedForce >= sOverForce) {
             _pickupDrag = null;
             sim.draggedEntity = null;
             obj._pickupTension = 0; obj._pickupCharge = 0;
-            obj.state = 'freeing'; obj.freeTimer = 0;
+            if (obj.kind === 'poop') {
+              obj.peelOff(sPullDx, sPullDy);
+            } else {
+              obj.state = 'freeing'; obj.freeTimer = 0;
+            }
             continue;
           } else if (sAppliedForce >= sForceThresh) {
             if (sTension >= STUCK_PLUCK_THRESHOLD) {
               _pickupDrag = null;
               sim.draggedEntity = null;
-              beginPlucking(obj);
+              if (obj.kind === 'poop') {
+                obj._pickupTension = 0; obj._pickupCharge = 0;
+                obj.peelOff(sPullDx, sPullDy);
+              } else {
+                beginPlucking(obj);
+              }
               continue;
             } else if (sTension >= STUCK_BREAK_THRESHOLD) {
               _pickupDrag = null;
               sim.draggedEntity = null;
               obj._pickupTension = 0; obj._pickupCharge = 0;
-              obj.state = 'freeing'; obj.freeTimer = 0;
+              if (obj.kind === 'poop') {
+                obj.peelOff(sPullDx, sPullDy);
+              } else {
+                obj.state = 'freeing'; obj.freeTimer = 0;
+              }
               continue;
             }
           }
@@ -2003,7 +2018,7 @@ window.onload = function () {
           var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
           obj.vx *= peelDragScale;
           obj.vy *= peelDragScale;
-          obj.vy += obj.grav * 0.08 * _currentTimeScale;
+          obj.vy += obj.grav * 0.34 * _currentTimeScale;
           p.pos.x += obj.vx * _currentTimeScale;
           p.pos.y += obj.vy * _currentTimeScale;
         } else {
@@ -2029,9 +2044,9 @@ window.onload = function () {
           audioEngine.playCollectSound(obj.kind);
         }
 
-      } else if (obj.state === 'wrapped') {
-        if (obj._popT <= obj._popDur) obj._popT++;
-        if (_pickupDrag && _pickupDrag.obj === obj) {
+        } else if (obj.state === 'wrapped') {
+          if (obj._popT <= obj._popDur) obj._popT++;
+          if (_pickupDrag && _pickupDrag.obj === obj) {
           var targetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
           var targetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
           var pullDx = targetGripX - p.pos.x;
@@ -2050,13 +2065,21 @@ window.onload = function () {
             var anchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a;
             tensionB = Math.max(0, p.pos.dist(anchorB.pos) / Math.max(1, obj.cB.distance) - 1);
           }
-          obj._pickupTension = tensionA + tensionB;
-          obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
-          if (obj._pickupTension >= PICKUP_TENSION_THRESHOLD && appliedPullForce >= _getPickupForceThreshold(obj)) {
-            beginPlucking(obj);
-            continue;
-          }
-        } else {
+            obj._pickupTension = tensionA + tensionB;
+            obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+            if (obj._pickupTension >= PICKUP_TENSION_THRESHOLD && appliedPullForce >= _getPickupForceThreshold(obj)) {
+              if (obj.kind === 'poop') {
+                _pickupDrag = null;
+                sim.draggedEntity = null;
+                obj._pickupTension = 0;
+                obj._pickupCharge = 0;
+                obj.peelOff(pullDx, pullDy);
+              } else {
+                beginPlucking(obj);
+              }
+              continue;
+            }
+          } else {
           obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
           obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
         }
@@ -2207,9 +2230,14 @@ window.onload = function () {
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       if (!fs || !fs.particle) continue;
-      /* 只钉住位置，保留 lastPos 以维持脚端 Verlet 速度，腿链才能甩起来 */
-      fs.particle.pos.x = fs.current.x;
-      fs.particle.pos.y = fs.current.y;
+      /* 只有落脚/迈步中才钉脚；失去支撑后让脚端跟随腿链自由回收，避免被钉在空中拉长 */
+      if (fs.stepping || fs.landedNode || fs.landedSeg) {
+        fs.particle.pos.x = fs.current.x;
+        fs.particle.pos.y = fs.current.y;
+      } else {
+        fs.current.x = fs.particle.pos.x;
+        fs.current.y = fs.particle.pos.y;
+      }
     }
   }
 
@@ -2223,6 +2251,12 @@ window.onload = function () {
       var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
       var ps = partner && partner.stepping;
       if (ps) continue;
+      if (fs.needsEmergencyStep) {
+        if (target) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, spatialOpts);
+        else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, true, spatialOpts);
+        if (fs.stepping) fs.needsEmergencyStep = false;
+        continue;
+      }
       if (target && drift2 > STEP_THRESH * STEP_THRESH) {
         triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, spatialOpts);
       } else if (!target && drift2 > REST_THRESH * REST_THRESH) {
@@ -2803,19 +2837,19 @@ window.onload = function () {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
           fs.particle.pos.mutableSet(fs.current);
           fs.stepping = false;
-          landFoot(fs, spider);
+          landFoot(fs, spider, spiderweb, footState);
         }
       } else {
         if (fs.landedNode) {
-          if (fs.landedNode.pos) {
+          if (_isSpiderFootNodeAlive(fs.landedNode)) {
             fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y;
-          } else fs.landedNode = null;
+          } else _invalidateSpiderFoot(fs);
         } else if (fs.landedSeg) {
           var sp = fs.landedSeg;
-          if (sp.pa && sp.pb && sp.pa.pos && sp.pb.pos) {
+          if (_isSpiderFootSegmentAlive(sp)) {
             fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t;
             fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t;
-          } else fs.landedSeg = null;
+          } else _invalidateSpiderFoot(fs);
         }
         if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
       }

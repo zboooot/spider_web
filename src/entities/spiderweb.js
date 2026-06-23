@@ -72,6 +72,7 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
       stiffness * radialStiffnessMul
     );
     rc.isRadial = true;
+    rc.__mainTrunk = (i % segments) % pinStep === 0;
     /* 当前粒子所在圈层（0=最外圈，effectiveDepth-1=最内有效圈），归一化到 0~1 */
     rc._ringDepth = Math.floor(i / segments) / Math.max(1, effectiveDepth - 1);
     comp.constraints.push(rc);
@@ -79,6 +80,7 @@ export function createSpiderweb(sim, origin, radius, segments, depth, stiffness,
   /* 最内圈最后一个粒子的径向线补上 */
   var hubLink = new DistanceConstraint(comp.particles[n - 1], hub, stiffness * radialStiffnessMul);
   hubLink.isRadial = true;
+  hubLink.__mainTrunk = ((n - 1) % segments) % pinStep === 0;
   hubLink._ringDepth = 1;
   comp.constraints.push(hubLink);
 

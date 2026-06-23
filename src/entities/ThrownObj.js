@@ -192,6 +192,19 @@ export function collapseChain(stub, spiderweb, spatialIndex) {
      * outgoing == 0 → 死端，链脱网
      */
     var edges = getEdges(current);
+    var touchesMainTrunk = false;
+    for (var ti = 0; ti < edges.length; ti++) {
+      if (edges[ti].__mainTrunk) { touchesMainTrunk = true; break; }
+    }
+    if (touchesMainTrunk) {
+      for (var di = 0; di < chainEdges.length; di++) removeEdge(chainEdges[di]);
+      for (var pi = 0; pi < chainNodes.length; pi++) removePt(chainNodes[pi]);
+      if (stubEdge.a === stub) stubEdge.b = current;
+      else stubEdge.a = current;
+      var trunkDx = stub.pos.x - current.pos.x, trunkDy = stub.pos.y - current.pos.y;
+      stubEdge.distance = Math.sqrt(trunkDx * trunkDx + trunkDy * trunkDy) || 1;
+      return;
+    }
     var outgoing = 0;
     for (var oi = 0; oi < edges.length; oi++) {
       if (edges[oi].__isStubAnchor) continue;
@@ -295,6 +308,7 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
 
         /* 删边（bitmap 模式下标记死亡） */
         var edgeToRemove = spiderweb.constraints[edgeIdx];
+        if (edgeToRemove.__mainTrunk) break;
         if (spatialIndex && edgeToRemove.__webId) {
           spatialIndex.removeConstraint(edgeToRemove.__webId);
         } else {
@@ -332,11 +346,7 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
     r: 20, collectRadius: 17, weight: P.caterpillarWeight,
     stayFrames: Infinity,
     gravity: P.caterpillarGravity, wrapDur: 120,
-    peelThreshold: 68,
-    peelHoldFrames: 60,
-    peelDrag: 0.985,
-    dragResistance: 0.88,
-    dragFollow: 1.0
+    peelDrag: 0.962
   };
   return {
     r: 14, collectRadius: 12, weight: P.leafWeight,
@@ -523,27 +533,29 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
 
   if (this.stuckOnConstraint) {
     var bc = this.stuckOnConstraint;
-    if (this.kind === 'bug') {
+    if (this.kind === 'bug' && !bc.__mainTrunk) {
       var nearBc = findNearestWebSegment(p.pos.x, p.pos.y, spiderweb, spatialOpts, bc);
       if (nearBc) bc = nearBc;
     }
-    if (this.kind !== 'drop') {
-      webBreakFlashes.push({
-        ax: bc.a.pos.x, ay: bc.a.pos.y,
-        bx: bc.b.pos.x, by: bc.b.pos.y,
-        t: _breakFrame
-      });
-    }
-    if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false } : null);
-    if (useBitmap) {
-      if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
-    } else {
-      var wi = spiderweb.constraints.indexOf(bc);
-      if (wi !== -1) spiderweb.constraints.splice(wi, 1);
-    }
+    if (!bc.__mainTrunk) {
+      if (this.kind !== 'drop') {
+        webBreakFlashes.push({
+          ax: bc.a.pos.x, ay: bc.a.pos.y,
+          bx: bc.b.pos.x, by: bc.b.pos.y,
+          t: _breakFrame
+        });
+      }
+      if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false, sourceObj: this } : { sourceObj: this });
+      if (useBitmap) {
+        if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
+      } else {
+        var wi = spiderweb.constraints.indexOf(bc);
+        if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+      }
 
-    /* 记录断裂边信息，创建断线头 */
-    createBreakStubs([{ a: bc.a, b: bc.b, distance: bc.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
+      /* 记录断裂边信息，创建断线头 */
+      createBreakStubs([{ a: bc.a, b: bc.b, distance: bc.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
+    }
     this.stuckOnConstraint = null;
   }
 
@@ -558,6 +570,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         var c = cs[bi];
         if (!(c instanceof DistanceConstraint)) continue;
         if (c.__webGlobal) continue;
+        if (c.__mainTrunk) continue;
         if (!c.__webId || !idx.isAliveId(c.__webId)) continue;
         var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
         var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
@@ -565,7 +578,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         if (keep) continue;
         boulderBroken.push({ a: c.a, b: c.b, distance: c.distance });
         idx.removeConstraint(c.__webId);
-        if (onBreakSegment) onBreakSegment(c, { skipDirty: true });
+        if (onBreakSegment) onBreakSegment(c, { skipDirty: true, sourceObj: this });
         webBreakFlashes.push({
           ax: c.a.pos.x, ay: c.a.pos.y,
           bx: c.b.pos.x, by: c.b.pos.y,
@@ -578,6 +591,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     } else {
       spiderweb.constraints = spiderweb.constraints.filter(function (c) {
         if (!(c instanceof DistanceConstraint)) return true;
+        if (c.__mainTrunk) return true;
         var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
         var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
         var keep = (ax * ax + ay * ay > breakR2) || (bx2 * bx2 + by2 * by2 > breakR2);
@@ -585,7 +599,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         return keep;
       });
       for (var ri = 0; ri < boulderBroken.length; ri++) {
-        if (onBreakSegment) onBreakSegment(boulderBroken[ri]);
+        if (onBreakSegment) onBreakSegment(boulderBroken[ri], { sourceObj: this });
         webBreakFlashes.push({
           ax: boulderBroken[ri].a.pos.x, ay: boulderBroken[ri].a.pos.y,
           bx: boulderBroken[ri].b.pos.x, by: boulderBroken[ri].b.pos.y,
@@ -655,9 +669,10 @@ ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
   this.state = 'falling2';
   this.alpha = 1;
   var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
-  var speed = 6.8;
-  this.peelVx = (dragDx / len) * speed;
-  this.peelVy = (dragDy / len) * speed;
+  var dirX = dragDx / len;
+  var dirY = dragDy / len;
+  this.peelVx = dirX * 2.1;
+  this.peelVy = Math.min(0.5, dirY * 0.9) - 0.75;
   this.vx = this.peelVx;
   this.vy = this.peelVy;
   p.lastPos.x = p.pos.x - this.peelVx;

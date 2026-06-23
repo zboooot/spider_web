@@ -12,6 +12,11 @@ var _n = 0;
 
 var _DEFAULT_STROKE = 'rgba(230,230,230,0.55)';
 var _DEFAULT_WIDTH = 1.6;
+var _TRUNK_WIDTH = 3.2;
+
+function _baseWidthForConstraint(c) {
+  return c && c.__mainTrunk ? _TRUNK_WIDTH : _DEFAULT_WIDTH;
+}
 
 function _aliveWebSeg(c) {
   return c instanceof DistanceConstraint && isWebConstraintAlive(c, spatialIndex);
@@ -86,11 +91,11 @@ function _drawWebParticles(ctx, comp) {
 
 function _drawCalmSegments(ctx, comp, n) {
   ctx.strokeStyle = _DEFAULT_STROKE;
-  ctx.lineWidth = _DEFAULT_WIDTH;
   for (var i = 0; i < n; i++) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
+      ctx.lineWidth = _baseWidthForConstraint(c);
       ctx.beginPath();
       ctx.moveTo(c.a.pos.x, c.a.pos.y);
       ctx.lineTo(c.b.pos.x, c.b.pos.y);
@@ -191,7 +196,7 @@ function _drawDangerSegments(ctx, comp, n, now) {
           } else {
             strokeR = 230; strokeG = 230; strokeB = 230; strokeA = 0.55;
           }
-          strokeW = 1.6;
+          strokeW = _baseWidthForConstraint(c);
         } else if (isDirect) {
           var flashHz = 1 + d * 7;
           var phase = (now / 1000 * flashHz) % 1;
@@ -200,19 +205,19 @@ function _drawDangerSegments(ctx, comp, n, now) {
           strokeG = Math.round(230 * (1 - d * 0.92));
           strokeB = Math.round(230 * (1 - d));
           strokeA = 0.4 + blink * (0.55 + d * 0.45);
-          strokeW = 1.6 + d * 5.0 + blink * d * 2.4;
+          strokeW = _baseWidthForConstraint(c) + d * 5.0 + blink * d * 2.4;
         } else {
           strokeR = Math.round(230 + 25 * d);
           strokeG = Math.round(230 * (1 - d * 0.92));
           strokeB = Math.round(230 * (1 - d));
           strokeA = 0.3 + d * 0.5;
-          strokeW = 1.6 + d * 3.0;
+          strokeW = _baseWidthForConstraint(c) + d * 3.0;
         }
         ctx.strokeStyle = 'rgba(' + strokeR + ',' + strokeG + ',' + strokeB + ',' + strokeA + ')';
         ctx.lineWidth = strokeW;
       } else {
         ctx.strokeStyle = _DEFAULT_STROKE;
-        ctx.lineWidth = _DEFAULT_WIDTH;
+        ctx.lineWidth = _baseWidthForConstraint(c);
       }
       ctx.stroke();
       statsDc('line');
@@ -302,7 +307,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         var danger = 0;
         if (obj.state === 'freeing') danger = 1;
         else if (obj.stayTimer > ramp) danger = 1;
-        else if (obj.state === 'stuck' && (obj._pickupTension || 0) > 0.08) danger = 1;
+        else if (obj.kind !== 'poop' && obj.state === 'stuck' && (obj._pickupTension || 0) > 0.08) danger = 1;
         if (danger > 0) _dangerRaw[ci2] = 1;
       }
       _applyDangerBfs(comp, n);
