@@ -47,17 +47,24 @@ export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel
 
 var _PREY_NAMES = { boulder: '毛毛虫!', bug: '苍蝇!', drop: '树叶!' };
 
-export function playFloatingText(sx, sy, collectLayer, text) {
+export function playFloatingText(sx, sy, collectLayer, text, styleKind) {
   if (!text) return;
   var pop = document.createElement('div');
   pop.className = 'collect-score-pop';
   if (text === 'Packed') pop.classList.add('collect-score-pop-packed');
+  if (styleKind === 'repair') pop.classList.add('collect-score-pop-repair');
   pop.textContent = text;
   pop.style.left = sx + 'px';
-  pop.style.top = (text === 'Packed' ? (sy - 26) : sy) + 'px';
-  pop.style.animation = 'collectScoreAnim 0.6s ease-out forwards';
+  if (styleKind === 'repair') {
+    pop.style.top = (sy - 10) + 'px';
+    pop.style.animation = 'collectScoreRepairAnim 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards';
+  } else {
+    pop.style.top = (text === 'Packed' ? (sy - 26) : sy) + 'px';
+    pop.style.animation = 'collectScoreAnim 0.6s ease-out forwards';
+  }
   collectLayer.appendChild(pop);
-  setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, 650);
+  var ttl = styleKind === 'repair' ? 900 : 650;
+  setTimeout(function () { if (pop.parentNode) pop.parentNode.removeChild(pop); }, ttl);
 }
 
 export function playCollectFX(sx, sy, collectLayer, kind, labelOverride) {

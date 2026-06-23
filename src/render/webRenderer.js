@@ -105,10 +105,19 @@ function _applyFlash(ctx, c) {
   var ft = c.__flashT;
   if (ft == null || ft >= 1) return false;
   var et = 1 - (1 - ft) * (1 - ft); /* ease-out */
-  /* white(255,255,255) → default(230,230,230,0.55) */
-  var a = 1.0 - et * 0.45;  /* 1.0 → 0.55 */
-  var w = 3.0 - et * 1.4;   /* 3.0 → 1.6 */
-  ctx.strokeStyle = 'rgba(255,255,255,' + a.toFixed(2) + ')';
+  var isRepair = !!c.__isRepairEdge;
+  var a, w;
+  if (isRepair) {
+    /* 新补网线：更亮，缓慢渐隐回默认 */
+    a = 1.0 - et * 0.45;
+    w = 4.4 - et * 2.8;
+    ctx.strokeStyle = 'rgba(235,248,255,' + a.toFixed(2) + ')';
+    _setGlow(ctx, 210, 235, 255, a * 0.42, 6 + (1 - et) * 7);
+  } else {
+    a = 1.0 - et * 0.45;
+    w = 3.0 - et * 1.4;
+    ctx.strokeStyle = 'rgba(255,255,255,' + a.toFixed(2) + ')';
+  }
   ctx.lineWidth = w;
   c.__flashT = Math.min(1, ft + 1 / (c.__flashDur || 30));
   return true;
@@ -121,10 +130,11 @@ function _drawCalmSegments(ctx, comp, n) {
       if (!_aliveWebSeg(c)) continue;
       ctx.strokeStyle = _DEFAULT_STROKE;
       ctx.lineWidth = _DEFAULT_WIDTH;
-      _applyFlash(ctx, c);
+      var flashed = _applyFlash(ctx, c);
       ctx.beginPath();
       _growLineTo(ctx, c);
       ctx.stroke();
+      if (flashed) _clearGlow(ctx);
       statsDc('line');
     } else {
       c.draw(ctx);
@@ -210,6 +220,7 @@ function _drawDangerSegments(ctx, comp, n, now) {
         ctx.beginPath();
         _growLineTo(ctx, c);
         ctx.stroke();
+        _clearGlow(ctx);
         statsDc('line');
         continue;
       }
@@ -281,50 +292,76 @@ function _drawBrokenEnds(ctx, getBrokenEnds) {
   ctx.restore();
 }
 
-/**
- * 绘制拖拽预览环：闪烁高亮直线
- */
-var _previewFrame = 0;
-function _drawPreviewRing(ctx, getPreviewRing) {
-  if (!getPreviewRing) return;
-  var ring = getPreviewRing();
-  if (!ring || ring.length < 2) return;
-
-  _previewFrame++;
-  var pulse = 0.3 + 0.35 * Math.sin(_previewFrame * 0.15);
-
-  ctx.save();
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(140,220,255,' + pulse.toFixed(2) + ')';
-
+function _traceClosedRing(ctx, ring) {
   ctx.beginPath();
   ctx.moveTo(ring[0].pos.x, ring[0].pos.y);
   for (var i = 1; i < ring.length; i++) {
     ctx.lineTo(ring[i].pos.x, ring[i].pos.y);
   }
-  ctx.lineTo(ring[0].pos.x, ring[0].pos.y);
-  ctx.stroke();
-  statsDc('stroke');
+  ctx.closePath();
+}
 
+function _setGlow(ctx, r, g, b, alpha, blur) {
+  ctx.shadowBlur = blur;
+  ctx.shadowColor = 'rgba(' + r + ',' + g + ',' + b + ',' + alpha.toFixed(2) + ')';
+}
+
+function _clearGlow(ctx) {
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = 'transparent';
+}
+
+function _fillClosedRing(ctx, ring, r, g, b, alpha, glowBlur, glowAlpha) {
+  if (!ring || ring.length < 2 || alpha <= 0.01) return;
+
+  ctx.save();
+  if (glowBlur) _setGlow(ctx, r, g, b, glowAlpha != null ? glowAlpha : alpha * 0.55, glowBlur);
+  _traceClosedRing(ctx, ring);
+  ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + alpha.toFixed(2) + ')';
+  ctx.fill();
+  statsDc('fill');
+  _clearGlow(ctx);
   ctx.restore();
 }
 
 /**
- * 绘制补网任务的环高亮：沿 ring 节点连线画发光边
+ * 闭合环高亮：半透明填充 + 发光描边
  */
-var _repairHighlightFrame = 0;
-function _drawRepairRingHighlight(ctx, getRepairQueue) {
-  if (!getRepairQueue) return;
-  var queue = getRepairQueue();
-  if (!queue || queue.length === 0) return;
+function _drawRingHighlight(ctx, ring, r, g, b, pulse, fillAlpha) {
+  if (!ring || ring.length < 2) return;
 
-  _repairHighlightFrame++;
-  var pulse = 0.35 + 0.25 * Math.sin(_repairHighlightFrame * 0.08);
+  _fillClosedRing(ctx, ring, r, g, b, fillAlpha, 14, 0.14);
 
   ctx.save();
   ctx.lineWidth = 2.5;
   ctx.lineCap = 'round';
+  _setGlow(ctx, r, g, b, 0.38, 9);
+  _traceClosedRing(ctx, ring);
+  ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + pulse.toFixed(2) + ')';
+  ctx.stroke();
+  statsDc('stroke');
+  _clearGlow(ctx);
+  ctx.restore();
+}
+
+/**
+ * 绘制拖拽预览环：稳定高亮（不闪烁）
+ */
+function _drawPreviewRing(ctx, getPreviewRing) {
+  if (!getPreviewRing) return;
+  var ring = getPreviewRing();
+  if (!ring || ring.length < 2) return;
+
+  _drawRingHighlight(ctx, ring, 140, 220, 255, 0.75, 0.24);
+}
+
+/**
+ * 绘制补网任务的环高亮：沿 ring 节点连线画稳定高亮边
+ */
+function _drawRepairRingHighlight(ctx, getRepairQueue) {
+  if (!getRepairQueue) return;
+  var queue = getRepairQueue();
+  if (!queue || queue.length === 0) return;
 
   for (var qi = 0; qi < queue.length; qi++) {
     var task = queue[qi];
@@ -335,27 +372,102 @@ function _drawRepairRingHighlight(ctx, getRepairQueue) {
     var r = 120, g = 210, b = 255; /* 浅蓝 */
     if (task.state === 'repairing') { r = 100; g = 255; b = 180; } /* 修复中偏绿 */
 
-    ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + pulse.toFixed(2) + ')';
-
-    /* 画环上相邻节点之间的连线 */
-    ctx.beginPath();
-    ctx.moveTo(ring[0].pos.x, ring[0].pos.y);
-    for (var ri = 1; ri < ring.length; ri++) {
-      ctx.lineTo(ring[ri].pos.x, ring[ri].pos.y);
-    }
-    /* 闭合环：首尾相连（首尾通过修复边连接） */
-    ctx.lineTo(ring[0].pos.x, ring[0].pos.y);
-    ctx.stroke();
-    statsDc('stroke');
+    _drawRingHighlight(ctx, ring, r, g, b, 0.70, 0.22);
   }
+}
 
+function _ringAreaCentroid(ring) {
+  var cx = 0;
+  var cy = 0;
+  for (var i = 0; i < ring.length; i++) {
+    cx += ring[i].pos.x;
+    cy += ring[i].pos.y;
+  }
+  return { x: cx / ring.length, y: cy / ring.length };
+}
+
+/** 在补网区域内取稳定采样点（seed 决定边缘段与内缩比例） */
+function _ringAreaPoint(ring, seed) {
+  var len = ring.length;
+  var i = seed % len;
+  var j = (i + 1) % len;
+  var edgeT = 0.12 + ((seed * 0.37) % 0.76);
+  var inward = 0.05 + ((seed * 0.23) % 0.9);
+  var ax = ring[i].pos.x;
+  var ay = ring[i].pos.y;
+  var bx = ring[j].pos.x;
+  var by = ring[j].pos.y;
+  var ex = ax + (bx - ax) * edgeT;
+  var ey = ay + (by - ay) * edgeT;
+  var cen = _ringAreaCentroid(ring);
+  return {
+    x: ex + (cen.x - ex) * inward,
+    y: ey + (cen.y - ey) * inward
+  };
+}
+
+function _drawSparkle(ctx, x, y, size, alpha) {
+  if (alpha <= 0.02) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  _setGlow(ctx, 220, 240, 255, alpha * 0.65, 5);
+  ctx.strokeStyle = 'rgba(255,255,255,' + Math.min(1, alpha + 0.15).toFixed(2) + ')';
+  ctx.lineWidth = 1.1;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - size, y);
+  ctx.lineTo(x + size, y);
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x, y + size);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.22, 0, 2 * Math.PI);
+  ctx.fillStyle = 'rgba(255,255,255,' + alpha.toFixed(2) + ')';
+  ctx.fill();
+  _clearGlow(ctx);
   ctx.restore();
+  statsDc('stroke');
+}
+
+/**
+ * 补网完成后的区域高亮：半透明白色填充，单次渐隐消失
+ */
+function _drawRepairCompleteFlashes(ctx, getRepairCompleteFlashes, getBreakFrame) {
+  if (!getRepairCompleteFlashes || !getBreakFrame) return;
+  var flashes = getRepairCompleteFlashes();
+  if (!flashes || flashes.length === 0) return;
+
+  var frame = getBreakFrame();
+  for (var fi = 0; fi < flashes.length; fi++) {
+    var flash = flashes[fi];
+    var ring = flash.ring;
+    if (!ring || ring.length < 2) continue;
+
+    var elapsed = frame - flash.t;
+    var duration = flash.duration || 54;
+    if (elapsed < 0 || elapsed >= duration) continue;
+
+    var t = elapsed / duration;
+    var fade = 1 - t * t; /* ease-out 渐隐 */
+    var fillAlpha = 0.30 * fade;
+
+    _fillClosedRing(ctx, ring, 255, 255, 255, fillAlpha, 12 + fade * 6, 0.12 * fade);
+
+    /* 补网区域内轻微 sparkling */
+    var sparkleCount = 12;
+    for (var si = 0; si < sparkleCount; si++) {
+      var pos = _ringAreaPoint(ring, si * 5 + 2);
+      var twinkle = Math.abs(Math.sin(elapsed * 0.38 + si * 1.85));
+      if (twinkle < 0.38) continue;
+      _drawSparkle(ctx, pos.x, pos.y, 1.8 + twinkle * 1.0, twinkle * fade * 0.82);
+    }
+  }
 }
 
 /**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing, getRepairCompleteFlashes) {
   var getLogicalTime = sixthArg ? null : fifthArg;
   var getBrokenEnds = sixthArg ? fifthArg : null;
   var getSnapTarget = sixthArg || null;
@@ -383,6 +495,9 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
 
     /* ── 补网任务环高亮 ── */
     _drawRepairRingHighlight(ctx, getRepairQueue);
+
+    /* ── 补网完成区域闪烁 ── */
+    _drawRepairCompleteFlashes(ctx, getRepairCompleteFlashes, getBreakFrame);
   };
 
   spiderweb.drawConstraints = function (ctx, comp) {

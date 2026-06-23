@@ -653,7 +653,7 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; }, function () { return repairCompleteFlashes; });
   }
 
   function _syncStepSearchTopology() {
@@ -814,6 +814,7 @@ window.onload = function () {
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
+  var repairCompleteFlashes = []; /* 补网完成后的区域闪烁 [{ring, t, duration}] */
   var _previewRing = null;  /* 拖拽 stub 时的 BFS 环路预览 */
   var _previewSnapTarget = null; /* 上次计算预览时的 snapTarget，避免重复 BFS */
   var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
@@ -1343,6 +1344,7 @@ window.onload = function () {
   function startGame() {
     wrappingTarget = null;
     repairQueue = [];
+    repairCompleteFlashes = [];
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
@@ -1377,6 +1379,7 @@ window.onload = function () {
   function startLevel(n) {
     wrappingTarget = null;
     repairQueue = [];
+    repairCompleteFlashes = [];
     target = null;
     idleTarget = null;
     autoChaseTarget = null;
@@ -1704,10 +1707,11 @@ window.onload = function () {
     var d = a.pos.dist(b.pos) * REPAIR_TENSOR;
     var edge = new DistanceConstraint(a, b, 0.6, d);
     if (animated) {
+      edge.__isRepairEdge = true;
       edge.__growT = 0;       /* 0→1 grow progress */
       edge.__growDur = 12;    /* ~0.2s at 60fps */
-      edge.__flashT = 0;     /* 0→1 flash progress (white→normal) */
-      edge.__flashDur = 30;  /* ~0.5s at 60fps */
+      edge.__flashT = 0;     /* 0→1 flash progress (bright→normal) */
+      edge.__flashDur = 66;  /* ~1.1s at 60fps */
     }
     spiderweb.constraints.push(edge);
     /* 注册到 spatialIndex，让碰撞检测能发现修复边 */
@@ -1813,6 +1817,68 @@ window.onload = function () {
   /**
    * 在连接点喷出丝线粒子，方向朝对端散开
    */
+  function _ringAreaCentroid(ring) {
+    var cx = 0;
+    var cy = 0;
+    for (var i = 0; i < ring.length; i++) {
+      cx += ring[i].pos.x;
+      cy += ring[i].pos.y;
+    }
+    return { x: cx / ring.length, y: cy / ring.length };
+  }
+
+  function _ringAreaPoint(ring, seed) {
+    var len = ring.length;
+    var i = seed % len;
+    var j = (i + 1) % len;
+    var edgeT = 0.12 + ((seed * 0.37) % 0.76);
+    var inward = 0.05 + ((seed * 0.23) % 0.9);
+    var ax = ring[i].pos.x;
+    var ay = ring[i].pos.y;
+    var bx = ring[j].pos.x;
+    var by = ring[j].pos.y;
+    var ex = ax + (bx - ax) * edgeT;
+    var ey = ay + (by - ay) * edgeT;
+    var cen = _ringAreaCentroid(ring);
+    return {
+      x: ex + (cen.x - ex) * inward,
+      y: ey + (cen.y - ey) * inward
+    };
+  }
+
+  function _pushSparkleParticle(x, y, vx, vy) {
+    _burstParticles.push({
+      x: x,
+      y: y,
+      vx: vx,
+      vy: vy,
+      life: 1.0,
+      decay: 0.028 + Math.random() * 0.018,
+      r: 1.0 + Math.random() * 1.6,
+      drag: 0.96,
+      speedScale: 1,
+      smoke: false,
+      sparkle: true,
+      phase: Math.random() * Math.PI * 2,
+      color: ['#ffffff', '#e8f8ff', '#cceeff'][Math.floor(Math.random() * 3)]
+    });
+  }
+
+  function _spawnRepairCompleteFX(x, y, ring) {
+    playFloatingText(x, y, collectLayer, '补网！', 'repair');
+    if (!ring || ring.length < 2) return;
+
+    for (var i = 0; i < 16; i++) {
+      var pt = _ringAreaPoint(ring, i * 4 + 1);
+      _pushSparkleParticle(
+        pt.x + (Math.random() - 0.5) * 5,
+        pt.y + (Math.random() - 0.5) * 5,
+        (Math.random() - 0.5) * 0.55,
+        (Math.random() - 0.5) * 0.55 - 0.12
+      );
+    }
+  }
+
   function _spawnRepairSilk(x, y, toX, toY) {
     var dx = toX - x, dy = toY - y;
     var baseAng = Math.atan2(dy, dx);
@@ -3489,6 +3555,14 @@ window.onload = function () {
 
           if (rTask.timer <= 0) {
             patchHole(rTask.ring, spiderweb);
+            repairCompleteFlashes.push({
+              ring: rTask.ring,
+              t: _breakFrame,
+              duration: 54,
+              cx: rTask.pos.x,
+              cy: rTask.pos.y
+            });
+            _spawnRepairCompleteFX(rTask.pos.x, rTask.pos.y, rTask.ring);
             repairQueue.shift();
             _refreshBrokenEnds();
             webScanPending = 3;
@@ -3699,6 +3773,14 @@ window.onload = function () {
         }
         webBreakFlashes.length = flashWrite;
       }
+      if (repairCompleteFlashes.length > 0) {
+        var repairFlashWrite = 0;
+        for (var rfi = 0; rfi < repairCompleteFlashes.length; rfi++) {
+          var rf = repairCompleteFlashes[rfi];
+          if (_breakFrame - rf.t < (rf.duration || 54)) repairCompleteFlashes[repairFlashWrite++] = rf;
+        }
+        repairCompleteFlashes.length = repairFlashWrite;
+      }
     }
 
     /* animT：子弹时间时冻结，其他时候每帧 +1 保持动画连续 */
@@ -3789,21 +3871,43 @@ window.onload = function () {
         _bp.life -= _bp.decay * _speedScale;
         if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
         _ctx.save();
-        _ctx.globalAlpha = _bp.smoke ? _bp.life * (_bp.occlude || 0.82) : _bp.life;
-        if (_bp.smoke) {
-          _ctx.shadowBlur = 30;
-          _ctx.shadowColor = _bp.color;
-        }
-        _ctx.beginPath();
-        _ctx.arc(_bp.x, _bp.y, _bp.smoke ? _bp.r : _bp.r * _bp.life, 0, 2 * Math.PI);
-        _ctx.fillStyle = _bp.color;
-        _ctx.fill();
-        if (_bp.smoke) {
-          _ctx.globalAlpha *= 0.52;
+        if (_bp.sparkle) {
+          var twinkle = 0.25 + 0.75 * Math.abs(Math.sin(timestamp * 0.028 + (_bp.phase || 0)));
+          var sparkleAlpha = _bp.life * twinkle;
+          var sparkleSize = _bp.r * (0.55 + twinkle * 0.65);
+          _ctx.globalAlpha = sparkleAlpha;
+          _ctx.shadowBlur = 5 + twinkle * 4;
+          _ctx.shadowColor = 'rgba(200,235,255,' + (sparkleAlpha * 0.7).toFixed(2) + ')';
+          _ctx.strokeStyle = _bp.color;
+          _ctx.lineWidth = 1;
+          _ctx.lineCap = 'round';
           _ctx.beginPath();
-          _ctx.arc(_bp.x + _bp.r * 0.08, _bp.y - _bp.r * 0.05, _bp.r * 0.68, 0, 2 * Math.PI);
-          _ctx.fillStyle = '#080606';
+          _ctx.moveTo(_bp.x - sparkleSize, _bp.y);
+          _ctx.lineTo(_bp.x + sparkleSize, _bp.y);
+          _ctx.moveTo(_bp.x, _bp.y - sparkleSize);
+          _ctx.lineTo(_bp.x, _bp.y + sparkleSize);
+          _ctx.stroke();
+          _ctx.beginPath();
+          _ctx.arc(_bp.x, _bp.y, sparkleSize * 0.25, 0, 2 * Math.PI);
+          _ctx.fillStyle = _bp.color;
           _ctx.fill();
+        } else {
+          _ctx.globalAlpha = _bp.smoke ? _bp.life * (_bp.occlude || 0.82) : _bp.life;
+          if (_bp.smoke) {
+            _ctx.shadowBlur = 30;
+            _ctx.shadowColor = _bp.color;
+          }
+          _ctx.beginPath();
+          _ctx.arc(_bp.x, _bp.y, _bp.smoke ? _bp.r : _bp.r * _bp.life, 0, 2 * Math.PI);
+          _ctx.fillStyle = _bp.color;
+          _ctx.fill();
+          if (_bp.smoke) {
+            _ctx.globalAlpha *= 0.52;
+            _ctx.beginPath();
+            _ctx.arc(_bp.x + _bp.r * 0.08, _bp.y - _bp.r * 0.05, _bp.r * 0.68, 0, 2 * Math.PI);
+            _ctx.fillStyle = '#080606';
+            _ctx.fill();
+          }
         }
         _ctx.restore();
       }

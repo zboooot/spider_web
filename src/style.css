@@ -359,6 +359,14 @@ h1{
     0 0 10px rgba(255,255,255,0.18);
   letter-spacing:1.2px;
 }
+.collect-score-pop-repair{
+  color:#dff6ff;
+  font-size:1.05em;
+  text-shadow:
+    0 2px 8px rgba(0,0,0,0.65),
+    0 0 12px rgba(140,220,255,0.55);
+  letter-spacing:2px;
+}
 @keyframes collectSilkAnim{
   0%  {opacity:1;transform:translate(-50%,-50%) scale(1.4);}
   40% {opacity:1;transform:translate(-50%,-120%) scale(1.1);}
@@ -369,6 +377,12 @@ h1{
   12% {opacity:1;transform:translate(-50%,-60%) scale(1.15);}
   55% {opacity:1;transform:translate(-50%,-120%) scale(1.0);}
   100%{opacity:0;transform:translate(-50%,-200%) scale(0.86);}
+}
+@keyframes collectScoreRepairAnim{
+  0%  {opacity:0;transform:translate(-50%,-18%) scale(0.72);}
+  16% {opacity:1;transform:translate(-50%,-62%) scale(1.24);}
+  42% {opacity:1;transform:translate(-50%,-108%) scale(1.04);}
+  100%{opacity:0;transform:translate(-50%,-188%) scale(0.88);}
 }
 .collect-token{
   position:absolute;
