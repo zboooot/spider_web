@@ -465,11 +465,6 @@ window.onload = function () {
     if (hit.obj.kind === 'poop') {
       _suppressPriorityClick = true;
     }
-    if (dragMode === 'pluck') {
-      audioEngine.startPickupTearLoop();
-      audioEngine.updatePickupTearLoop(0);
-    }
-    _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
   }
@@ -479,7 +474,16 @@ window.onload = function () {
     var pos = _getCanvasPos(clientX, clientY);
     _pickupDrag.pointerX = pos.x;
     _pickupDrag.pointerY = pos.y;
-    _pointerMoved = true;
+    var moveDx = clientX - _pointerStartClient.x;
+    var moveDy = clientY - _pointerStartClient.y;
+    if (Math.sqrt(moveDx * moveDx + moveDy * moveDy) >= TAP_MOVE_THRESHOLD) {
+      _pointerMoved = true;
+      if (_pickupDrag.mode === 'pluck' && !_pickupDrag._audioStarted) {
+        _pickupDrag._audioStarted = true;
+        audioEngine.startPickupTearLoop();
+        audioEngine.updatePickupTearLoop(0);
+      }
+    }
     sim.draggedEntity = null;
     return false;
   }
@@ -493,7 +497,7 @@ window.onload = function () {
         _pickupDrag.obj.playerDragging = false;
       }
       audioEngine.stopPickupTearLoop();
-      _suppressMoveCommand = true;
+      if (_pointerMoved) _suppressMoveCommand = true;
       _pickupDrag = null;
       sim.draggedEntity = null;
       return true;
@@ -854,6 +858,7 @@ window.onload = function () {
   var _burstParticles = []; /* 打包完成放射粒子 */
   var _wrapSplashParticles = []; /* 打包中白色线状飞溅（顶层绘制） */
   var _wrapSplashTimer = 0;
+  var _wrapSplashInterval = 9; /* 每组飞溅的间隔（帧） */
   var _currentTimeScale = 1.0; /* 子弹时间：供投掷物积分使用 */
   var _webDisplayPct = 100;   /* 当前显示值 */
   var _webTargetPct = 100;    /* 目标值 */
@@ -971,7 +976,15 @@ window.onload = function () {
   document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
 
   function pickObjectAt(x, y) {
-    return _pickPreyAt(x, y, ['wrapped', 'stuck']);
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 16;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return obj;
+    }
+    return null;
   }
 
   function _isWebAttachedState(state) {
@@ -1057,28 +1070,35 @@ window.onload = function () {
     return true;
   }
 
-  function spawnWrapSplashParticles(anchorX, anchorY) {
-    var ringR = 10 + Math.random() * 16;
-    for (var i = 0; i < 3; i++) {
-      var ang = Math.random() * Math.PI * 2;
-      var spd = 2.0 + Math.random() * 2.8;
-      var vx = Math.cos(ang) * spd;
-      var vy = Math.sin(ang) * spd * 0.72 - (0.55 + Math.random() * 1.35);
-      var sx = anchorX + Math.cos(ang) * ringR * 0.35;
-      var sy = anchorY + Math.sin(ang) * ringR * 0.35;
+  function spawnWrapSplashParticles(obj) {
+    if (!obj || !obj.particle || !obj.def) return;
+    var px = obj.particle.pos.x;
+    var py = obj.particle.pos.y;
+    var bodyR = obj.def.r * 0.9;
+    var burstCount = 2 + (Math.random() < 0.35 ? 1 : 0);
+    for (var bi = 0; bi < burstCount; bi++) {
+      /* 身体区域内随机取点，每组同时四散 */
+      var spawnAng = Math.random() * Math.PI * 2;
+      var spawnDist = bodyR * Math.sqrt(Math.random());
+      var sx = px + Math.cos(spawnAng) * spawnDist;
+      var sy = py + Math.sin(spawnAng) * spawnDist;
+      var scatterAng = Math.atan2(sy - py, sx - px) + (Math.random() - 0.5) * 1.5;
+      var spd = 0.72 + Math.random() * 0.72;
+      var vx = Math.cos(scatterAng) * spd + (Math.random() - 0.5) * 0.28;
+      var vy = Math.sin(scatterAng) * spd * 0.58 - (0.52 + Math.random() * 0.48);
       _wrapSplashParticles.push({
         x: sx,
         y: sy,
-        prevX: sx - vx * 0.45,
-        prevY: sy - vy * 0.45,
+        prevX: sx - vx * 0.55,
+        prevY: sy - vy * 0.55,
         vx: vx,
         vy: vy,
-        life: 0.62 + Math.random() * 0.16,
-        decay: 0.04 + Math.random() * 0.016,
-        len: 5.5 + Math.random() * 5,
-        width: 1.35 + Math.random() * 0.75,
-        grav: 0.15 + Math.random() * 0.07,
-        drag: 0.982 + Math.random() * 0.012,
+        life: 0.82 + Math.random() * 0.16,
+        decay: 0.015 + Math.random() * 0.007,
+        len: 4.2 + Math.random() * 3.6,
+        width: 1.35 + Math.random() * 0.7,
+        grav: 0.02 + Math.random() * 0.018,
+        drag: 0.978 + Math.random() * 0.008,
         color: '#ffffff'
       });
     }
@@ -1112,21 +1132,19 @@ window.onload = function () {
         ux /= vLen;
         uy /= vLen;
       }
-      var alpha = Math.min(1, 0.42 + p.life * 0.58);
+      var alpha = Math.min(0.62, 0.22 + p.life * 0.34);
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = p.color;
-      ctx.lineWidth = p.width * (0.82 + p.life * 0.18);
+      ctx.lineWidth = p.width * (0.88 + p.life * 0.22);
       ctx.lineCap = 'round';
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = 'rgba(255,255,255,0.9)';
       ctx.beginPath();
       ctx.moveTo(nx - ux * drawLen, ny - uy * drawLen);
       ctx.lineTo(nx, ny);
       ctx.stroke();
-      ctx.globalAlpha = alpha * 0.85;
+      ctx.globalAlpha = alpha * 0.72;
       ctx.beginPath();
-      ctx.arc(nx, ny, 1.15, 0, 2 * Math.PI);
+      ctx.arc(nx, ny, 1.55, 0, 2 * Math.PI);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
       ctx.restore();
@@ -1251,23 +1269,29 @@ window.onload = function () {
     return isTargetObjectChaseable(obj) ? obj : null;
   }
 
+  function _shouldBlockPriorityClick() {
+    return _suppressPriorityClick
+      || (_suppressMoveCommand && _pointerMoved)
+      || (sim.suppressClick && _pointerMoved);
+  }
+
   /* click to move (desktop) */
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick || sim.suppressClick || _suppressMoveCommand || _touchWasSwipe || _pointerMoved) {
+    if (_shouldBlockPriorityClick()) {
       _suppressPriorityClick = false;
       sim.suppressClick = false;
       _suppressMoveCommand = false;
-      _touchWasSwipe = false;
+      _pointerMoved = false;
       return;
     }
+    _pointerMoved = false;
     setPriorityTargetFromClient(e.clientX, e.clientY);
   });
   /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
   screenShellEl.addEventListener('click', function (e) {
     if (e.target === canvas) return;
     if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay')) return;
-    if (_touchWasSwipe || _pointerMoved) { _touchWasSwipe = false; return; }
     setPriorityTargetFromClient(e.clientX, e.clientY);
   });
 
@@ -1288,12 +1312,13 @@ window.onload = function () {
       var ddy = t.clientY - _touchStartY;
       var isTap = !_pointerMoved && Math.sqrt(ddx * ddx + ddy * ddy) < TAP_MOVE_THRESHOLD;
       _touchWasSwipe = !isTap;
-      if (!_suppressPriorityClick && !sim.suppressClick && !_suppressMoveCommand && isTap) {
+      if (!_shouldBlockPriorityClick() && isTap) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
       sim.suppressClick = false;
       _suppressMoveCommand = false;
+      _pointerMoved = false;
     }
   }, { passive: true });
 
@@ -3706,6 +3731,9 @@ window.onload = function () {
   }
 
   function renderFrame(timestamp, updateScale) {
+    var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
+    var timeScale = _isBulletTime ? 0 : (updateScale || _currentTimeScale || 1);
+
     statsTimeStart('webRnd');
     sim.draw();
     statsTimeEnd();
@@ -3720,9 +3748,8 @@ window.onload = function () {
     if (!_isBulletTime && wrappingTarget) {
       _wrapSplashTimer -= timeScale;
       if (_wrapSplashTimer <= 0) {
-        _wrapSplashTimer = 4;
-        var _wp = wrappingTarget.particle.pos;
-        spawnWrapSplashParticles(_wp.x, _wp.y);
+        _wrapSplashTimer = _wrapSplashInterval;
+        spawnWrapSplashParticles(wrappingTarget);
       }
     }
     updateAndDrawWrapSplashParticles(sim.ctx, timeScale);

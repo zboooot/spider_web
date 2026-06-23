@@ -27,8 +27,21 @@ export function VerletJS(width, height, canvas) {
   this.webTugSpreadRadius = 96;  /* 以指针为中心的影响半径 */
   this.suppressClick = false;    /* stub 拖拽后抑制本次 click/tap */
   this.highlightColor = "#4f545c";
+  this._dragPressX = 0;
+  this._dragPressY = 0;
+  this._didPointerDrag = false;
+  this._dragThreshold = 10;
 
   var _this = this;
+
+  function _notePointerDrag(x, y) {
+    if (!_this.mouseDown || _this._didPointerDrag) return;
+    var dx = x - _this._dragPressX;
+    var dy = y - _this._dragPressY;
+    if (dx * dx + dy * dy >= _this._dragThreshold * _this._dragThreshold) {
+      _this._didPointerDrag = true;
+    }
+  }
 
   this.bounds = function (p) {
     if (p.__isBug) return; /* 苍蝇不受边界约束，由环绕逻辑处理 */
@@ -45,6 +58,9 @@ export function VerletJS(width, height, canvas) {
     _this.mouse.x = (e.clientX - r.left) * (_this.width / r.width);
     _this.mouse.y = (e.clientY - r.top) * (_this.height / r.height);
     _this.mouseDown = true;
+    _this._dragPressX = _this.mouse.x;
+    _this._dragPressY = _this.mouse.y;
+    _this._didPointerDrag = false;
     var n = _this.nearestEntity();
     if (n) _this.draggedEntity = n;
   };
@@ -52,22 +68,26 @@ export function VerletJS(width, height, canvas) {
   this.canvas.onmouseup = function () {
     _this.mouseDown = false;
     if (_this.draggedEntity && _this.draggedEntity.__isStub) {
-      _this.suppressClick = true; /* 拖拽 stub 后抑制本次 click */
-      if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
-        _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+      if (_this._didPointerDrag) {
+        _this.suppressClick = true; /* 拖拽 stub 后抑制本次 click */
+        if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+          _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+        }
       }
     } else if (_this.draggedEntity && _this.draggedEntity.__isWebTug) {
-      _this.suppressClick = true;
+      if (_this._didPointerDrag) _this.suppressClick = true;
       _this.draggedEntity.__isWebTug = false;
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
+    _this._didPointerDrag = false;
   };
 
   this.canvas.onmousemove = function (e) {
     var r = _this.canvas.getBoundingClientRect();
     _this.mouse.x = (e.clientX - r.left) * (_this.width / r.width);
     _this.mouse.y = (e.clientY - r.top) * (_this.height / r.height);
+    _notePointerDrag(_this.mouse.x, _this.mouse.y);
   };
 
   this.canvas.addEventListener('touchstart', function (e) {
@@ -76,6 +96,9 @@ export function VerletJS(width, height, canvas) {
     var r = _this.canvas.getBoundingClientRect(), t = e.touches[0];
     _this.mouse.x = (t.clientX - r.left) * (_this.width / r.width);
     _this.mouse.y = (t.clientY - r.top) * (_this.height / r.height);
+    _this._dragPressX = _this.mouse.x;
+    _this._dragPressY = _this.mouse.y;
+    _this._didPointerDrag = false;
     var n = _this.nearestEntity();
     if (n) _this.draggedEntity = n;
   }, { passive: false });
@@ -84,16 +107,19 @@ export function VerletJS(width, height, canvas) {
     e.preventDefault();
     _this.mouseDown = false;
     if (_this.draggedEntity && _this.draggedEntity.__isStub) {
-      _this.suppressClick = true; /* 拖拽 stub 后抑制本次 tap */
-      if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
-        _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+      if (_this._didPointerDrag) {
+        _this.suppressClick = true; /* 拖拽 stub 后抑制本次 tap */
+        if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+          _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+        }
       }
     } else if (_this.draggedEntity && _this.draggedEntity.__isWebTug) {
-      _this.suppressClick = true;
+      if (_this._didPointerDrag) _this.suppressClick = true;
       _this.draggedEntity.__isWebTug = false;
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
+    _this._didPointerDrag = false;
   }, { passive: false });
 
   this.canvas.addEventListener('touchmove', function (e) {
@@ -101,6 +127,7 @@ export function VerletJS(width, height, canvas) {
     var r = _this.canvas.getBoundingClientRect(), t = e.touches[0];
     _this.mouse.x = (t.clientX - r.left) * (_this.width / r.width);
     _this.mouse.y = (t.clientY - r.top) * (_this.height / r.height);
+    _notePointerDrag(_this.mouse.x, _this.mouse.y);
   }, { passive: false });
 
   this.gravity = new Vec2(0, 0.2);

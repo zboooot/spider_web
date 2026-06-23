@@ -115,20 +115,17 @@ function _applyFlash(ctx, c) {
 }
 
 function _drawCalmSegments(ctx, comp, n) {
-  ctx.strokeStyle = _DEFAULT_STROKE;
   for (var i = 0; i < n; i++) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
-      var flashing = _applyFlash(ctx, c);
+      ctx.strokeStyle = _DEFAULT_STROKE;
+      ctx.lineWidth = _DEFAULT_WIDTH;
+      _applyFlash(ctx, c);
       ctx.beginPath();
       _growLineTo(ctx, c);
       ctx.stroke();
       statsDc('line');
-      if (flashing) {
-        ctx.strokeStyle = _DEFAULT_STROKE;
-        ctx.lineWidth = _DEFAULT_WIDTH;
-      }
     } else {
       c.draw(ctx);
       statsDc('line');
