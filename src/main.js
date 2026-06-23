@@ -3140,17 +3140,14 @@ window.onload = function () {
   /* ================================================================
      MAIN LOOP
   ================================================================ */
-  var FIXED_STEP_MS = 1000 / 60;
-  var MAX_CATCHUP_STEPS = 4;
   var _lastTimestamp = 0;
-  var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
   var _wasBulletTime = false;
-  function fixedUpdate() {
+  function fixedUpdate(frameScale) {
     /* ── 子弹时间检测：拖拽断线头时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isWebParticle);
-    /* 固定 60Hz 逻辑步：正常每步=1 帧，子弹时间冻结玩法逻辑 */
-    var timeScale = _isBulletTime ? 0.0 : 1.0;
+    /* 按实际帧时间缩放，恢复 4f80e69 体感 */
+    var timeScale = _isBulletTime ? 0.0 : frameScale;
     _currentTimeScale = timeScale;
 
     /* ── 背景变暗切换（只在状态变化时调用一次） ── */
@@ -3642,20 +3639,10 @@ window.onload = function () {
   var loop = function (timestamp) {
     statsBeginFrame();
 
-    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
+    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
-    _fixedAccumulatorMs += elapsedMs;
 
-    var steps = 0;
-    var updateScale = 0;
-    while (_fixedAccumulatorMs >= FIXED_STEP_MS && steps < MAX_CATCHUP_STEPS) {
-      updateScale += fixedUpdate();
-      _fixedAccumulatorMs -= FIXED_STEP_MS;
-      steps++;
-    }
-    if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
-      _fixedAccumulatorMs = 0;
-    }
+    var updateScale = fixedUpdate(elapsedMs / 16.67);
 
     if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
       renderFrame(timestamp, updateScale);
