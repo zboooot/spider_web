@@ -385,21 +385,29 @@ window.onload = function () {
 
   function _findWrappedPreyAt(clientX, clientY) {
     var pos = _getCanvasPos(clientX, clientY);
-    var best = null;
-    var bestD2 = Infinity;
+    var bestWebDrag = null;
+    var bestWebDragD2 = Infinity;
+    var bestOther = null;
+    var bestOtherD2 = Infinity;
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
       if (obj.state !== 'wrapped' && obj.state !== 'stuck') continue;
-      if (obj.state === 'stuck' && obj.kind === 'drop') continue;
       var p = obj.particle.pos;
       var radius = _getWrappedPickupRadius(obj);
       var dx = pos.x - p.x, dy = pos.y - p.y, d2 = dx * dx + dy * dy;
       if (d2 > radius * radius) continue;
-      if (d2 < bestD2) {
-        best = obj;
-        bestD2 = d2;
+      var isWebDragCandidate = obj.state === 'stuck' && (obj.kind === 'boulder' || obj.kind === 'bug' || obj.kind === 'drop');
+      if (isWebDragCandidate) {
+        if (d2 < bestWebDragD2) {
+          bestWebDrag = obj;
+          bestWebDragD2 = d2;
+        }
+      } else if (d2 < bestOtherD2) {
+        bestOther = obj;
+        bestOtherD2 = d2;
       }
     }
+    var best = bestWebDrag || bestOther;
     return best ? { obj: best, pos: pos } : null;
   }
 
@@ -407,6 +415,9 @@ window.onload = function () {
     if (sim.draggedEntity && sim.draggedEntity.__isStub) return false; /* stub 优先 */
     var hit = _findWrappedPreyAt(clientX, clientY);
     if (!hit) return false;
+    var dragMode = (hit.obj.state === 'stuck' && (hit.obj.kind === 'boulder' || hit.obj.kind === 'bug' || hit.obj.kind === 'drop'))
+      ? 'web-drag'
+      : 'pluck';
     _pickupDrag = {
       obj: hit.obj,
       startX: hit.pos.x,
@@ -415,12 +426,16 @@ window.onload = function () {
       pointerY: hit.pos.y,
       gripDX: hit.pos.x - hit.obj.particle.pos.x,
       gripDY: hit.pos.y - hit.obj.particle.pos.y,
+      mode: dragMode,
       active: true
     };
     hit.obj._pickupTension = 0;
     hit.obj._pickupCharge = 0;
-    audioEngine.startPickupTearLoop();
-    audioEngine.updatePickupTearLoop(0);
+    hit.obj.playerDragging = dragMode === 'web-drag';
+    if (dragMode === 'pluck') {
+      audioEngine.startPickupTearLoop();
+      audioEngine.updatePickupTearLoop(0);
+    }
     _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
@@ -441,6 +456,7 @@ window.onload = function () {
       if (_pickupDrag.obj) {
         _pickupDrag.obj._pickupTension = 0;
         _pickupDrag.obj._pickupCharge = 0;
+        _pickupDrag.obj.playerDragging = false;
       }
       audioEngine.stopPickupTearLoop();
       _suppressMoveCommand = true;
@@ -1023,7 +1039,6 @@ window.onload = function () {
   }
 
   function beginPoopPointer(clientX, clientY) {
-    if (sim.draggedEntity && sim.draggedEntity.__isStub) return; /* stub 优先 */
     var p = _getCanvasPos(clientX, clientY);
     var poop = pickPoopAt(p.x, p.y);
     if (!poop) return;
@@ -1070,7 +1085,7 @@ window.onload = function () {
     _draggingPoop.lastDy = dy;
     var peelThreshold = Math.max(1, _draggingPoop.obj.def.peelThreshold);
     var overThreshold = dist >= peelThreshold;
-    if (overThreshold) _draggingPoop.holdFrames += _currentTimeScale;
+    if (overThreshold) _draggingPoop.holdFrames++;
     else _draggingPoop.holdFrames = 0;
     var holdNeed = Math.max(1, _draggingPoop.obj.def.peelHoldFrames || 60);
     var holdRatio = Math.min(1, _draggingPoop.holdFrames / holdNeed);
@@ -2010,11 +2025,13 @@ window.onload = function () {
     obj.particle.lastPos.x = obj.particle.pos.x;
     obj.particle.lastPos.y = obj.particle.pos.y;
     sim.draggedEntity = null;
-    var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
-    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind, false);
   }
 
   function beginCollectObject(obj) {
+    if (obj._manualPullOff) {
+      obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+      return false;
+    }
     var p = obj.particle;
     var startPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
     var targetPos = getInventoryTarget(obj.kind);
@@ -2059,6 +2076,7 @@ window.onload = function () {
     obj.collectEl.style.top = obj.collectFromY + 'px';
     collectLayer.appendChild(obj.collectEl);
     obj.particle._noSimDrag = false;
+    return true;
   }
 
   function beginWrapping(obj) {
@@ -2265,7 +2283,7 @@ window.onload = function () {
             obj.state = 'stuck'; obj.stayTimer = 0;
             if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
             if (obj.kind === 'bug') obj.wobbleAmp = 0.28 * _ws;
-            if (obj.kind === 'poop') obj.wobbleAmp = 0.10 * _ws;
+            if (obj.kind === 'poop') obj.wobbleAmp = 0.10;
           }
         }
 
@@ -2278,6 +2296,49 @@ window.onload = function () {
           continue;
         }
         if (_pickupDrag && _pickupDrag.obj === obj) {
+          if (_pickupDrag.mode === 'web-drag' && (obj.kind === 'boulder' || obj.kind === 'bug' || obj.kind === 'drop')) {
+            var wTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+            var wTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+            var wPullDx = wTargetGripX - p.pos.x;
+            var wPullDy = wTargetGripY - p.pos.y;
+            p.pos.x += wPullDx * PICKUP_PULL_STRENGTH;
+            p.pos.y += wPullDy * PICKUP_PULL_STRENGTH;
+            if (obj.cA && obj.cB) {
+              var wAnchorA2 = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+              var wAnchorB2 = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+              var wMidX = (wAnchorA2.pos.x + wAnchorB2.pos.x) * 0.5;
+              var wMidY = (wAnchorA2.pos.y + wAnchorB2.pos.y) * 0.5;
+              var wOffX = p.pos.x - wMidX;
+              var wOffY = p.pos.y - wMidY;
+              var wOffLen = Math.sqrt(wOffX * wOffX + wOffY * wOffY) || 1;
+              var wMaxDrift = obj.kind === 'boulder'
+                ? obj.def.r * 1.9
+                : obj.kind === 'bug'
+                  ? obj.def.r * 2.2
+                  : obj.def.r * 1.45;
+              if (wOffLen > wMaxDrift) {
+                p.pos.x = wMidX + (wOffX / wOffLen) * wMaxDrift;
+                p.pos.y = wMidY + (wOffY / wOffLen) * wMaxDrift;
+              }
+              p.lastPos.x = p.pos.x;
+              p.lastPos.y = p.pos.y;
+            }
+            obj._pickupPullAngle = Math.atan2(wPullDy, wPullDx);
+            var wTensionA = 0, wTensionB = 0;
+            if (obj.cA) {
+              var wAnchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+              var wStretchA = p.pos.dist(wAnchorA.pos);
+              wTensionA = Math.max(0, wStretchA / Math.max(1, obj.cA.distance) - 1);
+            }
+            if (obj.cB) {
+              var wAnchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+              var wStretchB = p.pos.dist(wAnchorB.pos);
+              wTensionB = Math.max(0, wStretchB / Math.max(1, obj.cB.distance) - 1);
+            }
+            obj._pickupTension = wTensionA + wTensionB;
+            obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+            continue;
+          }
           var sTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
           var sTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
           var sPullDx = sTargetGripX - p.pos.x;
@@ -2399,12 +2460,11 @@ window.onload = function () {
           if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
           p.pos.x += obj.vx * _currentTimeScale; p.pos.y += obj.vy * _currentTimeScale;
         } else if (obj.kind === 'poop') {
-          var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
-          obj.vx *= peelDragScale;
-          obj.vy *= peelDragScale;
-          obj.vy += obj.grav * 0.08 * _currentTimeScale;
-          p.pos.x += obj.vx * _currentTimeScale;
-          p.pos.y += obj.vy * _currentTimeScale;
+          obj.vx *= obj.def.peelDrag;
+          obj.vy *= obj.def.peelDrag;
+          obj.vy += obj.grav * 0.08;
+          p.pos.x += obj.vx;
+          p.pos.y += obj.vy;
         } else {
           p.pos.y += obj.grav * _currentTimeScale;
         }
@@ -2424,6 +2484,12 @@ window.onload = function () {
         if (obj.wrapT >= 1) {
           if (obj.kind === 'drop') {
             finishLeafWrap(obj);
+            continue;
+          }
+          if (obj.kind === 'poop') {
+            wrappingTarget = null;
+            if (autoPlay) _autoPlayPause = 24;
+            handlePoopCapture(obj);
             continue;
           }
           wrappingTarget = null;
@@ -2470,6 +2536,10 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'plucking') {
+        if (obj._manualPullOff) {
+          obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+          continue;
+        }
         obj._pluckT++;
         var pluckPop  = 20;
         var pluckTot  = pluckPop;
@@ -2483,14 +2553,25 @@ window.onload = function () {
           p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
         }
         if (obj._pluckT >= pluckTot) {
+          if (obj._manualPullOff) {
+            obj.state = obj.kind === 'bug' ? 'falling2' : obj.state;
+            continue;
+          }
           if (autoPlay) _autoPlayPause = 24;
           audioEngine.playCollectSound(obj.kind);
           var collectFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
-          playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind, 'Collected');
+          if (!obj._manualPullOff) playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind, 'Collected');
           beginCollectObject(obj);
         }
 
       } else if (obj.state === 'collecting') {
+        if (obj._manualPullOff) {
+          if (obj.collectEl && obj.collectEl.parentNode) obj.collectEl.parentNode.removeChild(obj.collectEl);
+          obj.collectEl = null;
+          obj.collectCanvas = null;
+          obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+          continue;
+        }
         var drawX = obj.collectFromX;
         var drawY = obj.collectFromY;
         var scale = 1;
@@ -2538,7 +2619,7 @@ window.onload = function () {
   function queryThrownStick() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
-      if (!obj || !obj.def || obj.state !== 'falling' || obj.released) continue;
+      if (!obj || !obj.def || obj.state !== 'falling' || obj.released || obj._disableRestick) continue;
       var p = obj.particle;
       var prevX = obj._stickPrevX, prevY = obj._stickPrevY;
       var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
@@ -2645,6 +2726,15 @@ window.onload = function () {
     buildSpider: buildSpider,
     getSharedDefaultsJson: function () {
       return JSON.stringify(buildSharedDefaultsPayload(P), null, 2);
+    },
+    promoteSharedDefaults: async function () {
+      var response = await fetch('/__shared-defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildSharedDefaultsPayload(P))
+      });
+      if (!response.ok) throw new Error('failed to write shared defaults');
+      return response.json();
     },
     onMotionChange: function () {
       moveSpeed = P.moveSpeed; STEP_SPEED = P.stepSpeed;

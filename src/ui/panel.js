@@ -93,6 +93,18 @@ export function initPanel(P, DEFAULTS, callbacks) {
     setTimeout(function () { h.textContent = ''; }, 2000);
   };
 
+  document.getElementById('btn-promote-shared-defaults').onclick = async function () {
+    var h = document.getElementById('save-hint');
+    h.textContent = 'Writing shared defaults...';
+    try {
+      await callbacks.promoteSharedDefaults();
+      h.textContent = '\u2713 Shared defaults written to game file';
+    } catch (e) {
+      h.textContent = 'Write failed';
+    }
+    setTimeout(function () { h.textContent = ''; }, 2600);
+  };
+
   document.getElementById('btn-copy-shared-defaults').onclick = async function () {
     var h = document.getElementById('save-hint');
     var json = callbacks.getSharedDefaultsJson();
