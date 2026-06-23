@@ -905,6 +905,8 @@ window.onload = function () {
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
   var poopStunTimer = 0;
+  var _draggingPoop = null;
+  var _poopPointerDown = null;
   var _suppressPriorityClick = false;
   var WAVE_FALLING = 'WAVE_FALLING';
   var WAVE_PAUSE = 'WAVE_PAUSE';
@@ -1001,6 +1003,15 @@ window.onload = function () {
     return phase === 'intro_wait' || phase === 'breakers';
   }
 
+  function clearPoopDragState() {
+    if (_draggingPoop && _draggingPoop.obj) {
+      _draggingPoop.obj.playerDragging = false;
+      _draggingPoop.obj.dragStrain = 0;
+    }
+    _draggingPoop = null;
+    _poopPointerDown = null;
+  }
+
   function setTutorialFlyVisibility(visible) {
     var invBug = document.getElementById('inv-bug');
     if (invBug) invBug.style.display = visible ? '' : 'none';
@@ -1016,7 +1027,7 @@ window.onload = function () {
       return;
     }
     tutorialHintEl.textContent = text;
-    tutorialHintEl.style.display = tutorialHintEl.classList.contains('tutorial-hint-focused') ? 'block' : 'none';
+    tutorialHintEl.style.display = 'block';
   }
 
   function hideTutorialHint() {
@@ -1307,6 +1318,8 @@ window.onload = function () {
     refreshLevelTargetHUD();
     refreshWavePhaseHUD();
   }
+
+  if (typeof window !== 'undefined') window.startTutorial = startTutorial;
 
   function completeTutorialAndStartLevelOne() {
     resetTutorialState();
@@ -3848,6 +3861,7 @@ window.onload = function () {
     var isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
     var forceShow = q.indexOf('gaitdev=1') !== -1;
     if (!isDevHost && !forceShow) return;
+    var startVisible = forceShow;
 
     var tune = window._gaitTune || (window._gaitTune = Object.assign({}, _gaitTuneDefaults));
 
@@ -3860,6 +3874,7 @@ window.onload = function () {
     panel.style.maxHeight = '72vh';
     panel.style.overflow = 'auto';
     panel.style.zIndex = '9999';
+    panel.style.display = startVisible ? 'block' : 'none';
     panel.style.background = 'rgba(10,12,18,0.86)';
     panel.style.border = '1px solid rgba(255,255,255,0.2)';
     panel.style.borderRadius = '10px';
@@ -3868,7 +3883,7 @@ window.onload = function () {
     panel.style.font = '12px/1.3 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
 
     var title = document.createElement('div');
-    title.textContent = 'Gait Tune (Dev)';
+    title.textContent = 'Gait Tune (Dev) — press ` to toggle';
     title.style.fontWeight = '700';
     title.style.marginBottom = '8px';
     panel.appendChild(title);
