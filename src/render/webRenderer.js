@@ -84,6 +84,36 @@ function _drawWebParticles(ctx, comp) {
   }
 }
 
+function _growLineTo(ctx, c) {
+  var t = c.__growT;
+  if (t == null || t >= 1) {
+    ctx.moveTo(c.a.pos.x, c.a.pos.y);
+    ctx.lineTo(c.b.pos.x, c.b.pos.y);
+  } else {
+    /* ease-out for natural feel */
+    var et = 1 - (1 - t) * (1 - t);
+    var bx = c.a.pos.x + (c.b.pos.x - c.a.pos.x) * et;
+    var by = c.a.pos.y + (c.b.pos.y - c.a.pos.y) * et;
+    ctx.moveTo(c.a.pos.x, c.a.pos.y);
+    ctx.lineTo(bx, by);
+    /* advance grow */
+    c.__growT = Math.min(1, t + 1 / (c.__growDur || 12));
+  }
+}
+
+function _applyFlash(ctx, c) {
+  var ft = c.__flashT;
+  if (ft == null || ft >= 1) return false;
+  var et = 1 - (1 - ft) * (1 - ft); /* ease-out */
+  /* white(255,255,255) → default(230,230,230,0.55) */
+  var a = 1.0 - et * 0.45;  /* 1.0 → 0.55 */
+  var w = 3.0 - et * 1.4;   /* 3.0 → 1.6 */
+  ctx.strokeStyle = 'rgba(255,255,255,' + a.toFixed(2) + ')';
+  ctx.lineWidth = w;
+  c.__flashT = Math.min(1, ft + 1 / (c.__flashDur || 30));
+  return true;
+}
+
 function _drawCalmSegments(ctx, comp, n) {
   ctx.strokeStyle = _DEFAULT_STROKE;
   ctx.lineWidth = _DEFAULT_WIDTH;
@@ -91,11 +121,15 @@ function _drawCalmSegments(ctx, comp, n) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
+      var flashing = _applyFlash(ctx, c);
       ctx.beginPath();
-      ctx.moveTo(c.a.pos.x, c.a.pos.y);
-      ctx.lineTo(c.b.pos.x, c.b.pos.y);
+      _growLineTo(ctx, c);
       ctx.stroke();
       statsDc('line');
+      if (flashing) {
+        ctx.strokeStyle = _DEFAULT_STROKE;
+        ctx.lineWidth = _DEFAULT_WIDTH;
+      }
     } else {
       c.draw(ctx);
       statsDc('line');
@@ -175,9 +209,16 @@ function _drawDangerSegments(ctx, comp, n, now) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
+      /* flash 优先于 danger 着色 */
+      if (_applyFlash(ctx, c)) {
+        ctx.beginPath();
+        _growLineTo(ctx, c);
+        ctx.stroke();
+        statsDc('line');
+        continue;
+      }
       ctx.beginPath();
-      ctx.moveTo(c.a.pos.x, c.a.pos.y);
-      ctx.lineTo(c.b.pos.x, c.b.pos.y);
+      _growLineTo(ctx, c);
       var d = _dangerFinal[i];
       if (d > 0) {
         var isDirect = !!_dangerRaw[i];
@@ -245,6 +286,35 @@ function _drawBrokenEnds(ctx, getBrokenEnds) {
 }
 
 /**
+ * 绘制拖拽预览环：闪烁高亮直线
+ */
+var _previewFrame = 0;
+function _drawPreviewRing(ctx, getPreviewRing) {
+  if (!getPreviewRing) return;
+  var ring = getPreviewRing();
+  if (!ring || ring.length < 2) return;
+
+  _previewFrame++;
+  var pulse = 0.3 + 0.35 * Math.sin(_previewFrame * 0.15);
+
+  ctx.save();
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(140,220,255,' + pulse.toFixed(2) + ')';
+
+  ctx.beginPath();
+  ctx.moveTo(ring[0].pos.x, ring[0].pos.y);
+  for (var i = 1; i < ring.length; i++) {
+    ctx.lineTo(ring[i].pos.x, ring[i].pos.y);
+  }
+  ctx.lineTo(ring[0].pos.x, ring[0].pos.y);
+  ctx.stroke();
+  statsDc('stroke');
+
+  ctx.restore();
+}
+
+/**
  * 绘制补网任务的环高亮：沿 ring 节点连线画发光边
  */
 var _repairHighlightFrame = 0;
@@ -289,7 +359,7 @@ function _drawRepairRingHighlight(ctx, getRepairQueue) {
 /**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing) {
   var getLogicalTime = sixthArg ? null : fifthArg;
   var getBrokenEnds = sixthArg ? fifthArg : null;
   var getSnapTarget = sixthArg || null;
@@ -311,6 +381,9 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       ctx.stroke();
       ctx.restore();
     }
+
+    /* ── 拖拽预览环（虚线） ── */
+    _drawPreviewRing(ctx, getPreviewRing);
 
     /* ── 补网任务环高亮 ── */
     _drawRepairRingHighlight(ctx, getRepairQueue);
