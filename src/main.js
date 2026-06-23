@@ -37,6 +37,7 @@ import {
   LEVEL_CONFIGS, SCORE_MULT,
   calcCollectedSilk, getLevelCfg, getWaveCfg, framesToTime
 } from './systems/levelSystem.js';
+import { SHARED_GAME_DEFAULTS } from './data/sharedGameDefaults.js';
 
 import { audioEngine } from './audio/audioEngine.js';
 
@@ -113,10 +114,6 @@ window.onload = function () {
     return configs;
   }
 
-  normalizeWaveConfigs(LEVEL_CONFIGS);
-  var BASE_LEVEL_CONFIGS = cloneJson(LEVEL_CONFIGS);
-  var BASE_LEVEL_TARGETS = BASE_LEVEL_CONFIGS.map(function (level) { return cloneJson(level.targets); });
-
   function replaceLevelConfigs(nextConfigs) {
     LEVEL_CONFIGS.splice(0, LEVEL_CONFIGS.length);
     nextConfigs.forEach(function (levelCfg) {
@@ -146,6 +143,38 @@ window.onload = function () {
     });
     return out;
   }
+
+  function applySharedWaveConfigs(sharedWaveConfigs) {
+    if (!Array.isArray(sharedWaveConfigs)) return;
+    for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+      var baseLevel = LEVEL_CONFIGS[i];
+      var sharedLevel = sharedWaveConfigs[i];
+      if (!sharedLevel || !Array.isArray(sharedLevel.waves)) continue;
+      var nextWaves = [];
+      var waveCount = Math.max(baseLevel.waves.length, sharedLevel.waves.length);
+      for (var wi = 0; wi < waveCount; wi++) {
+        var baseWave = baseLevel.waves[Math.min(wi, baseLevel.waves.length - 1)];
+        var sharedWave = sharedLevel.waves[wi];
+        nextWaves.push(mergeWaveWithBase(baseWave, sharedWave));
+      }
+      LEVEL_CONFIGS[i].waves = nextWaves;
+    }
+    normalizeWaveConfigs(LEVEL_CONFIGS);
+  }
+
+  function applySharedLevelConditions(sharedLevelConditions) {
+    if (!Array.isArray(sharedLevelConditions)) return;
+    for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+      if (!sharedLevelConditions[i]) continue;
+      LEVEL_CONFIGS[i].targets = mergePlainObject(LEVEL_CONFIGS[i].targets, sharedLevelConditions[i]);
+    }
+  }
+
+  normalizeWaveConfigs(LEVEL_CONFIGS);
+  applySharedWaveConfigs(SHARED_GAME_DEFAULTS.waveConfigs);
+  applySharedLevelConditions(SHARED_GAME_DEFAULTS.levelConditions);
+  var BASE_LEVEL_CONFIGS = cloneJson(LEVEL_CONFIGS);
+  var BASE_LEVEL_TARGETS = BASE_LEVEL_CONFIGS.map(function (level) { return cloneJson(level.targets); });
 
   function loadSavedWaveConfigs() {
     try {
@@ -186,6 +215,22 @@ window.onload = function () {
       };
     });
     localStorage.setItem(WAVE_CONFIG_STORAGE_KEY, JSON.stringify(wavePayload));
+  }
+
+  function buildSharedDefaultsPayload(P) {
+    return {
+      panelParams: cloneJson(P),
+      waveConfigs: LEVEL_CONFIGS.map(function (level) {
+        return {
+          waves: (level.waves || []).map(function (wave) {
+            return sanitizeWaveForStorage(wave);
+          })
+        };
+      }),
+      levelConditions: LEVEL_CONFIGS.map(function (level) {
+        return cloneJson(level.targets);
+      })
+    };
   }
 
   function resetWaveConfigsToDefault() {
@@ -248,6 +293,7 @@ window.onload = function () {
     bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3,
     stubReachRadius: 200, stubSnapRadius: 28, repairPatch: 1
   };
+  Object.assign(DEFAULTS, cloneJson(SHARED_GAME_DEFAULTS.panelParams || {}));
   var P = Object.assign({}, DEFAULTS);
   var USE_LEGACY_COLLISION = /(?:^|[?&])legacy=1/.test(location.search)
     || !!(P.useLegacyCollision);
@@ -2526,6 +2572,9 @@ window.onload = function () {
   initPanel(P, DEFAULTS, {
     buildWeb: buildWeb,
     buildSpider: buildSpider,
+    getSharedDefaultsJson: function () {
+      return JSON.stringify(buildSharedDefaultsPayload(P), null, 2);
+    },
     onMotionChange: function () {
       moveSpeed = P.moveSpeed; STEP_SPEED = P.stepSpeed;
       STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;

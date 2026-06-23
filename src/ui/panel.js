@@ -93,6 +93,32 @@ export function initPanel(P, DEFAULTS, callbacks) {
     setTimeout(function () { h.textContent = ''; }, 2000);
   };
 
+  document.getElementById('btn-copy-shared-defaults').onclick = async function () {
+    var h = document.getElementById('save-hint');
+    var json = callbacks.getSharedDefaultsJson();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(json);
+        h.textContent = '\u2713 Shared defaults JSON copied';
+      } else {
+        throw new Error('clipboard unavailable');
+      }
+    } catch (e) {
+      var ta = document.createElement('textarea');
+      ta.value = json;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      var copied = false;
+      try { copied = document.execCommand('copy'); } catch (err) {}
+      document.body.removeChild(ta);
+      h.textContent = copied ? '\u2713 Shared defaults JSON copied' : 'Copy failed';
+    }
+    setTimeout(function () { h.textContent = ''; }, 2400);
+  };
+
   document.getElementById('btn-reset').onclick = function () {
     localStorage.removeItem('spiderPanelParams');
     Object.assign(P, DEFAULTS);

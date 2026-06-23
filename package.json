@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-server.js",
+    "apply-shared-defaults": "node scripts/apply-shared-defaults.js",
     "build": "vite build",
     "preview": "vite preview"
   },
