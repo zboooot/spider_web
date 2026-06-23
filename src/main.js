@@ -1,28 +1,36 @@
 /* Version: V3.2 — Sylvan Background + Procedural BGM */
-import './style.css';
-
 import { Vec2 } from './engine/Vec2.js';
+import { Particle } from './engine/Particle.js';
 import { DistanceConstraint } from './engine/constraints.js';
 import { Composite } from './engine/Composite.js';
 import { VerletJS } from './engine/VerletJS.js';
 
 import { createSpiderweb } from './entities/spiderweb.js';
 import { createSpider } from './entities/spider.js';
-import { ThrownObj, clearObjectConstraints } from './entities/ThrownObj.js';
+import { ThrownObj, clearObjectConstraints, collapseChain } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
-  findStepTarget, liftFoot, landFoot, triggerStep
+  liftFoot, landFoot, triggerStep,
+  getNextPid
 } from './systems/footSystem.js';
 
 import {
   getWebOuterR, inWebZone, radialRatioAt,
-  collectPathHitCandidates, chooseStickCandidate
+  collectPathHitCandidates, collectPathHitCandidatesSpatial, chooseStickCandidate,
+  findNearestWebSegment,
+  mergeStickHits, stickHitScratch
 } from './systems/stickSystem.js';
 
 import {
-  buildWebGridList, cellCovered, scanWebCells
+  buildWebGridList, cellCovered,
+  scanWebCellsBatch, WEB_BUILD_BATCH, WEB_RESCAN_BATCH
 } from './systems/webIntegrity.js';
+
+import {
+  spatialIndex, spatialQueryBuf,
+  assignWebConstraintIds, resetWebConstraintIds
+} from './physics/SpatialIndexService.js';
 
 import {
   LEVEL_CONFIGS, SCORE_MULT,
@@ -33,7 +41,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects, drawWrappingOverlay } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot, drawWrappingOverlay } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -51,6 +59,12 @@ import {
 
 import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX } from './ui/overlay.js';
 import { initPanel } from './ui/panel.js';
+
+import {
+  statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
+  statsTimeStart, statsTimeEnd, statsGetPanelVisible, statsSetPanelVisible
+} from './debug/renderStats.js';
+import { getBgEntityCounts } from './render/sylvanBackground.js';
 
 /* ── requestAnimFrame polyfill ── */
 var requestAnimFrame = window.requestAnimationFrame
@@ -192,6 +206,7 @@ window.onload = function () {
   /* ── params ── */
   var DEFAULTS = {
     webRadius: 1.45, webSegs: 30, webDepth: 11, webStiff: 0.6,
+    radialWobbleScale: 0.55, spiralWobbleScale: 1.0,
     moveSpeed: 1.8, stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
     legStiff: 0.3, jointStiff: 0.35,
     stickDelayMin: 0.10, stickDelayMax: 0.45, stickCatchRadius: 18,
@@ -199,12 +214,15 @@ window.onload = function () {
     caterpillarGravity: 2.0,
     caterpillarWeight: 5, flyWeight: 3, leafWeight: 1,
     leafGravityMin: 0.5, leafGravityMax: 0.6, leafMaxSpeed: 0.8,
-    caterpillarReleaseSec: 3, flyReleaseSec: 2, leafReleaseSec: 0,
+    caterpillarReleaseSec: 5, flyReleaseSec: 3.5, leafReleaseSec: 0,
     bgTheme: 0, bgBlur: 25, bgWind: 1.0, bgRay: 100,
     bgDarken: 15, bgPurity: 140, bgYOffset: 13,
-    bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3
+    bgPart: 24, bgVol: 50, bgMusicOn: 1, bgLayoutVersion: 3,
+    stubReachRadius: 200, stubSnapRadius: 28, repairPatch: 1
   };
   var P = Object.assign({}, DEFAULTS);
+  var USE_LEGACY_COLLISION = /(?:^|[?&])legacy=1/.test(location.search)
+    || !!(P.useLegacyCollision);
   try {
     var saved = JSON.parse(localStorage.getItem('spiderPanelParams') || '{}');
     Object.assign(P, saved);
@@ -238,11 +256,27 @@ window.onload = function () {
 
   var sim = new VerletJS(W, H, canvas);
   sim.gravity = new Vec2(0, 0);
+  sim.stubReachRadius = P.stubReachRadius;
+  sim.snapRadius = P.stubSnapRadius;
 
   /* ── 拖拽弹性视差交互状态机 ── */
   var _dragStart = { x: 0, y: 0 };
   var _dragOffset = { x: 0, y: 0 };
   var _smoothDrag = { x: 0, y: 0 };
+  var _pointerStartClient = { x: 0, y: 0 };
+  var _pointerMoved = false;
+  var TAP_MOVE_THRESHOLD = 12;
+  var PICKUP_PULL_STRENGTH = 0.26;
+  var PICKUP_TENSION_THRESHOLD = 0.42;
+  var PICKUP_TENSION_RELEASE_RATE = 0.05;
+  var STUCK_PLUCK_THRESHOLD = 0.72;
+  var STUCK_BREAK_THRESHOLD = 1.1;
+  var STUCK_FORCE_THRESHOLD_BOULDER = 14;
+  var STUCK_FORCE_THRESHOLD_BUG = 12;
+  var STUCK_OVERFORCE_BOULDER = 15;
+  var STUCK_OVERFORCE_BUG = 12;
+  var _pickupDrag = null;
+  var _suppressMoveCommand = false;
 
   function _getCanvasPos(clientX, clientY) {
     var r = canvas.getBoundingClientRect();
@@ -252,45 +286,139 @@ window.onload = function () {
     };
   }
 
+  function _getWrappedPickupRadius(obj) {
+    if (obj.kind === 'boulder') return obj.def.r * 5.6;
+    if (obj.kind === 'drop') return obj.def.r * 5.0;
+    return obj.def.r * 3.8;
+  }
+
+  function _getPickupForceThreshold(obj) {
+    if (obj.kind === 'boulder') return 8;
+    if (obj.kind === 'bug') return 5;
+    return 3;
+  }
+
+  function _findWrappedPreyAt(clientX, clientY) {
+    var pos = _getCanvasPos(clientX, clientY);
+    var best = null;
+    var bestD2 = Infinity;
+    for (var oi = 0; oi < thrownObjects.length; oi++) {
+      var obj = thrownObjects[oi];
+      if (obj.state !== 'wrapped' && obj.state !== 'stuck') continue;
+      if (obj.state === 'stuck' && obj.kind === 'drop') continue;
+      var p = obj.particle.pos;
+      var radius = _getWrappedPickupRadius(obj);
+      var dx = pos.x - p.x, dy = pos.y - p.y, d2 = dx * dx + dy * dy;
+      if (d2 > radius * radius) continue;
+      if (d2 < bestD2) {
+        best = obj;
+        bestD2 = d2;
+      }
+    }
+    return best ? { obj: best, pos: pos } : null;
+  }
+
+  function _beginWrappedPickup(clientX, clientY) {
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) return false; /* stub 优先 */
+    var hit = _findWrappedPreyAt(clientX, clientY);
+    if (!hit) return false;
+    _pickupDrag = {
+      obj: hit.obj,
+      startX: hit.pos.x,
+      startY: hit.pos.y,
+      pointerX: hit.pos.x,
+      pointerY: hit.pos.y,
+      gripDX: hit.pos.x - hit.obj.particle.pos.x,
+      gripDY: hit.pos.y - hit.obj.particle.pos.y,
+      active: true
+    };
+    hit.obj._pickupTension = 0;
+    hit.obj._pickupCharge = 0;
+    _suppressMoveCommand = true;
+    sim.draggedEntity = null;
+    return true;
+  }
+
+  function _updateWrappedPickup(clientX, clientY) {
+    if (!_pickupDrag) return false;
+    var pos = _getCanvasPos(clientX, clientY);
+    _pickupDrag.pointerX = pos.x;
+    _pickupDrag.pointerY = pos.y;
+    _pointerMoved = true;
+    sim.draggedEntity = null;
+    return false;
+  }
+
+  function _endWrappedPickup() {
+    if (_pickupDrag) {
+      if (_pickupDrag.obj) {
+        _pickupDrag.obj._pickupTension = 0;
+        _pickupDrag.obj._pickupCharge = 0;
+      }
+      _suppressMoveCommand = true;
+      _pickupDrag = null;
+      sim.draggedEntity = null;
+      return true;
+    }
+    return false;
+  }
+
   window.addEventListener('mousedown', function (e) {
+    _beginWrappedPickup(e.clientX, e.clientY);
     var p = _getCanvasPos(e.clientX, e.clientY);
     _dragStart.x = p.x; _dragStart.y = p.y;
     _dragOffset.x = 0; _dragOffset.y = 0;
+    _pointerStartClient.x = e.clientX;
+    _pointerStartClient.y = e.clientY;
+    _pointerMoved = false;
   });
   window.addEventListener('mousemove', function (e) {
+    if (_updateWrappedPickup(e.clientX, e.clientY)) return;
     if (sim.mouseDown) {
       var p = _getCanvasPos(e.clientX, e.clientY);
       _dragOffset.x = p.x - _dragStart.x;
       _dragOffset.y = p.y - _dragStart.y;
+      var moveDx = e.clientX - _pointerStartClient.x;
+      var moveDy = e.clientY - _pointerStartClient.y;
+      if (Math.sqrt(moveDx * moveDx + moveDy * moveDy) >= TAP_MOVE_THRESHOLD) _pointerMoved = true;
     }
   });
   window.addEventListener('mouseup', function () {
+    _endWrappedPickup();
     _dragOffset.x = 0; _dragOffset.y = 0;
   });
   window.addEventListener('touchstart', function (e) {
     if (e.touches.length > 0) {
+      _beginWrappedPickup(e.touches[0].clientX, e.touches[0].clientY);
       var p = _getCanvasPos(e.touches[0].clientX, e.touches[0].clientY);
       _dragStart.x = p.x; _dragStart.y = p.y;
       _dragOffset.x = 0; _dragOffset.y = 0;
+      _pointerStartClient.x = e.touches[0].clientX;
+      _pointerStartClient.y = e.touches[0].clientY;
+      _pointerMoved = false;
     }
   }, { passive: true });
   window.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 0 && _updateWrappedPickup(e.touches[0].clientX, e.touches[0].clientY)) return;
     if (sim.mouseDown && e.touches.length > 0) {
       var p = _getCanvasPos(e.touches[0].clientX, e.touches[0].clientY);
       _dragOffset.x = p.x - _dragStart.x;
       _dragOffset.y = p.y - _dragStart.y;
+      var moveDx = e.touches[0].clientX - _pointerStartClient.x;
+      var moveDy = e.touches[0].clientY - _pointerStartClient.y;
+      if (Math.sqrt(moveDx * moveDx + moveDy * moveDy) >= TAP_MOVE_THRESHOLD) _pointerMoved = true;
     }
   }, { passive: true });
   window.addEventListener('touchend', function () {
+    _endWrappedPickup();
     _dragOffset.x = 0; _dragOffset.y = 0;
   }, { passive: true });
 
   /* ── 解锁音频上下文（浏览器自动播放安全策略） ── */
   function _unlockAudio() {
-    try {
-      var ac = audioEngine.getAC();
-      if (ac && ac.state === 'suspended') ac.resume();
-    } catch (e) {}
+    audioEngine.unlockAudio(function () {
+      if (P.bgMusicOn) audioEngine.playLevelBGM(P.bgTheme || 0);
+    });
     window.removeEventListener('click', _unlockAudio);
     window.removeEventListener('touchstart', _unlockAudio);
     window.removeEventListener('keydown', _unlockAudio);
@@ -299,26 +427,54 @@ window.onload = function () {
   window.addEventListener('touchstart', _unlockAudio);
   window.addEventListener('keydown', _unlockAudio);
 
-  /* ── 默认开启 BGM（可从已保存背景参数恢复） ── */
-  setTimeout(function () {
-    if (P.bgMusicOn) audioEngine.playLevelBGM(P.bgTheme || 0);
-  }, 500);
-
   /* runtime refs */
+  var _webDrawApi = null;
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
   var target = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
-  var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
+  var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
+  var _samplePointsTopologyVersion = -1;
+  var _gaitTuneDefaults = {
+    minStepDistMove: 28,
+    minStepDistIdle: 22,
+    maxHipTargetDist: 60,
+    segPenaltyMoving: 160,
+    segPenaltyLowMove: 280,
+    segPenaltyStable: 760,
+    forwardMinProgressMove: 18,
+    forwardMinProgressIdle: 10,
+    forwardProgressPenalty: 18,
+    holdNodeBase: 11,
+    holdNodeScale: 0.08,
+    holdNodeMin: 6,
+    holdNodeMax: 12,
+    holdSegBase: 14,
+    holdSegScale: 0.1,
+    holdSegMin: 8,
+    holdSegMax: 16
+  };
+  if (typeof window !== 'undefined') window._gaitTune = Object.assign({}, _gaitTuneDefaults, window._gaitTune || {});
 
-  /* ── blink ── */
-  var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240) };
+  /* ── blink + mood ── */
+  var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0 };
+  var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
+  var isGameplayTestMode = false;
+
   function updateBlink() {
+    var blinkInterval = blinkState.mood === 'startled' ? 40 + Math.floor(Math.random() * 60)
+                      : blinkState.mood === 'curious'  ? 120 + Math.floor(Math.random() * 180)
+                      : 180 + Math.floor(Math.random() * 300);
     if (blinkState.blinking) {
       blinkState.t += 0.18;
       if (blinkState.t <= 1) blinkState.scale = 1 - 0.95 * (blinkState.t < 0.5 ? 2 * blinkState.t * blinkState.t : -1 + (4 - 2 * blinkState.t) * blinkState.t);
       else if (blinkState.t <= 2) { var t2 = blinkState.t - 1; blinkState.scale = 0.05 + 0.95 * (t2 < 0.5 ? 2 * t2 * t2 : -1 + (4 - 2 * t2) * t2); }
-      else { blinkState.scale = 1; blinkState.blinking = false; blinkState.t = 0; blinkState.nextBlink = 180 + Math.floor(Math.random() * 300); }
+      else { blinkState.scale = 1; blinkState.blinking = false; blinkState.t = 0; blinkState.nextBlink = blinkInterval; }
     } else { blinkState.nextBlink--; if (blinkState.nextBlink <= 0) { blinkState.blinking = true; blinkState.t = 0; } }
+
+    if (blinkState.headShake > 0) {
+      blinkState.headShake--;
+      blinkState.headShakeAmp *= 0.88;
+    }
   }
 
   /* ── web override ── */
@@ -337,20 +493,91 @@ window.onload = function () {
     var ocx = (ov.cx != null) ? ov.cx : cx;
     var ocy = (ov.cy != null) ? ov.cy : cy;
     var pStep = ov.pinStep || 4;
-    spiderweb = createSpiderweb(sim, new Vec2(ocx, ocy), rad, segs, depth, P.webStiff, pStep);
+    resetWebConstraintIds();
+    spiderweb = createSpiderweb(sim, new Vec2(ocx, ocy), rad, segs, depth, P.webStiff, pStep, {
+      radialStiffnessMul: 1.4,
+      spiralStiffnessMul: 0.85,
+      radialTensorMul: 0.85,
+      spiralTensorMul: 1.0,
+      centerTensionBoost: 0.08
+    });
+    sim.gravityComposite = spiderweb;
     webCx = ocx; webCy = ocy; webRad = rad;
+    assignWebConstraintIds(spiderweb);
+    spatialIndex.syncAliveFromWeb(spiderweb);
     var wi = sim.composites.indexOf(spiderweb);
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; });
+    _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; });
+  }
+
+  function _syncStepSearchTopology() {
+    if (!spiderweb) return;
+    var curVer = spiderweb._topologyVersion || 0;
+    if (curVer !== _samplePointsTopologyVersion) {
+      samplePoints = getWebSamplePoints(spiderweb, 4);
+      _samplePointsTopologyVersion = curVer;
+    }
+    updateSamplePoints(samplePoints);
+  }
+
+  function _collectAliveWebPoints() {
+    if (!spiderweb) return [];
+    var alive = [];
+    var seen = [];
+    for (var ci = 0; ci < spiderweb.constraints.length; ci++) {
+      var c = spiderweb.constraints[ci];
+      if (!c || !c.a || !c.b || !c.a.pos || !c.b.pos) continue;
+      if (seen.indexOf(c.a) === -1) { seen.push(c.a); alive.push({ x: c.a.pos.x, y: c.a.pos.y }); }
+      if (seen.indexOf(c.b) === -1) { seen.push(c.b); alive.push({ x: c.b.pos.x, y: c.b.pos.y }); }
+    }
+    for (var si = 0; si < samplePoints.length; si++) {
+      var sp = samplePoints[si];
+      if (!sp || !sp.pa || !sp.pb) continue;
+      alive.push({ x: sp.x, y: sp.y });
+    }
+    return alive;
+  }
+
+  function _snapPointToWeb(x, y, fromPos, maxReach, forwardDir) {
+    var pts = _collectAliveWebPoints();
+    if (!pts.length) return null;
+    var best = null;
+    var bestScore = Number.POSITIVE_INFINITY;
+    var maxReach2 = maxReach != null ? maxReach * maxReach : 0;
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (fromPos) {
+        var fdx = p.x - fromPos.x, fdy = p.y - fromPos.y;
+        var fd2 = fdx * fdx + fdy * fdy;
+        if (maxReach != null && fd2 > maxReach2) continue;
+        if (forwardDir) {
+          var dot = fdx * forwardDir.x + fdy * forwardDir.y;
+          if (dot < -4) continue;
+        }
+      }
+      var dx = p.x - x, dy = p.y - y;
+      var score = dx * dx + dy * dy;
+      if (fromPos) {
+        var tdx = p.x - fromPos.x, tdy = p.y - fromPos.y;
+        score += (tdx * tdx + tdy * tdy) * 0.15;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best ? new Vec2(best.x, best.y) : null;
   }
 
   function buildSpider() {
     if (spider) { var si = sim.composites.indexOf(spider); if (si !== -1) sim.composites.splice(si, 1); }
-    spider = createSpider(sim, new Vec2(cx, cy), { legStiff: P.legStiff, jointStiff: P.jointStiff });
-    spider.thorax.pos.mutableSet(new Vec2(cx, cy)); spider.thorax.lastPos.mutableSet(new Vec2(cx, cy));
-    spider.head.pos.mutableSet(new Vec2(cx, cy - 6)); spider.head.lastPos.mutableSet(new Vec2(cx, cy - 6));
-    spider.abdomen.pos.mutableSet(new Vec2(cx, cy + 12)); spider.abdomen.lastPos.mutableSet(new Vec2(cx, cy + 12));
+    var spawnFromY = cy - 110;
+    spider = createSpider(sim, new Vec2(cx, spawnFromY), { legStiff: P.legStiff, jointStiff: P.jointStiff });
+    spider.thorax.pos.mutableSet(new Vec2(cx, spawnFromY)); spider.thorax.lastPos.mutableSet(new Vec2(cx, spawnFromY));
+    spider.head.pos.mutableSet(new Vec2(cx, spawnFromY - 6)); spider.head.lastPos.mutableSet(new Vec2(cx, spawnFromY - 6));
+    spider.abdomen.pos.mutableSet(new Vec2(cx, spawnFromY + 12)); spider.abdomen.lastPos.mutableSet(new Vec2(cx, spawnFromY + 12));
     legConstraintCount = spider.constraints.length;
     STEP_SPEED = P.stepSpeed; STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
     footState = spider.legs.map(function (lp, idx) {
@@ -360,7 +587,7 @@ window.onload = function () {
         new Vec2(15, 4),
         new Vec2(-15, 4)
       ];
-      var ip = new Vec2(cx + footOffsets[idx].x, cy + footOffsets[idx].y);
+      var ip = new Vec2(cx + footOffsets[idx].x, spawnFromY + footOffsets[idx].y);
       lp.pos.mutableSet(ip); lp.lastPos.mutableSet(ip);
       return {
         particle: lp, current: new Vec2(ip.x, ip.y), from: new Vec2(ip.x, ip.y),
@@ -369,9 +596,21 @@ window.onload = function () {
         stepping: false, t: 1, cooldown: idx * 6
       };
     });
+    _spawnAnim.active = true;
+    _spawnAnim.t = 0;
+    _spawnAnim.fromY = spawnFromY;
+    _spawnAnim.toY = cy;
+    _spawnAnim.duration = 52;
     setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
-    setTimeout(function () { triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(2, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 60);
-    setTimeout(function () { triggerStep(1, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); triggerStep(3, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN); }, 210);
+    var _spatialOpts = USE_LEGACY_COLLISION ? null : { index: spatialIndex, queryBuf: spatialQueryBuf };
+    setTimeout(function () {
+      triggerStep(0, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+      triggerStep(2, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+    }, 60);
+    setTimeout(function () {
+      triggerStep(1, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+      triggerStep(3, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, _spatialOpts);
+    }, 210);
   }
 
   /* initial build */
@@ -380,6 +619,44 @@ window.onload = function () {
 
   /* ── overlay init ── */
   initOverlay();
+
+  var updateStatsPanel = statsBindPanel(document.getElementById('stats-panel'));
+
+  (function initStatsPanelToggle() {
+    var btn = document.getElementById('btn-stats-toggle');
+    if (!btn) return;
+    function syncBtn() {
+      btn.textContent = statsGetPanelVisible()
+        ? '\uD83D\uDCCA \u9690\u85cf\u6027\u80fd\u9762\u677f'
+        : '\uD83D\uDCCA \u663e\u793a\u6027\u80fd\u9762\u677f';
+    }
+    syncBtn();
+    btn.onclick = function () {
+      statsSetPanelVisible(!statsGetPanelVisible());
+      syncBtn();
+    };
+  })();
+
+  function countSimStats(physicsIters) {
+    var particles = 0;
+    var webC = 0;
+    var spiderC = 0;
+    for (var ci = 0; ci < sim.composites.length; ci++) {
+      var comp = sim.composites[ci];
+      particles += comp.particles.length;
+      if (comp === spiderweb) webC = comp.constraints.length;
+      else if (comp === spider) spiderC = comp.constraints.length;
+    }
+    statsSetScene({
+      verletParticles: particles,
+      webConstraints: webC,
+      spiderConstraints: spiderC,
+      preyActive: thrownObjects.length,
+      physicsIters: physicsIters,
+      dpr: dpr
+    });
+    statsSetScene(getBgEntityCounts());
+  }
 
   /* ================================================================
      THROWN OBJECTS & GAME STATE
@@ -391,6 +668,8 @@ window.onload = function () {
   var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
+  var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
+  var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
   var poopStunTimer = 0;
@@ -418,11 +697,21 @@ window.onload = function () {
   var webGridList = null;
   var webWarmupFrames = 0;
   var webScanPending = 0;
+  var webRescanActive = false;
+  var webRescanIdx = 0;
+  var webRescanCover = 0;
+  var webIntegrityState = {
+    webGridList: null,
+    cellCovered: null,
+    coveredCount: 0,
+    dirtyIndices: [],
+    dirtyFlags: null
+  };
   var webLossPct = 0;
   var webBreakFlashes = [];
   var _breakFrame = 0;
   var _burstParticles = []; /* 打包完成放射粒子 */
-  var _currentTimeScale = 1.0; /* 子弹时间：供 updateThrownObjects 使用 */
+  var _currentTimeScale = 1.0; /* 子弹时间：供投掷物积分使用 */
   var _webDisplayPct = 100;   /* 当前显示值 */
   var _webTargetPct = 100;    /* 目标值 */
   var _webRollTimer = 0;      /* 滚动帧计数 */
@@ -533,8 +822,10 @@ window.onload = function () {
     + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
     + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
     + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
+    + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px;display:none" id="btn-gameplay-test">Gameplay Test</button>'
   );
   document.getElementById('btn-start-game').onclick = startGameFromBeginning;
+  document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
 
   function pickObjectAt(x, y) {
     for (var i = thrownObjects.length - 1; i >= 0; i--) {
@@ -642,6 +933,7 @@ window.onload = function () {
   }
 
   function beginPoopPointer(clientX, clientY) {
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) return; /* stub 优先 */
     var p = _getCanvasPos(clientX, clientY);
     var poop = pickPoopAt(p.x, p.y);
     if (!poop) return;
@@ -688,7 +980,7 @@ window.onload = function () {
     _draggingPoop.lastDy = dy;
     var peelThreshold = Math.max(1, _draggingPoop.obj.def.peelThreshold);
     var overThreshold = dist >= peelThreshold;
-    if (overThreshold) _draggingPoop.holdFrames++;
+    if (overThreshold) _draggingPoop.holdFrames += _currentTimeScale;
     else _draggingPoop.holdFrames = 0;
     var holdNeed = Math.max(1, _draggingPoop.obj.def.peelHoldFrames || 60);
     var holdRatio = Math.min(1, _draggingPoop.holdFrames / holdNeed);
@@ -755,8 +1047,9 @@ window.onload = function () {
   });
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick) {
+    if (_suppressPriorityClick || sim.suppressClick) {
       _suppressPriorityClick = false;
+      sim.suppressClick = false;
       return;
     }
     setPriorityTargetFromClient(e.clientX, e.clientY);
@@ -789,10 +1082,11 @@ window.onload = function () {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
-      if (!_suppressPriorityClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+      if (!_suppressPriorityClick && !sim.suppressClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
+      sim.suppressClick = false;
     }
     endPoopPointer();
   }, { passive: true });
@@ -823,6 +1117,7 @@ window.onload = function () {
 
   function startGame() {
     wrappingTarget = null;
+    repairQueue = [];
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
@@ -843,12 +1138,20 @@ window.onload = function () {
   }
 
   function startGameFromBeginning() {
+    isGameplayTestMode = false;
+    difficultyLevel = 1;
+    startGame();
+  }
+
+  function startGameplayTest() {
+    isGameplayTestMode = true;
     difficultyLevel = 1;
     startGame();
   }
 
   function startLevel(n) {
     wrappingTarget = null;
+    repairQueue = [];
     target = null;
     autoChaseTarget = null;
     clearPriorityTarget();
@@ -873,7 +1176,13 @@ window.onload = function () {
     hideOverlay();
     levelTimer = 0;
     webWarmupFrames = 90;
-    webGridList = null; webInitCells = 1; webScanPending = 0; webLossPct = 0;
+    webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
+    webRescanIdx = 0; webRescanCover = 0; webLossPct = 0;
+    webIntegrityState.webGridList = null;
+    webIntegrityState.cellCovered = null;
+    webIntegrityState.coveredCount = 0;
+    webIntegrityState.dirtyIndices = [];
+    webIntegrityState.dirtyFlags = null;
     webGridBuildIdx = 0; webGridInitCover = 0;
     brokenEnds = [];
 
@@ -975,29 +1284,75 @@ window.onload = function () {
   }
 
   /* ── Web integrity ── */
+  function _spatialBounds() {
+    var pad = webRad * 1.1;
+    return {
+      minX: webCx - pad, minY: webCy - pad,
+      maxX: webCx + pad, maxY: webCy + pad
+    };
+  }
+
+  function rebuildSpatialIndex() {
+    if (USE_LEGACY_COLLISION || !spiderweb) return;
+    spatialIndex.build(spiderweb, _spatialBounds());
+  }
+
+  function _spatialOpts() {
+    return USE_LEGACY_COLLISION ? null : {
+      index: spatialIndex,
+      queryBuf: spatialQueryBuf
+    };
+  }
+
+  function _constraintAlive(c) {
+    return !c.__webId || spatialIndex.isAliveId(c.__webId);
+  }
+
   function _buildWebGrid() {
     webGridList = buildWebGridList(webCx, webCy, webRad, webGridStep);
     webGridBuildIdx = 0;
     webGridInitCover = 0;
     webInitCells = 1;
+    webIntegrityState.webGridList = webGridList;
+    webIntegrityState.cellCovered = new Uint8Array(webGridList.length);
+    webIntegrityState.dirtyFlags = new Uint8Array(webGridList.length);
+    webIntegrityState.coveredCount = 0;
+    webIntegrityState.dirtyIndices = [];
   }
 
   function continueWebGridBuild() {
     if (!webGridList || webGridBuildIdx >= webGridList.length) return;
-    var batchSize = 50;
-    var end = Math.min(webGridBuildIdx + batchSize, webGridList.length);
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    var end = Math.min(webGridBuildIdx + WEB_BUILD_BATCH, webGridList.length);
     for (var k = webGridBuildIdx; k < end; k++) {
-      if (cellCovered(webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD)) webGridInitCover++;
+      var cov = cellCovered(
+        webGridList[k].x, webGridList[k].y, spiderweb, webGridCoverD,
+        USE_LEGACY_COLLISION ? null : spatialIndex
+      );
+      webIntegrityState.cellCovered[k] = cov ? 1 : 0;
+      if (cov) webGridInitCover++;
     }
     webGridBuildIdx = end;
     if (webGridBuildIdx >= webGridList.length) {
       webInitCells = webGridInitCover || 1;
+      webIntegrityState.coveredCount = webGridInitCover;
     }
   }
 
-  function _scanWebCells() {
-    if (!webGridList || webGridList.length === 0) return;
-    var covered = scanWebCells(webGridList, spiderweb, webGridCoverD);
+  function _onWebSegmentBroken(c) {
+    if (!c) return;
+    if (c.__webId) spatialIndex.removeConstraint(c.__webId);
+    webScanPending = 12;
+  }
+
+  function _queueWebRescan() {
+    webRescanActive = true;
+    webRescanIdx = 0;
+    webRescanCover = 0;
+  }
+
+  function _applyWebCover(covered) {
+    if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
@@ -1028,20 +1383,275 @@ window.onload = function () {
     brokenEnds = _newBroken;
   }
 
+  function tickWebRescan() {
+    if (!webRescanActive || !webGridList) return;
+    var batch = scanWebCellsBatch(
+      webGridList, spiderweb, webGridCoverD, webRescanIdx, WEB_RESCAN_BATCH,
+      USE_LEGACY_COLLISION ? null : spatialIndex
+    );
+    webRescanCover += batch.covered;
+    webRescanIdx = batch.nextIdx;
+    if (batch.done) {
+      webRescanActive = false;
+      _applyWebCover(webRescanCover);
+    }
+  }
+
+  /* ── 补网修复 ── */
+
+  /**
+   * BFS 找 A→B 的最短路径（沿网线，排除锚定边）
+   * 返回路径节点数组 [A, ..., B]，找不到返回 null
+   */
+  function bfsPath(A, B, spiderweb) {
+    if (A === B) return [A];
+
+    /* 建邻接表 */
+    var adj = {};
+    for (var i = 0; i < spiderweb.constraints.length; i++) {
+      var c = spiderweb.constraints[i];
+      if (!(c instanceof DistanceConstraint)) continue;
+      if (c.__isStubAnchor) continue;
+      var idA = c.a.__pid, idB = c.b.__pid;
+      if (!idA || !idB) continue;
+      if (!adj[idA]) adj[idA] = [];
+      if (!adj[idB]) adj[idB] = [];
+      adj[idA].push({ node: c.b, pid: idB });
+      adj[idB].push({ node: c.a, pid: idA });
+    }
+
+    var startPid = A.__pid, endPid = B.__pid;
+    if (!startPid || !endPid) return null;
+    if (!adj[startPid]) return null;
+
+    var visited = {};
+    var prev = {};    /* pid → { node, prevPid } */
+    var queue = [{ node: A, pid: startPid }];
+    visited[startPid] = true;
+
+    while (queue.length > 0) {
+      var cur = queue.shift();
+      var neighbors = adj[cur.pid] || [];
+      for (var ni = 0; ni < neighbors.length; ni++) {
+        var nb = neighbors[ni];
+        if (visited[nb.pid]) continue;
+        visited[nb.pid] = true;
+        prev[nb.pid] = { node: cur.node, pid: cur.pid };
+        if (nb.pid === endPid) {
+          /* 回溯路径 */
+          var path = [B];
+          var trace = endPid;
+          while (prev[trace]) {
+            path.push(prev[trace].node);
+            trace = prev[trace].pid;
+          }
+          path.reverse();
+          return path;
+        }
+        queue.push(nb);
+      }
+    }
+    return null; /* 不连通 */
+  }
+
+  /**
+   * 在环内部打补丁：根据环的大小创建新粒子和边
+   * ring: 环上的节点数组（有序，首尾通过新边 A—B 闭合）
+   */
+  var REPAIR_TENSOR = 0.3; /* 与原网 spiderweb.js 的 tensor 保持一致 */
+
+  function addRepairEdge(a, b, spiderweb) {
+    var d = a.pos.dist(b.pos) * REPAIR_TENSOR;
+    spiderweb.constraints.push(new DistanceConstraint(a, b, 0.6, d));
+  }
+
+  function patchHole(ring, spiderweb) {
+    var len = ring.length;
+    /* 环太小不需要补丁 */
+    if (len <= 4) return;
+
+    /* 计算环的几何中心 */
+    var cx = 0, cy = 0;
+    for (var i = 0; i < len; i++) {
+      cx += ring[i].pos.x;
+      cy += ring[i].pos.y;
+    }
+    cx /= len;
+    cy /= len;
+
+    /* 根据环大小决定补几个点 */
+    var patchCount;
+    if (len <= 6) patchCount = 1;       /* 5-6 节点：1个中心点 */
+    else if (len <= 9) patchCount = 2;  /* 7-9 节点：2个点 */
+    else patchCount = 3;                /* 10+ 节点：3个点 */
+
+    var newPts = [];
+    if (patchCount === 1) {
+      /* 单点放中心 */
+      newPts.push({ x: cx, y: cy });
+    } else {
+      /* 多点沿中心均匀分布 */
+      var spreadR = 0;
+      for (var si = 0; si < len; si++) {
+        var sdx = ring[si].pos.x - cx, sdy = ring[si].pos.y - cy;
+        spreadR += Math.sqrt(sdx * sdx + sdy * sdy);
+      }
+      spreadR = (spreadR / len) * 0.4; /* 环内半径的 40% */
+      for (var pi = 0; pi < patchCount; pi++) {
+        var ang = (pi / patchCount) * Math.PI * 2;
+        newPts.push({
+          x: cx + Math.cos(ang) * spreadR,
+          y: cy + Math.sin(ang) * spreadR
+        });
+      }
+    }
+
+    /* 创建新粒子 */
+    var newParticles = [];
+    for (var ni = 0; ni < newPts.length; ni++) {
+      var np = new Particle(new Vec2(newPts[ni].x, newPts[ni].y));
+      np.__pid = getNextPid();
+      spiderweb.particles.push(np);
+      newParticles.push(np);
+    }
+
+    /* 连接新粒子到环上的节点 */
+    var ringA = ring[0], ringB = ring[len - 1];
+    var midNode = ring[Math.floor(len / 2)];
+    if (patchCount === 1) {
+      /* 补1个点：连 A、B、路径中间点 */
+      var mp1 = newParticles[0];
+      addRepairEdge(mp1, ringA, spiderweb);
+      addRepairEdge(mp1, ringB, spiderweb);
+      addRepairEdge(mp1, midNode, spiderweb);
+    } else if (patchCount === 2) {
+      /* 补2个点 P Q */
+      var P = newParticles[0], Q = newParticles[1];
+      var idxOneThird = Math.max(1, Math.floor(len / 3));
+      var idxTwoThird = Math.min(len - 2, Math.floor(len * 2 / 3));
+      var nodeNearA = ring[idxOneThird];
+      var nodeNearB = ring[idxTwoThird];
+      /* P 连 A、Q、路径1/3处 */
+      addRepairEdge(P, ringA, spiderweb);
+      addRepairEdge(P, Q, spiderweb);
+      addRepairEdge(P, nodeNearA, spiderweb);
+      /* Q 连 B、路径2/3处（P—Q 已建） */
+      addRepairEdge(Q, ringB, spiderweb);
+      addRepairEdge(Q, nodeNearB, spiderweb);
+    } else {
+      /* 补3个点 P Q R */
+      var P3 = newParticles[0], Q3 = newParticles[1], R3 = newParticles[2];
+      var idxQuarter = Math.max(1, Math.floor(len / 4));
+      var idxMid = Math.floor(len / 2);
+      var idxThreeQuarter = Math.min(len - 2, Math.floor(len * 3 / 4));
+      var nodeQuarterA = ring[idxQuarter];
+      var nodeMid3 = ring[idxMid];
+      var nodeQuarterB = ring[idxThreeQuarter];
+      /* P 连 A、Q、路径1/4处 */
+      addRepairEdge(P3, ringA, spiderweb);
+      addRepairEdge(P3, Q3, spiderweb);
+      addRepairEdge(P3, nodeQuarterA, spiderweb);
+      /* Q 连 R、路径中间点（P—Q 已建） */
+      addRepairEdge(Q3, R3, spiderweb);
+      addRepairEdge(Q3, nodeMid3, spiderweb);
+      /* R 连 B、路径3/4处（Q—R 已建） */
+      addRepairEdge(R3, ringB, spiderweb);
+      addRepairEdge(R3, nodeQuarterB, spiderweb);
+    }
+  }
+
+  function repairWeb(stub, snapTarget) {
+    if (!spiderweb || !snapTarget) return;
+
+    /* 找 stub 的锚点 */
+    var anchorPt = null;
+    for (var i = 0; i < spiderweb.constraints.length; i++) {
+      var c = spiderweb.constraints[i];
+      if (!c.__isStubAnchor) continue;
+      if (c.a === stub) { anchorPt = c.b; break; }
+      if (c.b === stub) { anchorPt = c.a; break; }
+    }
+
+    if (anchorPt && anchorPt !== snapTarget) {
+      if (P.repairPatch) {
+        /* 先 BFS 找最小环（在建新边之前，否则 BFS 会直接走新边） */
+        var path = bfsPath(anchorPt, snapTarget, spiderweb);
+
+        /* 建 A—B 主线（立即） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb);
+
+        /* 环够大则把补丁任务放入队列，等蜘蛛过来修 */
+        if (path && path.length > 4) {
+          /* 计算环的几何中心作为蜘蛛目标位置 */
+          var rcx = 0, rcy = 0;
+          for (var ri = 0; ri < path.length; ri++) {
+            rcx += path[ri].pos.x;
+            rcy += path[ri].pos.y;
+          }
+          rcx /= path.length;
+          rcy /= path.length;
+          repairQueue.push({
+            ring: path,
+            pos: new Vec2(rcx, rcy),
+            state: 'pending',
+            timer: REPAIR_WORK_DUR
+          });
+        }
+      } else {
+        /* 只修一根 */
+        addRepairEdge(anchorPt, snapTarget, spiderweb);
+      }
+    }
+
+    /* 删掉 stub 的锚定边 */
+    spiderweb.constraints = spiderweb.constraints.filter(function (c) {
+      if (c.__isStubAnchor && (c.a === stub || c.b === stub)) return false;
+      return true;
+    });
+
+    /* 删掉 stub 粒子 */
+    var si = spiderweb.particles.indexOf(stub);
+    if (si !== -1) spiderweb.particles.splice(si, 1);
+
+    /* 刷新断线头列表和网完整度 */
+    _refreshBrokenEnds();
+    webScanPending = 3;
+  }
+
+  /**
+   * 检查补网任务是否仍然有效：ring 上的节点是否还在 spiderweb.particles 中
+   * 超过半数节点失效则视为任务无效
+   */
+  function _isRepairTaskValid(task) {
+    if (!spiderweb || !task.ring) return false;
+    var alive = 0;
+    for (var i = 0; i < task.ring.length; i++) {
+      if (spiderweb.particles.indexOf(task.ring[i]) !== -1) alive++;
+    }
+    return alive > task.ring.length / 2;
+  }
+
+  /* 注册修复回调 */
+  sim.onRepairDrop = repairWeb;
+
   function checkWebIntegrity() {
     if (gameState !== 'LEVEL_ACTIVE') return;
     if (!spiderweb) return;
     if (webWarmupFrames > 0) {
-      webWarmupFrames--;
-      if (webWarmupFrames === 0) _buildWebGrid();
+      webWarmupFrames = Math.max(0, webWarmupFrames - _currentTimeScale);
+      if (webWarmupFrames === 0 && !webGridList) _buildWebGrid();
       var warmNumEl = document.getElementById('dbg-web-num');
       if (warmNumEl) warmNumEl.textContent = '100';
       return;
     }
-    if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) continueWebGridBuild();
-    if (webScanPending > 0) {
-      webScanPending--;
-      if (webScanPending === 0) _scanWebCells();
+    if (webGridBuildIdx < (webGridList ? webGridList.length : 0)) {
+      continueWebGridBuild();
+    } else {
+      if (webScanPending > 0) {
+        webScanPending = Math.max(0, webScanPending - _currentTimeScale);
+        if (webScanPending === 0) _queueWebRescan();
+      }
+      if (webRescanActive) tickWebRescan();
     }
     var _newPct = Math.max(0, Math.round(100 - webLossPct * 2));
     if (_newPct !== _webTargetPct) {
@@ -1051,7 +1661,7 @@ window.onload = function () {
     }
     var _rollDur = 20;
     if (_webRollTimer < _rollDur) {
-      _webRollTimer++;
+      _webRollTimer += _currentTimeScale;
       var _rollT = 1 - Math.pow(1 - _webRollTimer / _rollDur, 2);
       _webDisplayPct = Math.round(_webRollFrom + (_webTargetPct - _webRollFrom) * _rollT);
     } else {
@@ -1075,11 +1685,12 @@ window.onload = function () {
   /* ── Timer & spawner ── */
   function updateLevelTimer() {
     if (gameState === 'IDLE' || gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
-    levelTimer++;
-    gameFrames++;
+    levelTimer += _currentTimeScale;
+    gameFrames += _currentTimeScale;
   }
 
   function spawnRandom() {
+    if (isGameplayTestMode) return;
     var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
     var weights = cfg && cfg.spawnWeights;
     var kind = null;
@@ -1108,24 +1719,24 @@ window.onload = function () {
     if (gameState !== 'LEVEL_ACTIVE') return;
     var levelCfg = getLevelCfgAt(currentLevelIndex);
     var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
-    wavePhaseTimer++;
+    wavePhaseTimer += _currentTimeScale;
     if (currentWavePhase === WAVE_PAUSE) {
       if (wavePhaseTimer >= cfg.pauseDuration) advanceWavePhase();
       return;
     }
     if (!levelCfg.waves.length) return;
     if (spawnPhase === 'start_delay') {
-      firstBurstDelayTimer++;
+      firstBurstDelayTimer += _currentTimeScale;
       if (firstBurstDelayTimer >= cfg.firstBurstDelay) startBurst(cfg);
       return;
     }
     if (spawnPhase === 'burst_gap') {
-      burstGapTimer++;
+      burstGapTimer += _currentTimeScale;
       if (burstGapTimer >= (cfg.burstGap || 0)) startBurst(cfg);
       return;
     }
     if (spawnPhase === 'burst') {
-      burstTimer++;
+      burstTimer += _currentTimeScale;
       if (burstTimer < (cfg._currentBurstInterval || cfg.burstIntervalMin || 1)) return;
       burstTimer = 0;
       spawnRandom();
@@ -1216,6 +1827,7 @@ window.onload = function () {
 
   function getInventoryTarget(kind) {
     var slot = document.getElementById('inv-' + kind);
+    if (!slot) return null;
     var slotRect = slot.getBoundingClientRect();
     var stageRect = screenShellEl.getBoundingClientRect();
     return {
@@ -1229,42 +1841,86 @@ window.onload = function () {
     return dx * dx + dy * dy <= rr * rr;
   }
 
+  function beginPlucking(obj) {
+    if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
+    clearObjectConstraints(obj);
+    obj.state = 'plucking';
+    obj._pluckT = 0;
+    obj._pickupTension = 0;
+    obj._pickupCharge = 0;
+    var pullAngle = obj._pickupPullAngle || -Math.PI / 2;
+    obj._pluckVx = Math.cos(pullAngle) * 2.2;
+    obj._pluckVy = Math.sin(pullAngle) * 2.2;
+    obj.particle._noSimDrag = false;
+    obj.particle.lastPos.x = obj.particle.pos.x;
+    obj.particle.lastPos.y = obj.particle.pos.y;
+    sim.draggedEntity = null;
+    var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
+    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind);
+  }
+
   function beginCollectObject(obj) {
     var p = obj.particle;
     var startPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
     var targetPos = getInventoryTarget(obj.kind);
+    if (!targetPos) targetPos = startPos; /* 无对应 inventory slot 时原地收集 */
+    var snapshot = buildCollectSnapshot(obj);
+    if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
     clearObjectConstraints(obj);
     obj.state = 'collecting';
-    obj.collectT = 0; obj.collectPause = 12; obj.collectFlash = 0; obj.travelT = 0;
-    obj.collectDur = 40;
+    obj.collectT = 0;
+    obj.collectPause = 10;
+    obj.collectFlash = 0;
+    obj.collectDur = 34;
+    obj.travelT = 0;
+    obj.alpha = 0;
+    obj._shrinkScale = 1;
     obj.collectFromX = startPos.x; obj.collectFromY = startPos.y;
     obj.collectToX = targetPos.x; obj.collectToY = targetPos.y;
     p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
-    obj.alpha = 0;
+    obj._pickupTension = 0;
+    obj._pickupCharge = 0;
     obj.collectEl = document.createElement('div');
     obj.collectEl.className = 'collect-token';
-    obj.collectCanvas = document.createElement('canvas');
-    obj.collectCanvas.className = 'collect-token-art';
-    obj.collectCanvas.width = 34; obj.collectCanvas.height = 34;
-    renderArtToCanvas(obj.collectCanvas, obj.kind);
-    obj.collectEl.appendChild(obj.collectCanvas);
+    if (snapshot) {
+      obj.collectCanvas = snapshot.canvas;
+      obj.collectEl.style.width = snapshot.size + 'px';
+      obj.collectEl.style.height = snapshot.size + 'px';
+      obj.collectEl.style.marginLeft = (-snapshot.size * 0.5) + 'px';
+      obj.collectEl.style.marginTop = (-snapshot.size * 0.5) + 'px';
+      obj.collectEl.appendChild(snapshot.canvas);
+      obj._collectStartScale = 1;
+      obj._collectEndScale = 34 / snapshot.size;
+    } else {
+      obj.collectCanvas = document.createElement('canvas');
+      obj.collectCanvas.className = 'collect-token-art';
+      obj.collectCanvas.width = 34; obj.collectCanvas.height = 34;
+      renderArtToCanvas(obj.collectCanvas, obj.kind);
+      obj.collectEl.appendChild(obj.collectCanvas);
+      obj._collectStartScale = 1.15;
+      obj._collectEndScale = 0.82;
+    }
     obj.collectEl.style.left = obj.collectFromX + 'px';
     obj.collectEl.style.top = obj.collectFromY + 'px';
     collectLayer.appendChild(obj.collectEl);
+    obj.particle._noSimDrag = false;
   }
 
   function beginWrapping(obj) {
-    clearObjectConstraints(obj);
     obj.state = 'wrapping';
     obj.wrapT = 0;
     obj.wrapDur = obj.def.wrapDur;
     obj.particle.lastPos.mutableSet(obj.particle.pos);
+    obj.particle._noSimDrag = true;
     wrappingTarget = obj;
     if (autoChaseTarget === obj) autoChaseTarget = null;
     if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
       clearPriorityTarget();
     }
     target = null;
+
+    obj._silkLines = null;
+    obj._silkSpiral = buildSilkSpiral(obj);
   }
 
   function tryCollectObjects() {
@@ -1282,8 +1938,9 @@ window.onload = function () {
       if (obj.playerDragging) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
-      if (circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
-        || circlesOverlap(abdomen.x, abdomen.y, 19, p.x, p.y, obj.def.collectRadius)) {
+      if (!circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
+        && !circlesOverlap(abdomen.x, abdomen.y, 19, p.x, p.y, obj.def.collectRadius)) continue;
+      if (obj.state === 'stuck') {
         beginWrapping(obj);
         return;
       }
@@ -1295,16 +1952,23 @@ window.onload = function () {
   function _inWebZone(x, y) { return inWebZone(x, y, W, H, P.webRadius * WEB_SCALE); }
   function _getWebOuterR() { return getWebOuterR(W, H, P.webRadius * WEB_SCALE); }
 
-  /* ── updateThrownObjects ── */
-  function updateThrownObjects() {
+  function captureThrownStickPrev() {
+    for (var oi = 0; oi < thrownObjects.length; oi++) {
+      var obj = thrownObjects[oi];
+      if (!obj || !obj.particle || obj.state !== 'falling') continue;
+      obj._stickPrevX = obj.particle.pos.x;
+      obj._stickPrevY = obj.particle.pos.y;
+    }
+  }
+
+  /* ── 投掷物运动积分（粘网查询在 physics+build 之后） ── */
+  function integrateThrownObjects() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
       if (!obj || !obj.def) continue;
       var def = obj.def, p = obj.particle;
 
       if (obj.state === 'falling') {
-        var prevX = p.pos.x, prevY = p.pos.y;
-
         if (obj.kind === 'boulder' || obj.kind === 'poop') {
           obj.segT += 0.22 * _currentTimeScale;
           var bGrav = obj.grav * 2.6 * _currentTimeScale;
@@ -1335,7 +1999,7 @@ window.onload = function () {
           if (p.pos.y > H + _wrap) { p.pos.y -= H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
           /* 挣脱后乱飞一段再重新粘网（无限循环，飞出屏幕才消失） */
           if (obj.released) {
-            obj._reStickTimer = (obj._reStickTimer || 0) + 1;
+            obj._reStickTimer = (obj._reStickTimer || 0) + _currentTimeScale;
             if (obj._reStickTimer >= (obj._reStickDelay || 80)) {
               /* 完全重置粘网状态，允许再次被网捕获 */
               obj.released = false;
@@ -1378,66 +2042,31 @@ window.onload = function () {
           if (p.pos.y > H + 60) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
         }
 
-        /* C方案粘网 */
-        var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
-        var stepLen = Math.sqrt(stepDx * stepDx + stepDy * stepDy);
-
-        if (!obj.released && (_inWebZone(p.pos.x, p.pos.y) || obj.enteredWebZone)) {
-          if (!obj.enteredWebZone) {
-            obj.enteredWebZone = true;
-            obj.penetrationDist = 0;
-            obj.hitHistory = [];
-            var outerR = _getWebOuterR();
-            var minDelay = P.stickDelayMin * outerR;
-            var maxDelay = P.stickDelayMax * outerR;
-            if (maxDelay < minDelay) maxDelay = minDelay;
-            var _stickMult = (obj.kind === 'bug') ? 2.0 : 1.0;
-            obj.stickDelay = (minDelay + Math.random() * (maxDelay - minDelay)) * _stickMult;
-          }
-          obj.penetrationDist += stepLen;
-          var newHits = collectPathHitCandidates(prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt);
-          for (var hi = 0; hi < newHits.length; hi++) {
-            newHits[hi].penetration = obj.penetrationDist;
-            var last = obj.hitHistory.length ? obj.hitHistory[obj.hitHistory.length - 1] : null;
-            if (last) {
-              var dxh = last.x - newHits[hi].x, dyh = last.y - newHits[hi].y;
-              if (dxh * dxh + dyh * dyh < 16) continue;
-            }
-            obj.hitHistory.push(newHits[hi]);
-          }
-          if (obj.hitHistory.length > P.stickHistory) {
-            obj.hitHistory.splice(0, obj.hitHistory.length - P.stickHistory);
-          }
-          if (obj.penetrationDist >= obj.stickDelay && obj.hitHistory.length) {
-            var chosen = chooseStickCandidate(obj.hitHistory, spiderweb, P.stickMidBias);
-            if (chosen) obj.stickToPoint(chosen, spiderweb);
-          }
-          if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
-            obj.enteredWebZone = false;
-            obj.penetrationDist = 0;
-            obj.hitHistory = [];
-          }
-        }
-
         if (obj.kind !== 'bug' && p.pos.y > H + 60) {
           obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
         }
 
       } else if (obj.state === 'sticking') {
-        obj.stickT = Math.min(1, obj.stickT + (_currentTimeScale === 0 ? 0 : 0.078));
+        obj.stickT = Math.min(1, obj.stickT + 0.078 * _currentTimeScale);
         var ease = obj.stickT < 0.5 ? 2 * obj.stickT * obj.stickT : -1 + (4 - 2 * obj.stickT) * obj.stickT;
         if (obj.cA) obj.cA.distance = obj.stickyFromA + (obj.stickyToA - obj.stickyFromA) * ease;
         if (obj.cB) obj.cB.distance = obj.stickyFromB + (obj.stickyToB - obj.stickyFromB) * ease;
         if (obj.stickT >= 1) {
           if (obj.cA) obj.cA.distance = obj.stickyToA;
           if (obj.cB) obj.cB.distance = obj.stickyToB;
-          obj.state = 'stuck'; obj.stayTimer = 0;
           if (obj.kind === 'bug') audioEngine.stopBugBuzz(thrownObjects.indexOf(obj));
           audioEngine.playSfxLand(obj.kind);
-          if (obj.kind === 'boulder') obj.wobbleAmp = 0.10;
-          if (obj.kind === 'bug') obj.wobbleAmp = 0.28;
-          if (obj.kind === 'drop') obj.wobbleAmp = 0.04;
-          if (obj.kind === 'poop') obj.wobbleAmp = 0.10;
+          var _ws = obj._stickIsRadial ? P.radialWobbleScale : P.spiralWobbleScale;
+          if (obj.kind === 'drop') {
+            obj.state = 'wrapped';
+            obj._popT = 0;
+            obj.particle._noSimDrag = true;
+          } else {
+            obj.state = 'stuck'; obj.stayTimer = 0;
+            if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
+            if (obj.kind === 'bug') obj.wobbleAmp = 0.28 * _ws;
+            if (obj.kind === 'poop') obj.wobbleAmp = 0.10 * _ws;
+          }
         }
 
       } else if (obj.state === 'stuck') {
@@ -1448,112 +2077,203 @@ window.onload = function () {
           p.lastPos.y = p.pos.y;
           continue;
         }
-        obj.stayTimer++;
+        if (_pickupDrag && _pickupDrag.obj === obj) {
+          var sTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+          var sTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+          var sPullDx = sTargetGripX - p.pos.x;
+          var sPullDy = sTargetGripY - p.pos.y;
+          var sAppliedForce = Math.sqrt(sPullDx * sPullDx + sPullDy * sPullDy) * PICKUP_PULL_STRENGTH / Math.max(1, obj.def.r);
+          var sForceThresh = obj.kind === 'boulder' ? STUCK_FORCE_THRESHOLD_BOULDER : STUCK_FORCE_THRESHOLD_BUG;
+          p.pos.x += sPullDx * PICKUP_PULL_STRENGTH;
+          p.pos.y += sPullDy * PICKUP_PULL_STRENGTH;
+          obj._pickupPullAngle = Math.atan2(sPullDy, sPullDx);
+          var sTensionA = 0, sTensionB = 0;
+          if (obj.cA) { var sAnchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a; sTensionA = Math.max(0, p.pos.dist(sAnchorA.pos) / Math.max(1, obj.cA.distance) - 1); }
+          if (obj.cB) { var sAnchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a; sTensionB = Math.max(0, p.pos.dist(sAnchorB.pos) / Math.max(1, obj.cB.distance) - 1); }
+          var sTension = sTensionA + sTensionB;
+          obj._pickupTension = sTension;
+          obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
+          var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : STUCK_OVERFORCE_BUG;
+          if (sAppliedForce >= sOverForce) {
+            _pickupDrag = null;
+            sim.draggedEntity = null;
+            obj._pickupTension = 0; obj._pickupCharge = 0;
+            obj.state = 'freeing'; obj.freeTimer = 0;
+            continue;
+          } else if (sAppliedForce >= sForceThresh) {
+            if (sTension >= STUCK_PLUCK_THRESHOLD) {
+              _pickupDrag = null;
+              sim.draggedEntity = null;
+              beginPlucking(obj);
+              continue;
+            } else if (sTension >= STUCK_BREAK_THRESHOLD) {
+              _pickupDrag = null;
+              sim.draggedEntity = null;
+              obj._pickupTension = 0; obj._pickupCharge = 0;
+              obj.state = 'freeing'; obj.freeTimer = 0;
+              continue;
+            }
+          }
+        } else {
+          obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
+          obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
+        }
+        obj.stayTimer += _currentTimeScale;
         var sagRate = obj.kind === 'boulder' || obj.kind === 'poop' ? 0.10 : obj.kind === 'bug' ? 0.06 : 0.008;
-        p.pos.y += sagRate;
+        p.pos.y += sagRate * _currentTimeScale;
         if (obj.kind === 'boulder') {
-          obj.segT += 0.13;
+          obj.segT += 0.13 * _currentTimeScale;
           p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
           p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
         } else if (obj.kind === 'poop') {
-          obj.segT += 0.13;
+          obj.segT += 0.13 * _currentTimeScale;
           p.pos.x += Math.sin(obj.segT) * obj.wobbleAmp * (0.4 + Math.random() * 0.2);
           p.pos.y += Math.cos(obj.segT * 0.6) * obj.wobbleAmp * 0.3;
         } else if (obj.kind === 'bug') {
           p.pos.x += (Math.random() - 0.5) * obj.wobbleAmp * 2;
           p.pos.y += (Math.random() - 0.5) * obj.wobbleAmp;
-          obj.wingT += 0.55;
+          if (obj.stuckOnConstraint) {
+            var nearStuck = findNearestWebSegment(
+              p.pos.x, p.pos.y, spiderweb, _spatialOpts(), obj.stuckOnConstraint
+            );
+            if (nearStuck) obj.stuckOnConstraint = nearStuck;
+          }
+          obj.wingT += 0.55 * _currentTimeScale;
         } else if (obj.kind === 'drop') {
           obj.angleVel = 0;
         } else {
-          obj.angleVel += (Math.random() - 0.5) * 0.0005;
-          obj.angleVel *= 0.98;
-          obj.angle += obj.angleVel;
+          obj.angleVel += (Math.random() - 0.5) * 0.0005 * _currentTimeScale;
+          obj.angleVel *= Math.pow(0.98, _currentTimeScale);
+          obj.angle += obj.angleVel * _currentTimeScale;
         }
         if (obj.kind !== 'drop' && obj.kind !== 'poop') {
           var ramp = Math.max(0, obj.stayFrames - 72);
           if (obj.stayTimer > ramp) {
             var progress = (obj.stayTimer - ramp) / Math.max(1, obj.stayFrames - ramp);
-            var wobbleMax = obj.kind === 'boulder' ? 12.0 : obj.kind === 'bug' ? 9.0 : 1.5;
-            obj.wobbleAmp = Math.min(wobbleMax, obj.wobbleAmp + (0.08 + progress * 0.18));
-            if (obj.kind === 'boulder') obj.segT += progress * 0.4;
-            if (obj.kind === 'bug') obj.wingT += progress * 0.8;
+            var _wm = obj._stickIsRadial ? P.radialWobbleScale : P.spiralWobbleScale;
+            var wobbleMax = (obj.kind === 'boulder' ? 12.0 : obj.kind === 'bug' ? 9.0 : 1.5) * _wm;
+            obj.wobbleAmp = Math.min(wobbleMax, obj.wobbleAmp + (0.08 + progress * 0.18) * _currentTimeScale);
+            if (obj.kind === 'boulder') obj.segT += progress * 0.4 * _currentTimeScale;
+            if (obj.kind === 'bug') obj.wingT += progress * 0.8 * _currentTimeScale;
           }
           if (obj.stayTimer >= obj.stayFrames) { obj.state = 'freeing'; obj.freeTimer = 0; }
         }
 
       } else if (obj.state === 'freeing') {
-        obj.freeTimer++;
+        obj.freeTimer += _currentTimeScale;
+        if (obj.kind === 'bug' && obj.stuckOnConstraint) {
+          var nearSeg = findNearestWebSegment(
+            p.pos.x, p.pos.y, spiderweb, _spatialOpts(), obj.stuckOnConstraint
+          );
+          if (nearSeg) obj.stuckOnConstraint = nearSeg;
+        }
         var thrash = obj.kind === 'boulder' ? 18 : obj.kind === 'bug' ? 14 : 4;
         p.pos.x += (Math.random() - 0.5) * thrash;
         p.pos.y += (Math.random() - 0.5) * (thrash * 0.6);
         if (obj.freeTimer > 28) {
-          obj.release(spiderweb, webBreakFlashes, _breakFrame);
+          obj.release(spiderweb, webBreakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts());
+          spiderweb._topologyVersion = (spiderweb._topologyVersion || 0) + 1;
+          if (_webDrawApi) {
+            for (var _fi = 0; _fi < webBreakFlashes.length; _fi++) {
+              if (!webBreakFlashes[_fi].affectedCI) _webDrawApi.annotateFlash(webBreakFlashes[_fi]);
+            }
+          }
           webScanPending = 12;
-
         }
 
       } else if (obj.state === 'falling2') {
         if (obj.kind === 'drop') {
-          obj.angleVel += (Math.random() - 0.5) * obj.angleTurb;
-          obj.angleVel *= obj.angleDrag;
-          obj.angle += obj.angleVel;
-          obj.vx += Math.sin(obj.angle) * obj.glideForce;
-          obj.vy += obj.grav;
-          obj.vx *= obj.drag; obj.vy *= obj.drag;
+          obj.angleVel += (Math.random() - 0.5) * obj.angleTurb * _currentTimeScale;
+          obj.angleVel *= Math.pow(obj.angleDrag, _currentTimeScale);
+          obj.angle += obj.angleVel * _currentTimeScale;
+          obj.vx += Math.sin(obj.angle) * obj.glideForce * _currentTimeScale;
+          obj.vy += obj.grav * _currentTimeScale;
+          var dragScale = Math.pow(obj.drag, _currentTimeScale);
+          obj.vx *= dragScale; obj.vy *= dragScale;
           var maxSpd = def.maxSpeed || 0.8;
           var spd2 = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
           if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
-          p.pos.x += obj.vx; p.pos.y += obj.vy;
+          p.pos.x += obj.vx * _currentTimeScale; p.pos.y += obj.vy * _currentTimeScale;
         } else if (obj.kind === 'poop') {
-          obj.vx *= obj.def.peelDrag;
-          obj.vy *= obj.def.peelDrag;
-          obj.vy += obj.grav * 0.08;
-          p.pos.x += obj.vx;
-          p.pos.y += obj.vy;
+          var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
+          obj.vx *= peelDragScale;
+          obj.vy *= peelDragScale;
+          obj.vy += obj.grav * 0.08 * _currentTimeScale;
+          p.pos.x += obj.vx * _currentTimeScale;
+          p.pos.y += obj.vy * _currentTimeScale;
         } else {
-          p.pos.y += obj.grav;
+          p.pos.y += obj.grav * _currentTimeScale;
         }
         if (obj.kind === 'poop') {
           if (p.pos.y > H + 80 || p.pos.x < -90 || p.pos.x > W + 90) {
             obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
           }
         } else {
-          obj.alpha = Math.max(0, obj.alpha - 0.016);
+          obj.alpha = Math.max(0, obj.alpha - 0.016 * _currentTimeScale);
           if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
         }
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
-        obj.wrapT = Math.min(1, obj.wrapT + (_currentTimeScale === 0 ? 0 : 1 / obj.wrapDur));
+        obj.wrapT = Math.min(1, obj.wrapT + _currentTimeScale / obj.wrapDur);
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
           wrappingTarget = null;
-          if (autoPlay) _autoPlayPause = 24; /* 0.4秒停顿 */
-          if (obj.kind === 'poop') {
-            handlePoopCapture(obj);
+          obj.state = 'wrapped';
+          obj._popT = 0;
+          audioEngine.playCollectSound(obj.kind);
+        }
+
+      } else if (obj.state === 'wrapped') {
+        if (obj._popT <= obj._popDur) obj._popT++;
+        if (_pickupDrag && _pickupDrag.obj === obj) {
+          var targetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+          var targetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+          var pullDx = targetGripX - p.pos.x;
+          var pullDy = targetGripY - p.pos.y;
+          var appliedPullForce = Math.sqrt(pullDx * pullDx + pullDy * pullDy) * PICKUP_PULL_STRENGTH / Math.max(1, obj.def.r);
+          p.pos.x += pullDx * PICKUP_PULL_STRENGTH;
+          p.pos.y += pullDy * PICKUP_PULL_STRENGTH;
+          obj._pickupPullAngle = Math.atan2(pullDy, pullDx);
+          var tensionA = 0;
+          var tensionB = 0;
+          if (obj.cA) {
+            var anchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+            tensionA = Math.max(0, p.pos.dist(anchorA.pos) / Math.max(1, obj.cA.distance) - 1);
+          }
+          if (obj.cB) {
+            var anchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+            tensionB = Math.max(0, p.pos.dist(anchorB.pos) / Math.max(1, obj.cB.distance) - 1);
+          }
+          obj._pickupTension = tensionA + tensionB;
+          obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+          if (obj._pickupTension >= PICKUP_TENSION_THRESHOLD && appliedPullForce >= _getPickupForceThreshold(obj)) {
+            beginPlucking(obj);
             continue;
           }
+        } else {
+          obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
+          obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
+        }
+
+      } else if (obj.state === 'plucking') {
+        obj._pluckT++;
+        var pluckPop  = 20;
+        var pluckTot  = pluckPop;
+        if (obj._pluckT <= pluckPop) {
+          var gravity = 0.18;
+          obj._pluckVy += gravity;
+          obj._pluckVx *= 0.88;
+          obj._pluckVy *= 0.88;
+          p.pos.x += obj._pluckVx;
+          p.pos.y += obj._pluckVy;
+          p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
+        }
+        if (obj._pluckT >= pluckTot) {
+          if (autoPlay) _autoPlayPause = 24;
           audioEngine.playCollectSound(obj.kind);
-          playCollectFX(obj, screenShellEl, canvas, collectLayer, W, H, SCORE_MULT);
-          /* 放射粒子爆发 */
-          var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
-          var _colors = obj.kind === 'boulder' ? ['#ff9966','#ffcc88','#ffffff']
-                      : obj.kind === 'bug'     ? ['#88ddff','#aaffcc','#ffffff']
-                      :                         ['#aaffaa','#ffffaa','#ffffff'];
-          for (var _pi = 0; _pi < 14; _pi++) {
-            var _ang = (_pi / 14) * Math.PI * 2 + Math.random() * 0.3;
-            var _spd = 1.8 + Math.random() * 2.8;
-            _burstParticles.push({
-              x: _bx, y: _by,
-              vx: Math.cos(_ang) * _spd,
-              vy: Math.sin(_ang) * _spd,
-              life: 1.0,
-              decay: 0.045 + Math.random() * 0.025,
-              r: 2.2 + Math.random() * 2.0,
-              color: _colors[Math.floor(Math.random() * _colors.length)]
-            });
-          }
+          var collectFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
+          playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind);
           beginCollectObject(obj);
         }
 
@@ -1564,23 +2284,24 @@ window.onload = function () {
         var opacity = 1;
 
         if (obj.collectPause > 0) {
-          obj.collectPause--;
-          obj.collectFlash++;
-          var holdT = 1 - obj.collectPause / 12;
+          obj.collectPause -= _currentTimeScale;
+          obj.collectFlash += _currentTimeScale;
+          var holdT = Math.min(1, 1 - Math.max(0, obj.collectPause) / 12);
           var pulse = Math.sin(holdT * Math.PI * 3.2) * 0.18;
           drawX += Math.sin(obj.collectFlash * 0.9) * 1.8;
           drawY += Math.cos(obj.collectFlash * 0.8) * 1.1;
           scale = 1.05 + holdT * 0.42 + pulse;
           opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
         } else {
-          obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
+          obj.travelT = Math.min(1, obj.travelT + _currentTimeScale / obj.collectDur);
           var easeIn = obj.travelT * obj.travelT * obj.travelT;
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
-          scale = 1.32 - (0.5 * obj.travelT);
+          scale = Math.max(obj._collectEndScale, 1 + (obj._collectEndScale - 1) * easeIn);
           opacity = 1 - obj.travelT * 0.08;
         }
 
+        obj.alpha = 0;
         if (obj.collectEl) {
           obj.collectEl.style.left = drawX + 'px';
           obj.collectEl.style.top = drawY + 'px';
@@ -1600,6 +2321,111 @@ window.onload = function () {
     }
   }
 
+  /* ── 粘网查询（physics + spatial build 之后） ── */
+  function queryThrownStick() {
+    for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
+      var obj = thrownObjects[oi];
+      if (!obj || !obj.def || obj.state !== 'falling' || obj.released) continue;
+      var p = obj.particle;
+      var prevX = obj._stickPrevX, prevY = obj._stickPrevY;
+      var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
+      var stepLen = Math.sqrt(stepDx * stepDx + stepDy * stepDy);
+
+      if (!_inWebZone(p.pos.x, p.pos.y) && !obj.enteredWebZone) continue;
+
+      if (!obj.enteredWebZone) {
+        obj.enteredWebZone = true;
+        obj.penetrationDist = 0;
+        obj.hitHistory = [];
+        obj._hitHistoryCount = 0;
+        var outerR = _getWebOuterR();
+        var minDelay = P.stickDelayMin * outerR;
+        var maxDelay = P.stickDelayMax * outerR;
+        if (maxDelay < minDelay) maxDelay = minDelay;
+        var stickMult = obj.kind === 'bug' ? 2.0 : 1.0;
+        obj.stickDelay = (minDelay + Math.random() * (maxDelay - minDelay)) * stickMult;
+      }
+      obj.penetrationDist += stepLen;
+
+      if (USE_LEGACY_COLLISION) {
+        var legacyHits = collectPathHitCandidates(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt
+        );
+        for (var lhi = 0; lhi < legacyHits.length; lhi++) {
+          legacyHits[lhi].penetration = obj.penetrationDist;
+          var lastL = obj._hitHistoryCount ? obj.hitHistory[obj._hitHistoryCount - 1] : null;
+          if (lastL) {
+            var dxl = lastL.x - legacyHits[lhi].x, dyl = lastL.y - legacyHits[lhi].y;
+            if (dxl * dxl + dyl * dyl < 16) continue;
+          }
+          if (!obj.hitHistory[obj._hitHistoryCount]) obj.hitHistory[obj._hitHistoryCount] = {};
+          var ls = obj.hitHistory[obj._hitHistoryCount++];
+          Object.assign(ls, legacyHits[lhi]);
+        }
+        if (obj._hitHistoryCount > P.stickHistory) {
+          var ldrop = obj._hitHistoryCount - P.stickHistory;
+          for (var li = 0; li < P.stickHistory; li++) obj.hitHistory[li] = obj.hitHistory[li + ldrop];
+          obj._hitHistoryCount = P.stickHistory;
+        }
+      } else {
+        var newCount = collectPathHitCandidatesSpatial(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius,
+          spatialIndex, spatialQueryBuf, stickHitScratch, _radialRatioAt
+        );
+        obj._hitHistoryCount = mergeStickHits(
+          obj.hitHistory, obj._hitHistoryCount, stickHitScratch, newCount,
+          obj.penetrationDist, P.stickHistory
+        );
+      }
+
+      if (obj.penetrationDist >= obj.stickDelay && obj._hitHistoryCount) {
+        var pick = chooseStickCandidate(
+          obj.hitHistory, obj._hitHistoryCount,
+          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, P.stickMidBias,
+          obj.kind === 'bug' ? p.pos.x : null,
+          obj.kind === 'bug' ? p.pos.y : null
+        );
+        obj._hitHistoryCount = pick.count;
+        if (pick.candidate) {
+          obj.stickToPoint(pick.candidate, spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+        }
+      }
+      if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
+        obj.enteredWebZone = false;
+        obj.penetrationDist = 0;
+        obj._hitHistoryCount = 0;
+      }
+    }
+  }
+
+  function _resyncFootParticles() {
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (!fs || !fs.particle) continue;
+      /* 只钉住位置，保留 lastPos 以维持脚端 Verlet 速度，腿链才能甩起来 */
+      fs.particle.pos.x = fs.current.x;
+      fs.particle.pos.y = fs.current.y;
+    }
+  }
+
+  function updateFootTriggers() {
+    if (poopStunTimer > 0) return;
+    var spatialOpts = _spatialOpts();
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (fs.stepping || fs.cooldown > 0) continue;
+      var drift2 = fs.current.dist2(spider.thorax.pos);
+      var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
+      var ps = partner && partner.stepping;
+      if (ps) continue;
+      if (target && drift2 > STEP_THRESH * STEP_THRESH) {
+        triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, false, spatialOpts);
+      } else if (!target && drift2 > REST_THRESH * REST_THRESH) {
+        triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, undefined, true, spatialOpts);
+      }
+    }
+  }
+
   /* ── Panel init ── */
   initPanel(P, DEFAULTS, {
     buildWeb: buildWeb,
@@ -1607,6 +2433,10 @@ window.onload = function () {
     onMotionChange: function () {
       moveSpeed = P.moveSpeed; STEP_SPEED = P.stepSpeed;
       STEP_THRESH = P.stepThresh; REST_THRESH = P.restThresh;
+    },
+    onRepairChange: function () {
+      sim.stubReachRadius = P.stubReachRadius;
+      sim.snapRadius = P.stubSnapRadius;
     },
     clearAllObjects: clearAllObjects,
     launchObject: launchObject,
@@ -1687,6 +2517,19 @@ window.onload = function () {
       restartCurrentWaveFromEditor();
     }
   });
+
+  /* ── 调试：手动触发 collapseChain ── */
+  document.getElementById('btn-debugCollapse').onclick = function () {
+    if (!spiderweb) return;
+    var stubs = [];
+    for (var i = 0; i < spiderweb.particles.length; i++) {
+      if (spiderweb.particles[i].__isStub) stubs.push(spiderweb.particles[i]);
+    }
+    for (var j = 0; j < stubs.length; j++) {
+      collapseChain(stubs[j], spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+    }
+    _refreshBrokenEnds();
+  };
 
   /* ── 背景与音乐控制（左侧参数面板） ── */
   (function initBgPanel() {
@@ -1855,6 +2698,129 @@ window.onload = function () {
     applyBgParams();
   })();
 
+  function _mountDevGaitTunePanel() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    var host = window.location && window.location.hostname ? window.location.hostname : '';
+    var q = window.location && window.location.search ? window.location.search : '';
+    var isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
+    var forceShow = q.indexOf('gaitdev=1') !== -1;
+    if (!isDevHost && !forceShow) return;
+
+    var tune = window._gaitTune || (window._gaitTune = Object.assign({}, _gaitTuneDefaults));
+
+    var panel = document.createElement('div');
+    panel.id = 'gait-dev-panel';
+    panel.style.position = 'fixed';
+    panel.style.right = '12px';
+    panel.style.top = '12px';
+    panel.style.width = '300px';
+    panel.style.maxHeight = '72vh';
+    panel.style.overflow = 'auto';
+    panel.style.zIndex = '9999';
+    panel.style.background = 'rgba(10,12,18,0.86)';
+    panel.style.border = '1px solid rgba(255,255,255,0.2)';
+    panel.style.borderRadius = '10px';
+    panel.style.padding = '10px';
+    panel.style.color = '#e8eefc';
+    panel.style.font = '12px/1.3 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+
+    var title = document.createElement('div');
+    title.textContent = 'Gait Tune (Dev)';
+    title.style.fontWeight = '700';
+    title.style.marginBottom = '8px';
+    panel.appendChild(title);
+
+    function addSlider(key, min, max, step) {
+      var wrap = document.createElement('div');
+      wrap.style.marginBottom = '7px';
+
+      var row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.marginBottom = '2px';
+
+      var name = document.createElement('span');
+      name.textContent = key;
+      var val = document.createElement('span');
+      val.textContent = String(tune[key]);
+      row.appendChild(name);
+      row.appendChild(val);
+
+      var input = document.createElement('input');
+      input.type = 'range';
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.value = String(tune[key]);
+      input.style.width = '100%';
+      input.addEventListener('input', function () {
+        var v = parseFloat(input.value);
+        tune[key] = v;
+        val.textContent = (Math.abs(v % 1) > 0.0001) ? v.toFixed(2) : String(v);
+      });
+
+      wrap.appendChild(row);
+      wrap.appendChild(input);
+      panel.appendChild(wrap);
+    }
+
+    addSlider('minStepDistMove', 20, 40, 1);
+    addSlider('minStepDistIdle', 16, 30, 1);
+    addSlider('segPenaltyMoving', 80, 300, 5);
+    addSlider('segPenaltyLowMove', 120, 420, 5);
+    addSlider('segPenaltyStable', 300, 900, 10);
+    addSlider('forwardMinProgressMove', 8, 30, 1);
+    addSlider('forwardMinProgressIdle', 4, 20, 1);
+    addSlider('forwardProgressPenalty', 6, 36, 1);
+    addSlider('holdNodeBase', 8, 14, 0.5);
+    addSlider('holdNodeScale', 0.02, 0.2, 0.01);
+    addSlider('holdNodeMin', 4, 10, 0.5);
+    addSlider('holdNodeMax', 8, 16, 0.5);
+    addSlider('holdSegBase', 10, 18, 0.5);
+    addSlider('holdSegScale', 0.02, 0.24, 0.01);
+    addSlider('holdSegMin', 6, 12, 0.5);
+    addSlider('holdSegMax', 10, 20, 0.5);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.display = 'flex';
+    btnRow.style.gap = '8px';
+    btnRow.style.marginTop = '8px';
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset';
+    resetBtn.style.flex = '1';
+    resetBtn.addEventListener('click', function () {
+      window._gaitTune = Object.assign({}, _gaitTuneDefaults);
+      tune = window._gaitTune;
+      panel.parentNode && panel.parentNode.removeChild(panel);
+      _mountDevGaitTunePanel();
+    });
+
+    var hideBtn = document.createElement('button');
+    hideBtn.textContent = 'Hide';
+    hideBtn.style.flex = '1';
+    hideBtn.addEventListener('click', function () {
+      panel.style.display = 'none';
+    });
+
+    btnRow.appendChild(resetBtn);
+    btnRow.appendChild(hideBtn);
+    panel.appendChild(btnRow);
+
+    document.body.appendChild(panel);
+
+    if (!window._gaitTuneHotkeyBound) {
+      window.addEventListener('keydown', function (e) {
+        if (e.key === '`') {
+          var p = document.getElementById('gait-dev-panel');
+          if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }
+      });
+      window._gaitTuneHotkeyBound = true;
+    }
+  }
+  _mountDevGaitTunePanel();
+
   /* ================================================================
      MAIN LOOP
   ================================================================ */
@@ -1862,6 +2828,8 @@ window.onload = function () {
   var _bgFrame = 0;
   var _wasBulletTime = false;
   var loop = function (timestamp) {
+    statsBeginFrame();
+
     /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
     var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
@@ -1880,32 +2848,110 @@ window.onload = function () {
       applyBgVignette(_isBulletTime);
     }
 
-    /* ── 弹性拖拽平滑阻尼 (每帧约逼近10%) ── */
-    _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * 0.1;
-    _smoothDrag.y += (_dragOffset.y - _smoothDrag.y) * 0.1;
+    /* ── 弹性拖拽平滑阻尼：按时间缩放，避免低帧更慢 ── */
+    var dragLerp = 1 - Math.pow(0.9, Math.max(0, timeScale));
+    _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * dragLerp;
+    _smoothDrag.y += (_dragOffset.y - _smoothDrag.y) * dragLerp;
 
     /* ── 更新 & 绘制 Sylvan 背景（子弹时间时冻结背景动画） ── */
     if (!_isBulletTime) {
       _bgFrame++;
+      statsTimeStart('bgUpd');
       updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
+      statsTimeEnd();
       var _bgInterval = IS_MOBILE ? 3 : 2;
       if (_bgFrame % _bgInterval === 0) {
+        statsTimeStart('bgRnd');
         renderSylvanBackground();
+        statsTimeEnd();
       }
     }
 
     if (gameState === 'IDLE' || gameState === 'GAME_OVER') {
+      statsTimeStart('other');
       updateLevelTimer();
+      countSimStats(0);
+      statsTimeEnd();
+      statsEndFrame(timestamp);
+      updateStatsPanel();
       requestAnimFrame(loop);
       return;
     }
 
-    var isPoopStunned = poopStunTimer > 0;
+    /* spawn descent animation */
+    if (_spawnAnim.active && spider) {
+      _spawnAnim.t = Math.min(1, _spawnAnim.t + 1 / _spawnAnim.duration);
+      var easeOut = 1 - Math.pow(1 - _spawnAnim.t, 3);
+      var spawnY = _spawnAnim.fromY + (_spawnAnim.toY - _spawnAnim.fromY) * easeOut;
+      var spawnDY = spawnY - spider.thorax.pos.y;
+      for (var spi = 0; spi < spider.particles.length; spi++) {
+        spider.particles[spi].pos.y += spawnDY;
+        spider.particles[spi].lastPos.y += spawnDY;
+      }
+      for (var sfi = 0; sfi < footState.length; sfi++) {
+        footState[sfi].current.y += spawnDY;
+        footState[sfi].particle.pos.y += spawnDY;
+        footState[sfi].particle.lastPos.y += spawnDY;
+      }
+      if (_spawnAnim.t >= 1) {
+        _spawnAnim.active = false;
+        for (var sfi2 = 0; sfi2 < footState.length; sfi2++) footState[sfi2].cooldown = sfi2 * 5;
+        triggerStep(0, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _spatialOpts());
+        triggerStep(2, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _spatialOpts());
+        setTimeout(function () {
+          if (footState) {
+            triggerStep(1, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _spatialOpts());
+            triggerStep(3, null, footState, spiderweb, spider, samplePoints, null, STEP_COOLDOWN, undefined, undefined, _spatialOpts());
+          }
+        }, 180);
+      }
+    }
 
-    updateSamplePoints(samplePoints);
+    statsTimeStart('anim');
+    captureThrownStickPrev();
+    var isPoopStunned = poopStunTimer > 0;
+    var isRepairing = false; /* 标记当前是否在执行补网任务 */
+
+    /* ── 补网任务：优先级高于玩家点击和 autoPlay，不可打断 ── */
+    if (!isPoopStunned && !wrappingTarget && repairQueue.length > 0) {
+      /* 检查队首任务是否仍然有效（ring 上的节点还活着） */
+      while (repairQueue.length > 0 && !_isRepairTaskValid(repairQueue[0])) {
+        repairQueue.shift();
+      }
+      if (repairQueue.length > 0) {
+        var rTask = repairQueue[0];
+        if (rTask.state === 'pending') {
+          rTask.state = 'walking';
+          _autoTarget.x = rTask.pos.x;
+          _autoTarget.y = rTask.pos.y;
+          target = _autoTarget;
+          isRepairing = true;
+        } else if (rTask.state === 'walking') {
+          _autoTarget.x = rTask.pos.x;
+          _autoTarget.y = rTask.pos.y;
+          target = _autoTarget;
+          isRepairing = true;
+          if (spider.thorax.pos.dist2(rTask.pos) <= 14 * 14) {
+            rTask.state = 'repairing';
+            target = null;
+          }
+        } else if (rTask.state === 'repairing') {
+          target = null;
+          isRepairing = true;
+          rTask.timer -= _currentTimeScale;
+          if (rTask.timer <= 0) {
+            patchHole(rTask.ring, spiderweb);
+            repairQueue.shift();
+            _refreshBrokenEnds();
+            webScanPending = 3;
+            isRepairing = false;
+          }
+        }
+      }
+    }
 
     /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
-    if (!isPoopStunned && !wrappingTarget && userPriorityTarget) {
+    if (!isPoopStunned && !wrappingTarget && !isRepairing && userPriorityTarget) {
       if (userPriorityTarget.type === 'object') {
         if (!getActivePriorityObject()) {
           clearPriorityTarget();
@@ -1927,8 +2973,8 @@ window.onload = function () {
     }
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
-    if (_autoPlayPause > 0) { _autoPlayPause--; }
-    if (!isPoopStunned && autoPlay && !wrappingTarget && _autoPlayPause <= 0 && !userPriorityTarget) {
+    if (_autoPlayPause > 0) { _autoPlayPause -= timeScale; }
+    if (!isPoopStunned && autoPlay && !wrappingTarget && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
       } else {
@@ -1962,11 +3008,12 @@ window.onload = function () {
     } else if (isWrapping) {
       target = null;
     } else if (target) {
-      var tx = spider.thorax.pos, dx = target.x - tx.x, dy = target.y - tx.y;
+      var tx = spider.thorax.pos;
+      var dx = target.x - tx.x, dy = target.y - tx.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
-        var scaledSpeed = moveSpeed; /* 固定步长，不受帧率影响 */
+        var scaledSpeed = moveSpeed * timeScale;
         var dirX = dx / dist, dirY = dy / dist;
 
         /* 玩家优先目标导航：绕开其他掉落物，不在路上触发打包 */
@@ -2003,75 +3050,134 @@ window.onload = function () {
     /* feet */
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
-      if (fs.cooldown > 0) fs.cooldown--;
+      if (fs.cooldown > 0) fs.cooldown -= timeScale;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : 1));
+        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : timeScale));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
-        fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+        fs.particle.pos.mutableSet(fs.current);
         if (fs.t >= 1) {
           fs.current.x = fs.targetPos.x; fs.current.y = fs.targetPos.y;
-          fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current);
+          fs.particle.pos.mutableSet(fs.current);
           fs.stepping = false;
           landFoot(fs, spider);
         }
       } else {
-        if (fs.landedNode) { fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y; }
-        else if (fs.landedSeg) { var sp = fs.landedSeg; fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t; fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t; }
-        if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
-        var drift2 = fs.current.dist2(spider.thorax.pos);
-        var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
-        var ps = partner && partner.stepping;
-        if (!ps && !isPoopStunned) {
-          if (target && drift2 > STEP_THRESH * STEP_THRESH) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
-          else if (!target && drift2 > REST_THRESH * REST_THRESH) triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN);
+        if (fs.landedNode) {
+          if (fs.landedNode.pos) {
+            fs.current.x = fs.landedNode.pos.x; fs.current.y = fs.landedNode.pos.y;
+          } else fs.landedNode = null;
+        } else if (fs.landedSeg) {
+          var sp = fs.landedSeg;
+          if (sp.pa && sp.pb && sp.pa.pos && sp.pb.pos) {
+            fs.current.x = sp.pa.pos.x + (sp.pb.pos.x - sp.pa.pos.x) * sp.t;
+            fs.current.y = sp.pa.pos.y + (sp.pb.pos.y - sp.pa.pos.y) * sp.t;
+          } else fs.landedSeg = null;
         }
+        if (fs.landedNode || fs.landedSeg) { fs.particle.pos.mutableSet(fs.current); fs.particle.lastPos.mutableSet(fs.current); }
       }
     }
 
+    if (!_isBulletTime) integrateThrownObjects();
+    statsTimeEnd();
+
+    /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
+    statsTimeStart('phys');
+    var physicsIters = 11;
+    var physicsSteps = _isBulletTime ? 1 : Math.max(1, Math.min(3, Math.round(timeScale)));
+    countSimStats(physicsIters * physicsSteps);
+    for (var psi = 0; psi < physicsSteps; psi++) {
+      sim.frame(
+        physicsIters,
+        USE_LEGACY_COLLISION ? null : _constraintAlive
+      );
+    }
+    _resyncFootParticles();
+    statsTimeEnd();
+
+    statsTimeStart('query');
+    _syncStepSearchTopology();
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+
+    updateFootTriggers();
+
     /* 断网红闪帧计数（子弹时间时暂停计数，避免红闪提前消失） */
     if (!_isBulletTime) {
-      _breakFrame++;
-      if (webBreakFlashes.length > 0)
-        webBreakFlashes = webBreakFlashes.filter(function (f) { return _breakFrame - f.t < 20; });
+      _breakFrame += timeScale;
+      if (webBreakFlashes.length > 0) {
+        var flashWrite = 0;
+        for (var fwi = 0; fwi < webBreakFlashes.length; fwi++) {
+          if (_breakFrame - webBreakFlashes[fwi].t < 20) webBreakFlashes[flashWrite++] = webBreakFlashes[fwi];
+        }
+        webBreakFlashes.length = flashWrite;
+      }
     }
 
     /* animT：子弹时间时冻结，其他时候每帧 +1 保持动画连续 */
     if (!_isBulletTime) {
       for (var _ai = 0; _ai < thrownObjects.length; _ai++) {
-        if (thrownObjects[_ai]) thrownObjects[_ai].animT++;
+        if (thrownObjects[_ai]) thrownObjects[_ai].animT += timeScale;
       }
     }
 
     /* wave system + 投掷物更新：子弹时间时全部冻结 */
     if (!_isBulletTime) {
+      queryThrownStick();
       updateLevelTimer();
       updateLevelSpawner();
       checkWebIntegrity();
-      if (poopStunTimer > 0) poopStunTimer--;
+      if (poopStunTimer > 0) poopStunTimer = Math.max(0, poopStunTimer - timeScale);
       tryCollectObjects();
-      updateThrownObjects();
       if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
     }
+    statsTimeEnd();
 
+    statsTimeStart('other');
     updateBlink();
-    sim.frame(16);   // 约束迭代次数固定，保持物理稳定性
+    statsTimeEnd();
+    statsTimeStart('webRnd');
     sim.draw();
+    statsTimeEnd();
+    statsTimeStart('preyRnd');
     drawThrownObjects(sim.ctx, thrownObjects, userPriorityTarget);
+    statsTimeEnd();
+    statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
     drawWrappingOverlay(sim.ctx, thrownObjects); /* 打包圆圈在最上层 */
 
+    /* ── 补网修复进度圈 ── */
+    if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {
+      var rt = repairQueue[0];
+      var progress = 1 - rt.timer / REPAIR_WORK_DUR;
+      var rpx = rt.pos.x, rpy = rt.pos.y;
+      var rStartA = -Math.PI / 2;
+      sim.ctx.beginPath();
+      sim.ctx.arc(rpx, rpy, 14, rStartA, rStartA + progress * 2 * Math.PI);
+      sim.ctx.strokeStyle = 'rgba(100,220,160,0.85)';
+      sim.ctx.lineWidth = 2.2;
+      sim.ctx.stroke();
+      var rTipAngle = rStartA + progress * 2 * Math.PI;
+      sim.ctx.beginPath();
+      sim.ctx.arc(rpx + Math.cos(rTipAngle) * 14, rpy + Math.sin(rTipAngle) * 14, 2.2, 0, 2 * Math.PI);
+      sim.ctx.fillStyle = 'rgba(100,220,160,0.95)';
+      sim.ctx.fill();
+    }
+
+    statsTimeEnd();
+
     /* 放射粒子：更新 + 绘制 */
     if (_burstParticles.length > 0) {
+      statsTimeStart('other');
       var _ctx = sim.ctx;
       for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
         var _bp = _burstParticles[_bpi];
-        var _speedScale = _bp.speedScale || 1;
+        var _speedScale = (_bp.speedScale || 1) * timeScale;
         _bp.x += _bp.vx * _speedScale; _bp.y += _bp.vy * _speedScale;
         var _drag = _bp.drag || 0.92;
-        _bp.vx *= _drag;
-        _bp.vy *= _drag;
+        var _dragScale = Math.pow(_drag, timeScale);
+        _bp.vx *= _dragScale;
+        _bp.vy *= _dragScale;
         if (_bp.smoke) {
           _bp.r += (_bp.grow || 0.1) * _speedScale;
         }
@@ -2096,6 +3202,7 @@ window.onload = function () {
         }
         _ctx.restore();
       }
+      statsTimeEnd();
     }
 
     /* ── 玩家标记：顶层绘制 ── */
@@ -2137,6 +3244,8 @@ window.onload = function () {
       }
     }
 
+    statsEndFrame(timestamp);
+    updateStatsPanel();
     requestAnimFrame(loop);
   };
   requestAnimFrame(loop);

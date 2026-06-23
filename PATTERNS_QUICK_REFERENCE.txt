@@ -1,0 +1,206 @@
+================================================================================
+SPIDER_WEB CODEBASE: QUICK REFERENCE — PATTERNS & SYMBOLS
+================================================================================
+
+GRAPH GENERATION
+────────────────────────────────────────────────────────────────────────────────
+src/entities/spiderweb.js
+  createSpiderweb(sim, origin, radius, segments, depth, stiffness, pinStep)
+    → Radial web topology with polar coordinates + cosine perturbation
+    → Pins every pinStep particles; applies tensor=0.3 for sag
+
+src/systems/footSystem.js
+  getWebSamplePoints(webComposite, N)
+    → Samples N points per constraint edge for foot placement
+  updateSamplePoints(pts)
+    → Recalculates x,y coordinates each frame
+
+src/systems/stickSystem.js
+  collectPathHitCandidates(px0, py0, px1, py1, catchR, spiderweb, radialRatioFn)
+    → Traces trajectory, projects onto constraints, filters by catchR
+    → Returns hits with radial ratio & distance metrics
+
+
+PHYSICS SIMULATION
+────────────────────────────────────────────────────────────────────────────────
+src/engine/VerletJS.js
+  VerletJS(width, height, canvas)
+    → Main engine: gravity=Vec2(0,0.2), friction=0.99, groundFriction=0.8
+  frame(step)
+    → Verlet integration: vel=(pos-lastPos)*friction; pos+=gravity+vel
+    → Relaxes constraints step times (default 16)
+
+src/engine/Particle.js
+  Particle(pos)
+    → Stores pos (current) and lastPos (previous)
+    → Velocity implicit: vel = pos - lastPos
+
+src/engine/Composite.js
+  Composite()
+    → Container: particles[], constraints[]
+    → pin(index, pos) creates PinConstraint
+
+
+CONSTRAINTS
+────────────────────────────────────────────────────────────────────────────────
+src/engine/constraints.js
+  DistanceConstraint(a, b, stiffness, distance)
+    → relax(sc): delta = ((distance²-|n|²)/|n|²)*stiffness*sc
+    → Applies equal/opposite corrections to both particles
+
+  PinConstraint(a, pos)
+    → relax(): a.pos = pos (absolute position, no dynamics)
+
+  AngleConstraint(a, b, c, stiffness)
+    → relax(sc): maintains angle at vertex b
+    → Handles angle wrapping (±π); rotates all 3 particles
+
+
+ANIMATION LOOPS
+────────────────────────────────────────────────────────────────────────────────
+src/main.js
+  loop(timestamp)
+    → Main animation loop: delta-time scaling, physics, rendering
+    → timeScale = delta / 16.67 (60fps baseline)
+    → sim.frame(16) for fixed constraint iterations
+    → requestAnimFrame(loop) for continuous update
+
+  Foot stepping animation
+    → ease = t < 0.5 ? 2*t² : -1 + (4-2*t)*t (quadratic ease-in-out)
+    → Updates both pos and lastPos to preserve velocity
+
+  updateThrownObjects()
+    → Gravity, web zone detection, stick history (40 frames), delayed sticking
+
+
+INTERACTION HANDLERS
+────────────────────────────────────────────────────────────────────────────────
+src/engine/VerletJS.js
+  onmousedown/onmouseup/onmousemove
+    → Tracks mouseDown, finds nearest particle (selectionRadius=20px)
+    → Drags particle to mouse position each frame
+
+  touchstart/touchend/touchmove
+    → Same logic as mouse; uses e.touches[0]
+    → passive: false to prevent scroll interference
+
+src/systems/footSystem.js
+  findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions)
+    → Builds alive particle set from active constraints
+    → Collects node & segment candidates within step radius
+    → Scores by distance to ideal position + leg separation
+    → Returns best candidate or null
+
+src/systems/stickSystem.js
+  chooseStickCandidate(history, spiderweb, stickMidBias)
+    → Filters history by constraint alive status
+    → Weights by depth (older=lower) & radial position (center-bias)
+    → Weighted random selection
+
+
+KEY PATTERNS
+────────────────────────────────────────────────────────────────────────────────
+1. VERLET INTEGRATION STABILITY
+   • Fixed constraint iterations (16), not delta-scaled
+   • Velocity implicit: vel = pos - lastPos
+   • Friction applied before position update
+
+2. CONSTRAINT RELAXATION
+   • Multiple passes per frame for stiffness
+   • Stiffness = correction scale factor (0.3–0.6 typical)
+   • Order: distance constraints → angle constraints
+
+3. PROCEDURAL TOPOLOGY
+   • Polar coordinates with stride-based distribution
+   • Cosine perturbation for organic variation
+   • Tensor factor (0.3) applied post-generation
+
+4. COLLISION DETECTION
+   • Trajectory projection via dot product
+   • Radial ratio weighting for stick candidate selection
+   • History-based delayed sticking (40-frame buffer)
+
+5. FRAME-RATE INDEPENDENCE
+   • timeScale = delta / 16.67 for game logic
+   • Physics uses fixed iteration count
+   • Background rendering throttled on mobile (every 3 frames)
+
+6. INTERACTION SMOOTHING
+   • Exponential damping: x += (target - x) * 0.1
+   • DPR-aware canvas coordinate scaling
+   • Touch passive: false for preventDefault()
+
+7. SPATIAL QUERIES
+   • Web sample points cached, updated each frame
+   • Alive particle set built on-demand
+   • Grid-based web integrity scan (incremental, batched)
+
+8. ANIMATION EASING
+   • Quadratic ease-in-out for smooth acceleration/deceleration
+   • Simultaneous pos/lastPos update preserves velocity
+   • Distance-based step triggering (STEP_THRESH, REST_THRESH)
+
+
+COMMON PITFALLS
+────────────────────────────────────────────────────────────────────────────────
+✗ Forgetting to update lastPos during animation → velocity breaks on next frame
+✗ Stale particle references in alive set → invalid foot placements
+✗ Missing angle wrapping (±π) in AngleConstraint → jitter
+✗ Dot product projection with fast objects → misses collisions
+✗ Forgetting DPR scaling on canvas coordinates → misaligned dragging
+✗ Increasing step count instead of stiffness → no effect on stiffness
+✗ Reversing constraint relaxation order → instability
+✗ Catch radius too small → misses objects; too large → false positives
+
+
+PERFORMANCE TUNING
+────────────────────────────────────────────────────────────────────────────────
+Constraint Iterations:     16 (higher = stiffer, slower)
+Web Sample Density:        8 points per edge (higher = better placement, slower)
+Stick History Buffer:      40 frames (longer = stable, slower response)
+Grid Cell Size:            configurable (smaller = precise, slower)
+Background Render Rate:    every frame (desktop), every 3 frames (mobile)
+
+
+FILE STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+src/engine/
+  ├─ VerletJS.js          (main physics engine)
+  ├─ Particle.js          (Verlet particle)
+  ├─ Composite.js         (particle + constraint container)
+  ├─ constraints.js       (Distance, Pin, Angle constraints)
+  └─ Vec2.js              (2D vector math)
+
+src/entities/
+  ├─ spiderweb.js         (procedural web generation)
+  ├─ spider.js            (spider body + legs)
+  └─ ThrownObj.js         (thrown objects with physics)
+
+src/systems/
+  ├─ footSystem.js        (foot placement & stepping)
+  ├─ stickSystem.js       (collision & sticking)
+  ├─ webIntegrity.js      (damage tracking)
+  └─ levelSystem.js       (game progression)
+
+src/render/
+  ├─ webRenderer.js       (web drawing)
+  ├─ spiderRenderer.js    (spider drawing)
+  ├─ objectRenderer.js    (thrown object drawing)
+  ├─ sylvanBackground.js  (procedural background)
+  └─ inventoryArt.js      (UI art rendering)
+
+src/ui/
+  ├─ overlay.js           (game state overlays)
+  └─ panel.js             (control panel)
+
+src/main.js                (main loop, game state machine)
+
+
+EXTERNAL REFERENCES
+────────────────────────────────────────────────────────────────────────────────
+• Verlet Integration: Jakobsen, Thomas. "Advanced Character Physics." GDC 2001.
+• Constraint-Based Physics: Müller et al. "Position Based Dynamics." 2007.
+• Procedural Generation: Perlin noise, cosine perturbation, polar coordinates
+• Interaction: Trajectory projection, weighted random selection, exponential damping
+
+================================================================================

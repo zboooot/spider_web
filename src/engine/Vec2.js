@@ -61,6 +61,7 @@ Vec2.prototype.dist2 = function (v) {
 
 Vec2.prototype.normal = function () {
   var m = Math.sqrt(this.x * this.x + this.y * this.y);
+  if (m < 1e-9) return new Vec2(0, 0);
   return new Vec2(this.x / m, this.y / m);
 };
 
@@ -73,7 +74,14 @@ Vec2.prototype.angle = function (v) {
 };
 
 Vec2.prototype.angle2 = function (vL, vR) {
-  return vL.sub(this).angle(vR.sub(this));
+  return Vec2.angleAt(this.x, this.y, vL.x, vL.y, vR.x, vR.y);
+};
+
+/** 顶点 b 处，从 ba 到 bc 的夹角（无分配） */
+Vec2.angleAt = function (bx, by, ax, ay, cx, cy) {
+  var lx = ax - bx, ly = ay - by;
+  var rx = cx - bx, ry = cy - by;
+  return Math.atan2(lx * ry - ly * rx, lx * rx + ly * ry);
 };
 
 Vec2.prototype.rotate = function (o, t) {
@@ -82,4 +90,13 @@ Vec2.prototype.rotate = function (o, t) {
     x * Math.cos(t) - y * Math.sin(t) + o.x,
     x * Math.sin(t) + y * Math.cos(t) + o.y
   );
+};
+
+/** 绕原点 o 旋转 t 弧度，原地修改 */
+Vec2.prototype.mutableRotate = function (o, t) {
+  var x = this.x - o.x, y = this.y - o.y;
+  var cos = Math.cos(t), sin = Math.sin(t);
+  this.x = x * cos - y * sin + o.x;
+  this.y = x * sin + y * cos + o.y;
+  return this;
 };

@@ -1,16 +1,14 @@
 import { DistanceConstraint } from '../engine/constraints.js';
-import popoHeadUrl from '../assets/popo.png';
-import popoBlinkUrl from '../assets/popo_blink.png';
-import popoPackUrl from '../assets/popo_pack.png';
+import { statsDc } from '../debug/renderStats.js';
 
 var popoHeadImg = new Image();
-popoHeadImg.src = popoHeadUrl;
+popoHeadImg.src = '/src/assets/popo.png';
 
 var popoBlinkImg = new Image();
-popoBlinkImg.src = popoBlinkUrl;
+popoBlinkImg.src = '/src/assets/popo_blink.png';
 
 var popoPackImg = new Image();
-popoPackImg.src = popoPackUrl;
+popoPackImg.src = '/src/assets/popo_pack.png';
 
 function getSpiderHeadFrame(blinkState, wrappingTarget) {
   if (wrappingTarget) return popoPackImg;
@@ -20,10 +18,23 @@ function getSpiderHeadFrame(blinkState, wrappingTarget) {
   return popoHeadImg;
 }
 
+var HEAD_IMG_W = 36.8;
+
+/** 头图中心：与 popo 绘制位置一致，作为四条腿的公共根部锚点 */
+function getHeadCenter(ax, ay, tx, ty) {
+  var fdx = tx - ax, fdy = ty - ay;
+  var fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
+  return {
+    x: ax + (fdx / fl) * 4,
+    y: ay + (fdy / fl) * 4
+  };
+}
+
 /**
  * 设置蜘蛛的自定义绘制函数
  */
 export function setupSpiderDraw(spider, legConstraintCount, footState, blinkState, getWrappingTarget) {
+  spider.deferDraw = true;
   spider.drawConstraints = function (ctx, comp) {
     var wrappingTarget = getWrappingTarget();
 
@@ -58,26 +69,48 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
     }
 
     var footDraw = [];
+    var _maxFootJump2 = 48 * 48;
+    if (!spider._footDrawPrev) spider._footDrawPrev = [];
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       var drawCX = fs.current.x, drawCY = fs.current.y;
+      var prev = spider._footDrawPrev[fi];
+      if (prev) {
+        var fjdx = drawCX - prev.x, fjdy = drawCY - prev.y;
+        if (fjdx * fjdx + fjdy * fjdy > _maxFootJump2) {
+          drawCX = prev.x + fjdx * 0.4;
+          drawCY = prev.y + fjdy * 0.4;
+        }
+      }
       footDraw.push({ x: drawCX, y: drawCY });
+      spider._footDrawPrev[fi] = { x: drawCX, y: drawCY };
     }
 
     var tx2 = spider.thorax.pos.x + thoraxDX, ty2 = spider.thorax.pos.y + thoraxDY;
     var ax2 = spider.abdomen.pos.x + abdomenDX, ay2 = spider.abdomen.pos.y + abdomenDY;
+    var headCenter = getHeadCenter(ax2, ay2, tx2, ty2);
 
-    // Soft curved legs with more joints.
+    // Soft curved legs with more joints — 根部统一从头图中心发出，物理链仍从 p1 接出。
     var chains = spider.legChains || [];
     for (var ci = 0; ci < chains.length; ci++) {
       var chain = chains[ci];
-      var pts = [];
+      var pts = [{ x: headCenter.x, y: headCenter.y }];
       for (var pi = 0; pi < chain.length; pi++) {
         var p = chain[pi].pos;
         pts.push({ x: p.x, y: p.y });
       }
       if (footDraw[ci]) {
-        pts[pts.length - 1] = footDraw[ci];
+        var fd = footDraw[ci];
+        var hx = pts[0].x, hy = pts[0].y;
+        var dxh = fd.x - hx, dyh = fd.y - hy;
+        var d2h = dxh * dxh + dyh * dyh;
+        if (d2h > 66 * 66) {
+          var dl = Math.sqrt(d2h) || 1;
+          var clamp = 60;
+          pts[pts.length - 1] = { x: hx + dxh / dl * clamp, y: hy + dyh / dl * clamp };
+        } else {
+          pts[pts.length - 1] = fd;
+        }
       }
 
       if (wrappingTarget) {
@@ -87,16 +120,16 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
         if (activeIdx !== -1) {
           var legPhase = activeIdx === 0 ? 0 : Math.PI;
           var legTime = wrapAt * 0.95 + legPhase;
-          for (var ai = 0; ai < pts.length; ai++) {
-            var factor = (ai + 1) / pts.length;
+          for (var ai = 1; ai < pts.length; ai++) {
+            var factor = ai / (pts.length - 1);
             var scrambleForward = Math.sin(legTime * 0.9 + ai * 0.65) * (4 + factor * 8 + wrapT2 * 7);
             var scrambleLateral = Math.cos(legTime * 1.35 + ai * 0.5) * (2 + factor * 5 + wrapT2 * 4);
             pts[ai].x += wrapOX * scrambleForward * factor + perpX * scrambleLateral * factor;
             pts[ai].y += wrapOY * scrambleForward * factor + perpY * scrambleLateral * factor;
           }
         } else {
-          for (var bi = 0; bi < pts.length; bi++) {
-            var settle = (bi + 1) / pts.length;
+          for (var bi = 1; bi < pts.length; bi++) {
+            var settle = bi / (pts.length - 1);
             pts[bi].x += -wrapOX * (1.4 + wrapT2 * 1.8) * settle;
             pts[bi].y += -wrapOY * (1.4 + wrapT2 * 1.8) * settle;
           }
@@ -122,6 +155,7 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       ctx.strokeStyle = '#0c0c0c';
       ctx.lineWidth = 4.6;
       ctx.stroke();
+      statsDc('stroke');
 
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
@@ -139,22 +173,29 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       ctx.strokeStyle = '#1b1b1b';
       ctx.lineWidth = 2.5;
       ctx.stroke();
+      statsDc('stroke');
       ctx.restore();
     }
 
-    var ax = ax2, ay = ay2;
-    var tx = tx2, ty = ty2;
-    var fdx = tx - ax, fdy = ty - ay, fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
-    var fnx = fdx / fl, fny = fdy / fl, prx = -fny, pry = fnx;
-
-    // Replace old spider body with provided image head while keeping size similar.
     var headFrame = getSpiderHeadFrame(blinkState, wrappingTarget);
     if (headFrame.complete && headFrame.naturalWidth > 0) {
-      var imgW = 36.8;
-      var imgH = imgW * (headFrame.naturalHeight / headFrame.naturalWidth);
-      var imgCX = ax + fnx * 4;
-      var imgCY = ay + fny * 4;
-      ctx.drawImage(headFrame, imgCX - imgW * 0.5, imgCY - imgH * 0.5, imgW, imgH);
+      var ax = ax2, ay = ay2;
+      var tx = tx2, ty = ty2;
+      var fdx = tx - ax, fdy = ty - ay, fl = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
+      var fnx = fdx / fl, fny = fdy / fl, prx = -fny, pry = fnx;
+      var imgH = HEAD_IMG_W * (headFrame.naturalHeight / headFrame.naturalWidth);
+      var shakeOff = (blinkState && blinkState.headShake > 0)
+        ? Math.sin(blinkState.headShake * 1.8) * blinkState.headShakeAmp : 0;
+      var imgCX = headCenter.x + prx * shakeOff;
+      var imgCY = headCenter.y + pry * shakeOff;
+      ctx.drawImage(
+        headFrame,
+        imgCX - HEAD_IMG_W * 0.5,
+        imgCY - imgH * 0.5,
+        HEAD_IMG_W,
+        imgH
+      );
+      statsDc('image');
     }
   };
 

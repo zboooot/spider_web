@@ -21,6 +21,7 @@ export function bindSlider(key, rebuildType, P, callbacks) {
     if (rebuildType === 'web') { callbacks.buildWeb(); }
     else if (rebuildType === 'spider') { callbacks.buildSpider(); }
     else if (rebuildType === 'motion') { callbacks.onMotionChange(); }
+    else if (rebuildType === 'repair') { callbacks.onRepairChange(); }
   });
 }
 
@@ -53,6 +54,22 @@ export function initPanel(P, DEFAULTS, callbacks) {
   bindSlider('caterpillarReleaseSec', 'object', P, callbacks);
   bindSlider('flyReleaseSec', 'object', P, callbacks);
   bindSlider('leafReleaseSec', 'object', P, callbacks);
+
+  /* 补网配置 */
+  bindSlider('stubReachRadius', 'repair', P, callbacks);
+  bindSlider('stubSnapRadius', 'repair', P, callbacks);
+
+  var repairPatchBtn = document.getElementById('btn-repairPatch');
+  function renderRepairPatchBtn(on) {
+    repairPatchBtn.textContent = on ? 'Patch Repair: ON' : 'Patch Repair: OFF';
+    repairPatchBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    repairPatchBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderRepairPatchBtn(!!P.repairPatch);
+  repairPatchBtn.addEventListener('click', function () {
+    P.repairPatch = P.repairPatch ? 0 : 1;
+    renderRepairPatchBtn(!!P.repairPatch);
+  });
 
   document.getElementById('btn-rebuild').onclick = function () { callbacks.buildWeb(); };
 

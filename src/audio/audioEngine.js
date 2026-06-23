@@ -4,6 +4,7 @@
  */
 
 var AC = null;
+var _audioUnlocked = false;
 
 /* ── BGM 状态 ── */
 var masterBgmGain = null;
@@ -27,6 +28,23 @@ var THEME_IDS = ['morning-jade', 'golden-autumn', 'misty-violet', 'cherry-blosso
 function getAC() {
   if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
   return AC;
+}
+
+function unlockAudio(onReady) {
+  try {
+    var ctx = getAC();
+    if (ctx.state === 'suspended') {
+      var p = ctx.resume();
+      if (p && typeof p.then === 'function') {
+        return p.then(function () {
+          _audioUnlocked = true;
+          if (onReady) onReady();
+        }).catch(function () {});
+      }
+    }
+    _audioUnlocked = true;
+    if (onReady) onReady();
+  } catch (e) {}
 }
 
 /* 初始化或复用 masterBgmGain → masterLP → destination 路由 */
@@ -246,7 +264,10 @@ function _stopAllBgmNodes(fadeSec) {
 function playLevelBGM(levelIndex) {
   try {
     var ctx = getAC();
-    if (ctx.state === 'suspended') ctx.resume();
+    if (ctx.state === 'suspended') {
+      if (!_audioUnlocked) return;
+      ctx.resume().catch(function () {});
+    }
     _ensureMasterGain();
 
     var themeId = THEME_IDS[Math.max(0, Math.min(THEME_IDS.length - 1, levelIndex))];
@@ -548,6 +569,7 @@ function setVolume(v) {
 
 export var audioEngine = {
   getAC: getAC,
+  unlockAudio: unlockAudio,
   startBGM: startBGM,
   stopBGM: stopBGM,
   playLevelBGM: playLevelBGM,
