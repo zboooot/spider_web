@@ -404,6 +404,8 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
   this._pickupTension = 0;
   this._pickupCharge = 0;
   this._pickupPullAngle = 0;
+  this._manualPullOff = false;
+  this._disableRestick = false;
   this._pluckT = 0;
   this._pluckVx = 0;
   this._pluckVy = 0;
@@ -501,6 +503,9 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
   if (!constraint) return false;
   var p = this.particle;
+  this._manualPullOff = false;
+  this._disableRestick = false;
+  this.released = false;
   clearObjectConstraints(this);
   var attached = _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, 0);
   var dA = attached.dA;
@@ -533,12 +538,26 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
 ThrownObj.prototype.reanchorWrappedToPoint = function (pt, spiderweb, aliveCheck) {
   var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
   if (!constraint) return false;
+  this._manualPullOff = false;
   clearObjectConstraints(this);
   _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, this.def.r * 0.4);
   this.state = 'wrapped';
   this._pickupTension = 0;
   this._pickupCharge = 0;
   this.particle._noSimDrag = true;
+  return true;
+};
+
+ThrownObj.prototype.reanchorStuckToPoint = function (pt, spiderweb, aliveCheck) {
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
+  clearObjectConstraints(this);
+  _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, this.def.r * 0.4);
+  this.state = 'stuck';
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this.playerDragging = true;
+  this.particle._noSimDrag = false;
   return true;
 };
 
@@ -692,6 +711,58 @@ ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
   this.vy = this.peelVy;
   p.lastPos.x = p.pos.x - this.peelVx;
   p.lastPos.y = p.pos.y - this.peelVy;
+};
+
+ThrownObj.prototype.pullOffWeb = function (dragDx, dragDy) {
+  if (this.kind !== 'boulder') return false;
+  var p = this.particle;
+  clearObjectConstraints(this);
+  this.stuckOnConstraint = null;
+  this.playerDragging = false;
+  this.dragStrain = 0;
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this._manualPullOff = true;
+  this._disableRestick = true;
+
+  var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
+  if (this.kind === 'bug') {
+    this.state = 'falling2';
+    this.alpha = 1;
+    this.grav = 1.15;
+    this.vx = (dragDx / len) * 1.1;
+    this.vy = Math.max(0.4, (dragDy / len) * 1.2 + 0.55);
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
+    return true;
+  }
+
+  if (this.kind === 'drop') {
+    this.state = 'falling';
+    this.alpha = 1;
+    this.released = true;
+    this.enteredWebZone = false;
+    this.penetrationDist = 0;
+    this.hitHistory = [];
+    this._hitHistoryCount = 0;
+    this.stayTimer = 0;
+    this.wobbleAmp = 0;
+    this.angleVel = (Math.random() * 2 - 1) * (Math.PI / 6) / 60;
+    this.vx = (dragDx / len) * 0.18;
+    this.vy = Math.max(0.22, (dragDy / len) * 0.18 + 0.18);
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
+    return true;
+  }
+
+  this.state = 'falling2';
+  this.alpha = 1;
+  var peelSpeed = 6.2;
+  this.vx = (dragDx / len) * peelSpeed;
+  this.vy = (dragDy / len) * peelSpeed;
+  p.lastPos.x = p.pos.x - this.vx;
+  p.lastPos.y = p.pos.y - this.vy;
+  return true;
 };
 
 ThrownObj.prototype.destroy = function (sim) {

@@ -270,19 +270,6 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
         }
         if (stubAnchorPt) break;
       }
-      /* 限制拖拽范围：以锚点为圆心 */
-      var reachR = this.stubReachRadius;
-      var reachR2 = reachR * reachR;
-      if (stubAnchorPt) {
-        var adx = this.draggedEntity.pos.x - stubAnchorPt.pos.x;
-        var ady = this.draggedEntity.pos.y - stubAnchorPt.pos.y;
-        var ad2 = adx * adx + ady * ady;
-        if (ad2 > reachR2) {
-          var ad = Math.sqrt(ad2);
-          this.draggedEntity.pos.x = stubAnchorPt.pos.x + (adx / ad) * reachR;
-          this.draggedEntity.pos.y = stubAnchorPt.pos.y + (ady / ad) * reachR;
-        }
-      }
 
       var snap = null, snapD2 = this.snapRadius * this.snapRadius;
       for (c in this.composites) {
@@ -293,7 +280,6 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
           var wp = wps[i];
           if (wp === this.draggedEntity) continue;
           if (wp === stubAnchorPt) continue;
-          if (stubAnchorPt && wp.pos.dist2(stubAnchorPt.pos) > reachR2) continue;
           var wConn = 0;
           for (var wi = 0; wi < wcs.length; wi++) {
             if (!(wcs[wi] instanceof DistanceConstraint)) continue;
@@ -438,9 +424,14 @@ VerletJS.prototype.nearestEntity = function () {
     }
   }
   if (bestStub) {
-    bestStub.__isWebParticle = true;
-    bestStub.__isWebTug = false;
-    return bestStub;
+    /* 如果点击位置同时有 stuck 物体，物体优先，不拖 stub */
+    if (this.hasObjectAt && this.hasObjectAt(this.mouse.x, this.mouse.y)) {
+      /* 跳过 stub，走后续流程（最终 return null，让 click 处理物体） */
+    } else {
+      bestStub.__isWebParticle = true;
+      bestStub.__isWebTug = false;
+      return bestStub;
+    }
   }
 
   /* 第二优先级：最近的存活网线段（轻微弹性拖拽；上层猎物由 shouldAllowWebTug 屏蔽） */

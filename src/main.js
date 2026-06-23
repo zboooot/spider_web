@@ -339,6 +339,17 @@ window.onload = function () {
   sim.gravity = new Vec2(0, 0);
   sim.stubReachRadius = P.stubReachRadius;
   sim.snapRadius = P.stubSnapRadius;
+  sim.hasObjectAt = function (x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 16;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return true;
+    }
+    return false;
+  };
 
   /* ── 拖拽弹性视差交互状态机 ── */
   var _dragStart = { x: 0, y: 0 };
@@ -388,8 +399,10 @@ window.onload = function () {
 
   function _pickPreyAt(x, y, states) {
     var allowed = states || ['wrapped', 'stuck'];
-    var best = null;
-    var bestD2 = Infinity;
+    var bestWebDrag = null;
+    var bestWebDragD2 = Infinity;
+    var bestOther = null;
+    var bestOtherD2 = Infinity;
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
       if (!obj || allowed.indexOf(obj.state) === -1) continue;
@@ -401,12 +414,18 @@ window.onload = function () {
       var dy = y - p.y;
       var d2 = dx * dx + dy * dy;
       if (d2 > radius * radius) continue;
-      if (d2 < bestD2) {
-        best = obj;
-        bestD2 = d2;
+      var isWebDragCandidate = obj.state === 'stuck' && (obj.kind === 'boulder' || obj.kind === 'bug' || obj.kind === 'drop');
+      if (isWebDragCandidate) {
+        if (d2 < bestWebDragD2) {
+          bestWebDrag = obj;
+          bestWebDragD2 = d2;
+        }
+      } else if (d2 < bestOtherD2) {
+        bestOther = obj;
+        bestOtherD2 = d2;
       }
     }
-    return best;
+    return bestWebDrag || bestOther;
   }
 
   function _findWrappedPreyAt(clientX, clientY) {
@@ -425,6 +444,9 @@ window.onload = function () {
     if (!hit) return false;
     sim.draggedEntity = null;
     sim.snapTarget = null;
+    var dragMode = (hit.obj.state === 'stuck' && (hit.obj.kind === 'boulder' || hit.obj.kind === 'bug' || hit.obj.kind === 'drop'))
+      ? 'web-drag'
+      : 'pluck';
     _pickupDrag = {
       obj: hit.obj,
       startX: hit.obj.particle.pos.x,
@@ -433,17 +455,20 @@ window.onload = function () {
       pointerY: hit.pos.y,
       gripDX: hit.pos.x - hit.obj.particle.pos.x,
       gripDY: hit.pos.y - hit.obj.particle.pos.y,
+      mode: dragMode,
       active: true
     };
     hit.obj._pickupTension = 0;
     hit.obj._pickupCharge = 0;
     hit.obj.dragStrain = 0;
+    hit.obj.playerDragging = dragMode === 'web-drag' || hit.obj.kind === 'poop';
     if (hit.obj.kind === 'poop') {
-      hit.obj.playerDragging = true;
       _suppressPriorityClick = true;
     }
-    audioEngine.startPickupTearLoop();
-    audioEngine.updatePickupTearLoop(0);
+    if (dragMode === 'pluck') {
+      audioEngine.startPickupTearLoop();
+      audioEngine.updatePickupTearLoop(0);
+    }
     _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
@@ -624,7 +649,7 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; });
   }
 
   function _syncStepSearchTopology() {
@@ -785,6 +810,8 @@ window.onload = function () {
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
+  var _previewRing = null;  /* 拖拽 stub 时的 BFS 环路预览 */
+  var _previewSnapTarget = null; /* 上次计算预览时的 snapTarget，避免重复 BFS */
   var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
@@ -1227,9 +1254,10 @@ window.onload = function () {
   /* click to move (desktop) */
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick || sim.suppressClick || _touchWasSwipe || _pointerMoved) {
+    if (_suppressPriorityClick || sim.suppressClick || _suppressMoveCommand || _touchWasSwipe || _pointerMoved) {
       _suppressPriorityClick = false;
       sim.suppressClick = false;
+      _suppressMoveCommand = false;
       _touchWasSwipe = false;
       return;
     }
@@ -1256,15 +1284,17 @@ window.onload = function () {
   canvas.addEventListener('touchend', function (e) {
     if (e.changedTouches.length === 1) {
       var t = e.changedTouches[0];
-      var isTap = !_pointerMoved;
+      var ddx = t.clientX - _touchStartX;
+      var ddy = t.clientY - _touchStartY;
+      var isTap = !_pointerMoved && Math.sqrt(ddx * ddx + ddy * ddy) < TAP_MOVE_THRESHOLD;
       _touchWasSwipe = !isTap;
-      if (!_suppressPriorityClick && !sim.suppressClick && isTap) {
+      if (!_suppressPriorityClick && !sim.suppressClick && !_suppressMoveCommand && isTap) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
       sim.suppressClick = false;
+      _suppressMoveCommand = false;
     }
-    endPoopPointer();
   }, { passive: true });
 
   /* ── Game flow functions ── */
@@ -1534,7 +1564,7 @@ window.onload = function () {
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
-    if (pct > webLossPct) webLossPct = pct;
+    webLossPct = pct;
     /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
     _refreshBrokenEnds();
   }
@@ -1584,12 +1614,13 @@ window.onload = function () {
   function bfsPath(A, B, spiderweb) {
     if (A === B) return [A];
 
-    /* 建邻接表 */
+    /* 建邻接表（排除已死边和 stubAnchor） */
     var adj = {};
     for (var i = 0; i < spiderweb.constraints.length; i++) {
       var c = spiderweb.constraints[i];
       if (!(c instanceof DistanceConstraint)) continue;
       if (c.__isStubAnchor) continue;
+      if (!_constraintAlive(c)) continue;
       var idA = c.a.__pid, idB = c.b.__pid;
       if (!idA || !idB) continue;
       if (!adj[idA]) adj[idA] = [];
@@ -1638,9 +1669,17 @@ window.onload = function () {
    */
   var REPAIR_TENSOR = 0.3; /* 与原网 spiderweb.js 的 tensor 保持一致 */
 
-  function addRepairEdge(a, b, spiderweb) {
+  function addRepairEdge(a, b, spiderweb, animated) {
     var d = a.pos.dist(b.pos) * REPAIR_TENSOR;
-    spiderweb.constraints.push(new DistanceConstraint(a, b, 0.6, d));
+    var edge = new DistanceConstraint(a, b, 0.6, d);
+    if (animated) {
+      edge.__growT = 0;       /* 0→1 grow progress */
+      edge.__growDur = 12;    /* ~0.2s at 60fps */
+      edge.__flashT = 0;     /* 0→1 flash progress (white→normal) */
+      edge.__flashDur = 30;  /* ~0.5s at 60fps */
+    }
+    spiderweb.constraints.push(edge);
+    return edge;
   }
 
   function patchHole(ring, spiderweb) {
@@ -1699,9 +1738,9 @@ window.onload = function () {
     if (patchCount === 1) {
       /* 补1个点：连 A、B、路径中间点 */
       var mp1 = newParticles[0];
-      addRepairEdge(mp1, ringA, spiderweb);
-      addRepairEdge(mp1, ringB, spiderweb);
-      addRepairEdge(mp1, midNode, spiderweb);
+      addRepairEdge(mp1, ringA, spiderweb, true);
+      addRepairEdge(mp1, ringB, spiderweb, true);
+      addRepairEdge(mp1, midNode, spiderweb, true);
     } else if (patchCount === 2) {
       /* 补2个点 P Q */
       var P = newParticles[0], Q = newParticles[1];
@@ -1710,12 +1749,12 @@ window.onload = function () {
       var nodeNearA = ring[idxOneThird];
       var nodeNearB = ring[idxTwoThird];
       /* P 连 A、Q、路径1/3处 */
-      addRepairEdge(P, ringA, spiderweb);
-      addRepairEdge(P, Q, spiderweb);
-      addRepairEdge(P, nodeNearA, spiderweb);
+      addRepairEdge(P, ringA, spiderweb, true);
+      addRepairEdge(P, Q, spiderweb, true);
+      addRepairEdge(P, nodeNearA, spiderweb, true);
       /* Q 连 B、路径2/3处（P—Q 已建） */
-      addRepairEdge(Q, ringB, spiderweb);
-      addRepairEdge(Q, nodeNearB, spiderweb);
+      addRepairEdge(Q, ringB, spiderweb, true);
+      addRepairEdge(Q, nodeNearB, spiderweb, true);
     } else {
       /* 补3个点 P Q R */
       var P3 = newParticles[0], Q3 = newParticles[1], R3 = newParticles[2];
@@ -1726,15 +1765,55 @@ window.onload = function () {
       var nodeMid3 = ring[idxMid];
       var nodeQuarterB = ring[idxThreeQuarter];
       /* P 连 A、Q、路径1/4处 */
-      addRepairEdge(P3, ringA, spiderweb);
-      addRepairEdge(P3, Q3, spiderweb);
-      addRepairEdge(P3, nodeQuarterA, spiderweb);
+      addRepairEdge(P3, ringA, spiderweb, true);
+      addRepairEdge(P3, Q3, spiderweb, true);
+      addRepairEdge(P3, nodeQuarterA, spiderweb, true);
       /* Q 连 R、路径中间点（P—Q 已建） */
-      addRepairEdge(Q3, R3, spiderweb);
-      addRepairEdge(Q3, nodeMid3, spiderweb);
+      addRepairEdge(Q3, R3, spiderweb, true);
+      addRepairEdge(Q3, nodeMid3, spiderweb, true);
       /* R 连 B、路径3/4处（Q—R 已建） */
-      addRepairEdge(R3, ringB, spiderweb);
-      addRepairEdge(R3, nodeQuarterB, spiderweb);
+      addRepairEdge(R3, ringB, spiderweb, true);
+      addRepairEdge(R3, nodeQuarterB, spiderweb, true);
+    }
+  }
+
+  /**
+   * 在连接点喷出丝线粒子，方向朝对端散开
+   */
+  function _spawnRepairSilk(x, y, toX, toY) {
+    var dx = toX - x, dy = toY - y;
+    var baseAng = Math.atan2(dy, dx);
+    /* 中心闪光 */
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.04,
+      r: 6,
+      grow: 0.3,
+      drag: 1,
+      speedScale: 1,
+      smoke: true,
+      occlude: 0.6,
+      color: '#ddeeff'
+    });
+    /* 散射丝线粒子 */
+    for (var i = 0; i < 10; i++) {
+      var ang = baseAng + (Math.random() - 0.5) * 2.2;
+      var spd = 2.0 + Math.random() * 3.0;
+      _burstParticles.push({
+        x: x + (Math.random() - 0.5) * 4,
+        y: y + (Math.random() - 0.5) * 4,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life: 1.0,
+        decay: 0.035 + Math.random() * 0.02,
+        r: 2.0 + Math.random() * 2.0,
+        drag: 0.92,
+        speedScale: 1,
+        smoke: false,
+        color: '#e8e8f0'
+      });
     }
   }
 
@@ -1755,8 +1834,8 @@ window.onload = function () {
         /* 先 BFS 找最小环（在建新边之前，否则 BFS 会直接走新边） */
         var path = bfsPath(anchorPt, snapTarget, spiderweb);
 
-        /* 建 A—B 主线（立即） */
-        addRepairEdge(anchorPt, snapTarget, spiderweb);
+        /* 建 A—B 主线（带生长动画） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb, true);
 
         /* 环够大则把补丁任务放入队列，等蜘蛛过来修 */
         if (path && path.length > 4) {
@@ -1768,17 +1847,24 @@ window.onload = function () {
           }
           rcx /= path.length;
           rcy /= path.length;
+          /* 补点数决定修复时长：1/2/3个点 → 1/2/3秒（60/120/180帧） */
+          var _pc = path.length <= 6 ? 1 : path.length <= 9 ? 2 : 3;
+          var _dur = _pc * 60;
           repairQueue.push({
             ring: path,
             pos: new Vec2(rcx, rcy),
             state: 'pending',
-            timer: REPAIR_WORK_DUR
+            timer: _dur,
+            duration: _dur
           });
         }
       } else {
-        /* 只修一根 */
-        addRepairEdge(anchorPt, snapTarget, spiderweb);
+        /* 只修一根（带生长动画） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb, true);
       }
+      /* 修复粒子效果：两个连接点各喷丝线粒子 */
+      _spawnRepairSilk(anchorPt.pos.x, anchorPt.pos.y, snapTarget.pos.x, snapTarget.pos.y);
+      _spawnRepairSilk(snapTarget.pos.x, snapTarget.pos.y, anchorPt.pos.x, anchorPt.pos.y);
     }
 
     /* 删掉 stub 的锚定边 */
@@ -2035,11 +2121,13 @@ window.onload = function () {
     obj.particle.lastPos.x = obj.particle.pos.x;
     obj.particle.lastPos.y = obj.particle.pos.y;
     sim.draggedEntity = null;
-    var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
-    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind, false);
   }
 
   function beginCollectObject(obj) {
+    if (obj._manualPullOff) {
+      obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+      return false;
+    }
     var p = obj.particle;
     var startPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
     var targetPos = getInventoryTarget(obj.kind);
@@ -2084,6 +2172,7 @@ window.onload = function () {
     obj.collectEl.style.top = obj.collectFromY + 'px';
     collectLayer.appendChild(obj.collectEl);
     obj.particle._noSimDrag = false;
+    return true;
   }
 
   function beginWrapping(obj) {
@@ -2311,12 +2400,55 @@ window.onload = function () {
             obj.state = 'stuck'; obj.stayTimer = 0;
             if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
             if (obj.kind === 'bug') obj.wobbleAmp = 0.28 * _ws;
-            if (obj.kind === 'poop') obj.wobbleAmp = 0.10 * _ws;
+            if (obj.kind === 'poop') obj.wobbleAmp = 0.10;
           }
         }
 
       } else if (obj.state === 'stuck') {
         if (_pickupDrag && _pickupDrag.obj === obj) {
+          if (_pickupDrag.mode === 'web-drag' && (obj.kind === 'boulder' || obj.kind === 'bug' || obj.kind === 'drop')) {
+            var wTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
+            var wTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
+            var wPullDx = wTargetGripX - p.pos.x;
+            var wPullDy = wTargetGripY - p.pos.y;
+            p.pos.x += wPullDx * PICKUP_PULL_STRENGTH;
+            p.pos.y += wPullDy * PICKUP_PULL_STRENGTH;
+            if (obj.cA && obj.cB) {
+              var wAnchorA2 = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+              var wAnchorB2 = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+              var wMidX = (wAnchorA2.pos.x + wAnchorB2.pos.x) * 0.5;
+              var wMidY = (wAnchorA2.pos.y + wAnchorB2.pos.y) * 0.5;
+              var wOffX = p.pos.x - wMidX;
+              var wOffY = p.pos.y - wMidY;
+              var wOffLen = Math.sqrt(wOffX * wOffX + wOffY * wOffY) || 1;
+              var wMaxDrift = obj.kind === 'boulder'
+                ? obj.def.r * 1.9
+                : obj.kind === 'bug'
+                  ? obj.def.r * 2.2
+                  : obj.def.r * 1.45;
+              if (wOffLen > wMaxDrift) {
+                p.pos.x = wMidX + (wOffX / wOffLen) * wMaxDrift;
+                p.pos.y = wMidY + (wOffY / wOffLen) * wMaxDrift;
+              }
+              p.lastPos.x = p.pos.x;
+              p.lastPos.y = p.pos.y;
+            }
+            obj._pickupPullAngle = Math.atan2(wPullDy, wPullDx);
+            var wTensionA = 0, wTensionB = 0;
+            if (obj.cA) {
+              var wAnchorA = obj.cA.a === p ? obj.cA.b : obj.cA.a;
+              var wStretchA = p.pos.dist(wAnchorA.pos);
+              wTensionA = Math.max(0, wStretchA / Math.max(1, obj.cA.distance) - 1);
+            }
+            if (obj.cB) {
+              var wAnchorB = obj.cB.a === p ? obj.cB.b : obj.cB.a;
+              var wStretchB = p.pos.dist(wAnchorB.pos);
+              wTensionB = Math.max(0, wStretchB / Math.max(1, obj.cB.distance) - 1);
+            }
+            obj._pickupTension = wTensionA + wTensionB;
+            obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+            continue;
+          }
           var sTargetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
           var sTargetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
           var sPullDx = sTargetGripX - p.pos.x;
@@ -2480,6 +2612,12 @@ window.onload = function () {
             finishLeafWrap(obj);
             continue;
           }
+          if (obj.kind === 'poop') {
+            wrappingTarget = null;
+            if (autoPlay) _autoPlayPause = 24;
+            handlePoopCapture(obj);
+            continue;
+          }
           wrappingTarget = null;
           obj.state = 'wrapped';
           obj._popT = 0;
@@ -2533,6 +2671,10 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'plucking') {
+        if (obj._manualPullOff) {
+          obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+          continue;
+        }
         obj._pluckT++;
         var pluckPop  = 20;
         var pluckTot  = pluckPop;
@@ -2546,14 +2688,25 @@ window.onload = function () {
           p.lastPos.x = p.pos.x; p.lastPos.y = p.pos.y;
         }
         if (obj._pluckT >= pluckTot) {
+          if (obj._manualPullOff) {
+            obj.state = obj.kind === 'bug' ? 'falling2' : obj.state;
+            continue;
+          }
           if (autoPlay) _autoPlayPause = 24;
           audioEngine.playCollectSound(obj.kind);
           var collectFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
-          playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind, 'Collected');
+          if (!obj._manualPullOff) playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind, 'Collected');
           beginCollectObject(obj);
         }
 
       } else if (obj.state === 'collecting') {
+        if (obj._manualPullOff) {
+          if (obj.collectEl && obj.collectEl.parentNode) obj.collectEl.parentNode.removeChild(obj.collectEl);
+          obj.collectEl = null;
+          obj.collectCanvas = null;
+          obj.state = obj.kind === 'drop' ? 'falling' : 'falling2';
+          continue;
+        }
         var drawX = obj.collectFromX;
         var drawY = obj.collectFromY;
         var scale = 1;
@@ -2601,7 +2754,7 @@ window.onload = function () {
   function queryThrownStick() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
-      if (!obj || !obj.def || obj.state !== 'falling' || obj.released) continue;
+      if (!obj || !obj.def || obj.state !== 'falling' || obj.released || obj._disableRestick) continue;
       var p = obj.particle;
       var prevX = obj._stickPrevX, prevY = obj._stickPrevY;
       var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
@@ -2727,6 +2880,15 @@ window.onload = function () {
     buildSpider: buildSpider,
     getSharedDefaultsJson: function () {
       return JSON.stringify(buildSharedDefaultsPayload(P), null, 2);
+    },
+    promoteSharedDefaults: async function () {
+      var response = await fetch('/__shared-defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildSharedDefaultsPayload(P))
+      });
+      if (!response.ok) throw new Error('failed to write shared defaults');
+      return response.json();
     },
     onMotionChange: function () {
       moveSpeed = P.moveSpeed; STEP_SPEED = P.stepSpeed;
@@ -3122,20 +3284,17 @@ window.onload = function () {
   /* ================================================================
      MAIN LOOP
   ================================================================ */
+  var FIXED_STEP_MS = 1000 / 60;
+  var MAX_CATCHUP_STEPS = 4;
   var _lastTimestamp = 0;
+  var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
   var _wasBulletTime = false;
-  var loop = function (timestamp) {
-    statsBeginFrame();
-
-    /* ── 时间差：计算帧缩放比，用于游戏逻辑速度补偿 ── */
-    var delta = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
-    _lastTimestamp = timestamp;
-
+  function fixedUpdate() {
     /* ── 子弹时间检测：拖拽断线头时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
-    /* timeScale: 正常=帧率补偿，子弹时间=0.15 */
-    var timeScale = _isBulletTime ? 0.0 : delta / 16.67;
+    /* 固定 60Hz 逻辑步：正常每步=1 帧，子弹时间冻结玩法逻辑 */
+    var timeScale = _isBulletTime ? 0.0 : 1.0;
     _currentTimeScale = timeScale;
 
     /* ── 背景变暗切换（只在状态变化时调用一次） ── */
@@ -3144,6 +3303,29 @@ window.onload = function () {
       bgConfig.darken = _isBulletTime ? 0.72 : P.bgDarken / 100;
       applyBgPresentation();
       applyBgVignette(_isBulletTime);
+    }
+
+    /* ── 拖拽 stub 时实时预览 BFS 环路 ── */
+    if (_isBulletTime && sim.snapTarget && sim.draggedEntity && sim.draggedEntity.__isStub) {
+      if (sim.snapTarget !== _previewSnapTarget) {
+        _previewSnapTarget = sim.snapTarget;
+        /* 找 stub 的锚点 */
+        var _pvAnchor = null;
+        for (var _pvi = 0; _pvi < spiderweb.constraints.length; _pvi++) {
+          var _pvc = spiderweb.constraints[_pvi];
+          if (!_pvc.__isStubAnchor) continue;
+          if (_pvc.a === sim.draggedEntity) { _pvAnchor = _pvc.b; break; }
+          if (_pvc.b === sim.draggedEntity) { _pvAnchor = _pvc.a; break; }
+        }
+        if (_pvAnchor && _pvAnchor !== sim.snapTarget) {
+          _previewRing = bfsPath(_pvAnchor, sim.snapTarget, spiderweb);
+        } else {
+          _previewRing = null;
+        }
+      }
+    } else {
+      _previewRing = null;
+      _previewSnapTarget = null;
     }
 
     /* ── 弹性拖拽平滑阻尼：按时间缩放，避免低帧更慢 ── */
@@ -3170,10 +3352,7 @@ window.onload = function () {
       updateLevelTimer();
       countSimStats(0);
       statsTimeEnd();
-      statsEndFrame(timestamp);
-      updateStatsPanel();
-      requestAnimFrame(loop);
-      return;
+      return timeScale;
     }
 
     /* spawn descent animation */
@@ -3220,23 +3399,74 @@ window.onload = function () {
         var rTask = repairQueue[0];
         if (rTask.state === 'pending') {
           rTask.state = 'walking';
-          _autoTarget.x = rTask.pos.x;
-          _autoTarget.y = rTask.pos.y;
-          target = _autoTarget;
-          isRepairing = true;
-        } else if (rTask.state === 'walking') {
-          _autoTarget.x = rTask.pos.x;
-          _autoTarget.y = rTask.pos.y;
-          target = _autoTarget;
-          isRepairing = true;
-          if (spider.thorax.pos.dist2(rTask.pos) <= 14 * 14) {
-            rTask.state = 'repairing';
-            target = null;
+        }
+        if (rTask.state === 'walking') {
+          /* 动态找 ring 上离蜘蛛最近的存活节点作为目标 */
+          var _bestRN = null, _bestRD2 = Infinity;
+          for (var _rni = 0; _rni < rTask.ring.length; _rni++) {
+            var _rn = rTask.ring[_rni];
+            if (spiderweb.particles.indexOf(_rn) === -1) continue;
+            var _rd2 = spider.thorax.pos.dist2(_rn.pos);
+            if (_rd2 < _bestRD2) { _bestRD2 = _rd2; _bestRN = _rn; }
+          }
+          if (_bestRN) {
+            _autoTarget.x = _bestRN.pos.x;
+            _autoTarget.y = _bestRN.pos.y;
+            target = _autoTarget;
+            isRepairing = true;
+            if (_bestRD2 <= 14 * 14) {
+              rTask.state = 'repairing';
+              target = null;
+            }
+          } else {
+            /* ring 上没有存活节点，放弃任务 */
+            repairQueue.shift();
           }
         } else if (rTask.state === 'repairing') {
           target = null;
           isRepairing = true;
           rTask.timer -= _currentTimeScale;
+
+          /* 持续喷丝线粒子：数量少但范围大 */
+          var sx = spider.thorax.pos.x;
+          var sy = spider.thorax.pos.y;
+          var _repairDir = Math.atan2(rTask.pos.y - sy, rTask.pos.x - sx);
+          if (Math.floor(rTask.timer) % 2 === 0) {
+            var sAng = Math.random() * Math.PI * 2;
+            var sSpd = 2.5 + Math.random() * 4.0;
+            _burstParticles.push({
+              x: sx + (Math.random() - 0.5) * 16,
+              y: sy + (Math.random() - 0.5) * 16,
+              vx: Math.cos(sAng) * sSpd,
+              vy: Math.sin(sAng) * sSpd,
+              life: 1.0,
+              decay: 0.018 + Math.random() * 0.012,
+              r: 1.5 + Math.random() * 1.5,
+              drag: 0.95,
+              speedScale: 1,
+              smoke: false,
+              color: ['#e8e8f0', '#d0d8e8', '#ffffff'][Math.floor(Math.random() * 3)]
+            });
+          }
+          /* 偶尔喷一个带 glow 的大粒子 */
+          if (Math.floor(rTask.timer) % 10 === 0) {
+            _burstParticles.push({
+              x: sx + (Math.random() - 0.5) * 20,
+              y: sy + (Math.random() - 0.5) * 20,
+              vx: (Math.random() - 0.5) * 1.5,
+              vy: (Math.random() - 0.5) * 1.5,
+              life: 1.0,
+              decay: 0.025,
+              r: 4,
+              grow: 0.2,
+              drag: 0.97,
+              speedScale: 1,
+              smoke: true,
+              occlude: 0.45,
+              color: '#ddeeff'
+            });
+          }
+
           if (rTask.timer <= 0) {
             patchHole(rTask.ring, spiderweb);
             repairQueue.shift();
@@ -3471,6 +3701,11 @@ window.onload = function () {
     statsTimeStart('other');
     updateBlink();
     statsTimeEnd();
+
+    return timeScale;
+  }
+
+  function renderFrame(timestamp, updateScale) {
     statsTimeStart('webRnd');
     sim.draw();
     statsTimeEnd();
@@ -3495,7 +3730,7 @@ window.onload = function () {
     /* ── 补网修复进度圈 ── */
     if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {
       var rt = repairQueue[0];
-      var progress = 1 - rt.timer / REPAIR_WORK_DUR;
+      var progress = 1 - rt.timer / (rt.duration || 60);
       var rpx = rt.pos.x, rpy = rt.pos.y;
       var rStartA = -Math.PI / 2;
       sim.ctx.beginPath();
@@ -3518,10 +3753,10 @@ window.onload = function () {
       var _ctx = sim.ctx;
       for (var _bpi = _burstParticles.length - 1; _bpi >= 0; _bpi--) {
         var _bp = _burstParticles[_bpi];
-        var _speedScale = (_bp.speedScale || 1) * timeScale;
+        var _speedScale = (_bp.speedScale || 1) * updateScale;
         _bp.x += _bp.vx * _speedScale; _bp.y += _bp.vy * _speedScale;
         var _drag = _bp.drag || 0.92;
-        var _dragScale = Math.pow(_drag, timeScale);
+        var _dragScale = Math.pow(_drag, updateScale);
         _bp.vx *= _dragScale;
         _bp.vy *= _dragScale;
         if (_bp.smoke) {
@@ -3588,6 +3823,30 @@ window.onload = function () {
         sim.ctx.fill();
         sim.ctx.restore();
       }
+    }
+
+  }
+
+  var loop = function (timestamp) {
+    statsBeginFrame();
+
+    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
+    _lastTimestamp = timestamp;
+    _fixedAccumulatorMs += elapsedMs;
+
+    var steps = 0;
+    var updateScale = 0;
+    while (_fixedAccumulatorMs >= FIXED_STEP_MS && steps < MAX_CATCHUP_STEPS) {
+      updateScale += fixedUpdate();
+      _fixedAccumulatorMs -= FIXED_STEP_MS;
+      steps++;
+    }
+    if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
+      _fixedAccumulatorMs = 0;
+    }
+
+    if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
+      renderFrame(timestamp, updateScale);
     }
 
     statsEndFrame(timestamp);
