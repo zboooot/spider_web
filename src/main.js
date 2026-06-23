@@ -1750,6 +1750,57 @@ window.onload = function () {
     obj._silkSpiral = buildSilkSpiral(obj);
   }
 
+  function initWrappedSleepAnchor(obj) {
+    if (!obj || !obj.particle || obj._wrappedSleepReady) return;
+    var p = obj.particle;
+    if (obj.cA && obj._wrappedStiffA == null) obj._wrappedStiffA = obj.cA.stiffness;
+    if (obj.cB && obj._wrappedStiffB == null) obj._wrappedStiffB = obj.cB.stiffness;
+
+    var anchorA = obj.cA ? (obj.cA.a === p ? obj.cA.b : obj.cA.a) : null;
+    var anchorB = obj.cB ? (obj.cB.a === p ? obj.cB.b : obj.cB.a) : null;
+    if ((!anchorA || !anchorB) && obj.stuckOnConstraint) {
+      anchorA = anchorA || obj.stuckOnConstraint.a;
+      anchorB = anchorB || obj.stuckOnConstraint.b;
+    }
+    if (anchorA && anchorB && anchorA.pos && anchorB.pos) {
+      var ax = anchorA.pos.x, ay = anchorA.pos.y;
+      var bx = anchorB.pos.x, by = anchorB.pos.y;
+      var abx = bx - ax, aby = by - ay;
+      var ab2 = abx * abx + aby * aby;
+      var t = ab2 > 0.0001 ? ((p.pos.x - ax) * abx + (p.pos.y - ay) * aby) / ab2 : 0.5;
+      t = Math.max(0, Math.min(1, t));
+      var baseX = ax + abx * t;
+      var baseY = ay + aby * t;
+      obj._wrappedAnchorA = anchorA;
+      obj._wrappedAnchorB = anchorB;
+      obj._wrappedAnchorT = t;
+      obj._wrappedOffsetX = p.pos.x - baseX;
+      obj._wrappedOffsetY = p.pos.y - baseY;
+      obj._wrappedSleepReady = true;
+    }
+  }
+
+  function setWrappedConstraintStiffness(obj, active) {
+    initWrappedSleepAnchor(obj);
+    if (obj.cA) obj.cA.stiffness = active ? (obj._wrappedStiffA != null ? obj._wrappedStiffA : 0.95) : 0;
+    if (obj.cB) obj.cB.stiffness = active ? (obj._wrappedStiffB != null ? obj._wrappedStiffB : 0.95) : 0;
+    obj._wrappedAwake = !!active;
+  }
+
+  function sleepWrappedObject(obj) {
+    if (!obj || !obj.particle) return;
+    setWrappedConstraintStiffness(obj, false);
+    if (!obj._wrappedAnchorA || !obj._wrappedAnchorB) return;
+    var a = obj._wrappedAnchorA.pos;
+    var b = obj._wrappedAnchorB.pos;
+    var t = obj._wrappedAnchorT != null ? obj._wrappedAnchorT : 0.5;
+    var p = obj.particle;
+    p.pos.x = a.x + (b.x - a.x) * t + (obj._wrappedOffsetX || 0);
+    p.pos.y = a.y + (b.y - a.y) * t + (obj._wrappedOffsetY || 0);
+    p.lastPos.x = p.pos.x;
+    p.lastPos.y = p.pos.y;
+  }
+
   function tryCollectObjects() {
     if (wrappingTarget !== null || poopStunTimer > 0) return;
     var priorityObj = getActivePriorityObject();
@@ -1886,6 +1937,7 @@ window.onload = function () {
             obj.state = 'wrapped';
             obj._popT = 0;
             obj.particle._noSimDrag = true;
+            sleepWrappedObject(obj);
           } else {
             obj.state = 'stuck'; obj.stayTimer = 0;
             if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
@@ -2044,12 +2096,14 @@ window.onload = function () {
           wrappingTarget = null;
           obj.state = 'wrapped';
           obj._popT = 0;
+          sleepWrappedObject(obj);
           audioEngine.playCollectSound(obj.kind);
         }
 
       } else if (obj.state === 'wrapped') {
         if (obj._popT <= obj._popDur) obj._popT++;
         if (_pickupDrag && _pickupDrag.obj === obj) {
+          setWrappedConstraintStiffness(obj, true);
           var targetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
           var targetGripY = _pickupDrag.pointerY - _pickupDrag.gripDY;
           var pullDx = targetGripX - p.pos.x;
@@ -2075,6 +2129,7 @@ window.onload = function () {
             continue;
           }
         } else {
+          sleepWrappedObject(obj);
           obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
           obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
         }
