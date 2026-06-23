@@ -20,6 +20,7 @@ export function VerletJS(width, height, canvas) {
   this.onRepairDrop = null;     /* 回调：function(stub, snapTarget) */
   this.selectionRadius = 20;
   this.stubSelectionRadius = 44; /* stub 专用选中半径，适配移动端手指 */
+  this.suppressClick = false;    /* stub 拖拽后抑制本次 click/tap */
   this.highlightColor = "#4f545c";
 
   var _this = this;
@@ -42,8 +43,11 @@ export function VerletJS(width, height, canvas) {
 
   this.canvas.onmouseup = function () {
     _this.mouseDown = false;
-    if (_this.draggedEntity && _this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
-      _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+    if (_this.draggedEntity && _this.draggedEntity.__isStub) {
+      _this.suppressClick = true; /* 拖拽 stub 后抑制本次 click */
+      if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+        _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+      }
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
@@ -68,8 +72,11 @@ export function VerletJS(width, height, canvas) {
   this.canvas.addEventListener('touchend', function (e) {
     e.preventDefault();
     _this.mouseDown = false;
-    if (_this.draggedEntity && _this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
-      _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+    if (_this.draggedEntity && _this.draggedEntity.__isStub) {
+      _this.suppressClick = true; /* 拖拽 stub 后抑制本次 tap */
+      if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
+        _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
+      }
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;

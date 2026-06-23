@@ -196,6 +196,7 @@ window.onload = function () {
   }
 
   function _beginWrappedPickup(clientX, clientY) {
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) return false; /* stub 优先 */
     var hit = _findWrappedPreyAt(clientX, clientY);
     if (!hit) return false;
     _pickupDrag = {
@@ -777,6 +778,7 @@ window.onload = function () {
   }
 
   function beginPoopPointer(clientX, clientY) {
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) return; /* stub 优先 */
     var p = _getCanvasPos(clientX, clientY);
     var poop = pickPoopAt(p.x, p.y);
     if (!poop) return;
@@ -890,8 +892,9 @@ window.onload = function () {
   });
   canvas.addEventListener('click', function (e) {
     e.stopPropagation();
-    if (_suppressPriorityClick) {
+    if (_suppressPriorityClick || sim.suppressClick) {
       _suppressPriorityClick = false;
+      sim.suppressClick = false;
       return;
     }
     setPriorityTargetFromClient(e.clientX, e.clientY);
@@ -924,10 +927,11 @@ window.onload = function () {
       var t = e.changedTouches[0];
       var ddx = t.clientX - _touchStartX;
       var ddy = t.clientY - _touchStartY;
-      if (!_suppressPriorityClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
+      if (!_suppressPriorityClick && !sim.suppressClick && Math.sqrt(ddx * ddx + ddy * ddy) < 12) {
         setPriorityTargetFromClient(t.clientX, t.clientY);
       }
       _suppressPriorityClick = false;
+      sim.suppressClick = false;
     }
     endPoopPointer();
   }, { passive: true });
