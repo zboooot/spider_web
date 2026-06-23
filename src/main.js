@@ -66,6 +66,128 @@ var IS_MOBILE = navigator.maxTouchPoints > 1 || /iPhone|iPad|Android/i.test(navi
 ================================================================ */
 window.onload = function () {
   var WEB_SCALE = 1.2;
+  var WAVE_CONFIG_STORAGE_KEY = 'spiderWaveConfigs';
+  var LEVEL_CONDITIONS_STORAGE_KEY = 'spiderLevelConditions';
+
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizeWaveConfigs(configs) {
+    if (!Array.isArray(configs)) return configs;
+    configs.forEach(function (level) {
+      if (!level || !Array.isArray(level.waves)) return;
+      level.waves.forEach(function (wave) {
+        if (!wave) return;
+        if (wave.burstGap == null && wave.cooldownDuration != null) wave.burstGap = wave.cooldownDuration;
+        if (wave.burstGap == null) wave.burstGap = 0;
+        if (wave.burstIntervalMin == null && wave.burstInterval != null) wave.burstIntervalMin = wave.burstInterval;
+        if (wave.burstIntervalMax == null && wave.burstInterval != null) wave.burstIntervalMax = wave.burstInterval;
+        if (wave.burstIntervalMin == null) wave.burstIntervalMin = 30;
+        if (wave.burstIntervalMax == null) wave.burstIntervalMax = wave.burstIntervalMin;
+        if (wave.burstCount == null) {
+          var avgBurstSize = ((wave.burstMin || 1) + (wave.burstMax || 1)) * 0.5;
+          var avgInterval = ((wave.burstIntervalMin || 0) + (wave.burstIntervalMax || 0)) * 0.5;
+          var avgBurstFrames = Math.max(0, avgBurstSize - 1) * avgInterval;
+          var baseFalling = Math.max(0, wave.fallingDuration || 0);
+          var denom = Math.max(1, avgBurstFrames + (wave.burstGap || 0));
+          wave.burstCount = Math.max(1, Math.round((baseFalling - (wave.firstBurstDelay || 0) + (wave.burstGap || 0)) / denom));
+        }
+      });
+    });
+    return configs;
+  }
+
+  normalizeWaveConfigs(LEVEL_CONFIGS);
+  var BASE_LEVEL_CONFIGS = cloneJson(LEVEL_CONFIGS);
+  var BASE_LEVEL_TARGETS = BASE_LEVEL_CONFIGS.map(function (level) { return cloneJson(level.targets); });
+
+  function replaceLevelConfigs(nextConfigs) {
+    LEVEL_CONFIGS.splice(0, LEVEL_CONFIGS.length);
+    nextConfigs.forEach(function (levelCfg) {
+      LEVEL_CONFIGS.push(levelCfg);
+    });
+  }
+
+  function isLegacyLateLevelWaveConfig(savedLevel, baseLevel, levelIndex) {
+    if (levelIndex < 3) return false;
+    if (!savedLevel || !Array.isArray(savedLevel.waves)) return true;
+    if (!baseLevel || !Array.isArray(baseLevel.waves)) return false;
+    if (savedLevel.waves.length !== baseLevel.waves.length) return true;
+    for (var i = 0; i < savedLevel.waves.length; i++) {
+      var wave = savedLevel.waves[i];
+      if (!wave) return true;
+      if (!wave.label || !wave.question || !wave.notes || !wave.spawnWeights) return true;
+    }
+    return false;
+  }
+
+  function loadSavedWaveConfigs() {
+    try {
+      var raw = localStorage.getItem(WAVE_CONFIG_STORAGE_KEY);
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length !== BASE_LEVEL_CONFIGS.length) return;
+      for (var i = 0; i < parsed.length; i++) {
+        var level = parsed[i];
+        if (!level) continue;
+        if (isLegacyLateLevelWaveConfig(level, BASE_LEVEL_CONFIGS[i], i)) {
+          LEVEL_CONFIGS[i].waves = cloneJson(BASE_LEVEL_CONFIGS[i].waves);
+          continue;
+        }
+        if (Array.isArray(level.waves)) LEVEL_CONFIGS[i].waves = cloneJson(level.waves);
+      }
+      normalizeWaveConfigs(LEVEL_CONFIGS);
+    } catch (e) { }
+  }
+
+  function saveWaveConfigsToStorage() {
+    var wavePayload = LEVEL_CONFIGS.map(function (level) {
+      return { waves: cloneJson(level.waves) };
+    });
+    localStorage.setItem(WAVE_CONFIG_STORAGE_KEY, JSON.stringify(wavePayload));
+  }
+
+  function resetWaveConfigsToDefault() {
+    for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+      LEVEL_CONFIGS[i].waves = cloneJson(BASE_LEVEL_CONFIGS[i].waves);
+    }
+    normalizeWaveConfigs(LEVEL_CONFIGS);
+    localStorage.removeItem(WAVE_CONFIG_STORAGE_KEY);
+  }
+
+  function loadSavedLevelConditions() {
+    try {
+      var raw = localStorage.getItem(LEVEL_CONDITIONS_STORAGE_KEY);
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length !== BASE_LEVEL_TARGETS.length) return;
+      for (var i = 0; i < parsed.length; i++) {
+        if (parsed[i]) LEVEL_CONFIGS[i].targets = cloneJson(parsed[i]);
+      }
+    } catch (e) { }
+  }
+
+  function saveLevelConditionsToStorage() {
+    var payload = LEVEL_CONFIGS.map(function (level) {
+      return cloneJson(level.targets);
+    });
+    localStorage.setItem(LEVEL_CONDITIONS_STORAGE_KEY, JSON.stringify(payload));
+  }
+
+  function resetLevelConditionsToDefault(levelIndex) {
+    if (typeof levelIndex === 'number') {
+      LEVEL_CONFIGS[levelIndex].targets = cloneJson(BASE_LEVEL_TARGETS[levelIndex]);
+    } else {
+      for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+        LEVEL_CONFIGS[i].targets = cloneJson(BASE_LEVEL_TARGETS[i]);
+      }
+    }
+    localStorage.removeItem(LEVEL_CONDITIONS_STORAGE_KEY);
+  }
+
+  loadSavedWaveConfigs();
+  loadSavedLevelConditions();
 
   /* ── params ── */
   var DEFAULTS = {
@@ -76,6 +198,7 @@ window.onload = function () {
     stickMidBias: 0.8, stickHistory: 40,
     caterpillarGravity: 2.0,
     caterpillarWeight: 5, flyWeight: 3, leafWeight: 1,
+    leafGravityMin: 0.5, leafGravityMax: 0.6, leafMaxSpeed: 0.8,
     caterpillarReleaseSec: 3, flyReleaseSec: 2, leafReleaseSec: 0,
     bgTheme: 0, bgBlur: 25, bgWind: 1.0, bgRay: 100,
     bgDarken: 15, bgPurity: 140, bgYOffset: 13,
@@ -307,10 +430,11 @@ window.onload = function () {
   var silkCount = 0;
 
   /* ── 爆发-冷却掉落状态机 ── */
-  var spawnPhase = 'cooldown';
+  var spawnPhase = 'start_delay';
   var burstCount = 0;
   var burstTimer = 0;
-  var cooldownTimer = 0;
+  var burstGapTimer = 0;
+  var firstBurstDelayTimer = 0;
   var burstsDone = 0;
   var burstCountCur = 0;
   var levelCollected = { boulder: 0, bug: 0, drop: 0 };
@@ -336,12 +460,35 @@ window.onload = function () {
   }
 
   function resetSpawnerState(cfg) {
-    spawnPhase = 'cooldown';
-    cooldownTimer = 0 - (cfg.firstBurstDelay || 0);
+    spawnPhase = (cfg.firstBurstDelay || 0) > 0 ? 'start_delay' : 'burst_gap';
+    firstBurstDelayTimer = 0;
+    burstGapTimer = (cfg.firstBurstDelay || 0) > 0 ? 0 : (cfg.burstGap || 0);
     burstTimer = 0;
     burstCount = 0;
     burstsDone = 0;
     burstCountCur = 0;
+  }
+
+  function startBurst(cfg) {
+    spawnPhase = 'burst';
+    burstTimer = 0;
+    cfg._currentBurstInterval = 0;
+    burstCountCur = cfg.burstMin + Math.floor(Math.random() * (cfg.burstMax - cfg.burstMin + 1));
+    burstCount = burstCountCur;
+    if (burstCount > 0) {
+      spawnRandom();
+      burstCount--;
+      if (burstCount > 0) {
+        var minI = Math.min(cfg.burstIntervalMin, cfg.burstIntervalMax);
+        var maxI = Math.max(cfg.burstIntervalMin, cfg.burstIntervalMax);
+        cfg._currentBurstInterval = minI + Math.floor(Math.random() * (maxI - minI + 1));
+      }
+    }
+    if (burstCount <= 0) {
+      burstsDone++;
+      spawnPhase = 'burst_gap';
+      burstGapTimer = 0;
+    }
   }
 
   function enterWaveFalling(waveIndex, overtime) {
@@ -370,6 +517,14 @@ window.onload = function () {
   function refreshSilkHUD() {
     var el = document.getElementById('silk-count');
     if (el) el.textContent = String(silkCount);
+  }
+
+  function refreshLevelTargetHUD() {
+    var cfg = getLevelCfgAt(currentLevelIndex);
+    ['boulder', 'bug', 'drop'].forEach(function (k) {
+      var el = document.getElementById('inv-' + k + '-count');
+      if (el) el.textContent = levelCollected[k] + '/' + (cfg.targets[k] || 0);
+    });
   }
 
   /* ── show IDLE start screen ── */
@@ -925,9 +1080,27 @@ window.onload = function () {
   }
 
   function spawnRandom() {
-    /* 大便低概率出现，作为持续惩罚物 */
-    var r = Math.random();
-    var kind = r < 0.08 ? 'poop' : r < 0.18 ? 'bug' : r < 0.58 ? 'boulder' : 'drop';
+    var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
+    var weights = cfg && cfg.spawnWeights;
+    var kind = null;
+    if (weights) {
+      var order = ['boulder', 'bug', 'drop', 'poop'];
+      var total = 0;
+      for (var wi = 0; wi < order.length; wi++) total += Math.max(0, weights[order[wi]] || 0);
+      if (total > 0) {
+        var r = Math.random() * total;
+        var acc = 0;
+        for (var oi = 0; oi < order.length; oi++) {
+          acc += Math.max(0, weights[order[oi]] || 0);
+          if (r <= acc) { kind = order[oi]; break; }
+        }
+      }
+    }
+    if (!kind) {
+      /* 默认兜底：大便低概率出现，作为持续惩罚物 */
+      var fallbackR = Math.random();
+      kind = fallbackR < 0.08 ? 'poop' : fallbackR < 0.18 ? 'bug' : fallbackR < 0.58 ? 'boulder' : 'drop';
+    }
     launchObject(kind);
   }
 
@@ -940,31 +1113,36 @@ window.onload = function () {
       if (wavePhaseTimer >= cfg.pauseDuration) advanceWavePhase();
       return;
     }
-    if (currentWavePhase === WAVE_FALLING && wavePhaseTimer >= cfg.fallingDuration) {
-      enterWavePause();
+    if (!levelCfg.waves.length) return;
+    if (spawnPhase === 'start_delay') {
+      firstBurstDelayTimer++;
+      if (firstBurstDelayTimer >= cfg.firstBurstDelay) startBurst(cfg);
       return;
     }
-    if (!levelCfg.waves.length) return;
-    if (spawnPhase === 'cooldown') {
-      cooldownTimer++;
-      if (cooldownTimer >= cfg.cooldownDuration) {
-        spawnPhase = 'burst';
-        burstTimer = 0;
-        burstCountCur = cfg.burstMin + Math.floor(Math.random() * (cfg.burstMax - cfg.burstMin + 1));
-        burstCount = burstCountCur;
-      }
+    if (spawnPhase === 'burst_gap') {
+      burstGapTimer++;
+      if (burstGapTimer >= (cfg.burstGap || 0)) startBurst(cfg);
       return;
     }
     if (spawnPhase === 'burst') {
       burstTimer++;
-      if (burstTimer < cfg.burstInterval) return;
+      if (burstTimer < (cfg._currentBurstInterval || cfg.burstIntervalMin || 1)) return;
       burstTimer = 0;
       spawnRandom();
       burstCount--;
+      if (burstCount > 0) {
+        var minInterval = Math.min(cfg.burstIntervalMin, cfg.burstIntervalMax);
+        var maxInterval = Math.max(cfg.burstIntervalMin, cfg.burstIntervalMax);
+        cfg._currentBurstInterval = minInterval + Math.floor(Math.random() * (maxInterval - minInterval + 1));
+      }
       if (burstCount <= 0) {
         burstsDone++;
-        spawnPhase = 'cooldown';
-        cooldownTimer = 0;
+        if (burstsDone >= Math.max(1, cfg.burstCount || 1)) {
+          enterWavePause();
+          return;
+        }
+        spawnPhase = 'burst_gap';
+        burstGapTimer = 0;
       }
     }
   }
@@ -1012,6 +1190,19 @@ window.onload = function () {
       var el = document.getElementById('inv-' + kind + '-count');
       if (el) el.textContent = inventoryCounts[kind];
     }
+  }
+
+  function restartCurrentWaveFromEditor() {
+    if (gameState !== 'LEVEL_ACTIVE') return;
+    clearAllObjects();
+    wrappingTarget = null;
+    target = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    currentWavePhase = WAVE_FALLING;
+    wavePhaseTimer = 0;
+    resetSpawnerState(getWaveCfgAt(currentLevelIndex, currentWaveIndex));
+    refreshWavePhaseHUD();
   }
 
   function getCanvasPointOnStage(x, y) {
@@ -1174,11 +1365,13 @@ window.onload = function () {
           var maxAngle = 1.4;
           if (obj.angle > maxAngle) obj.angleVel -= 0.004;
           if (obj.angle < -maxAngle) obj.angleVel += 0.004;
-          var lift = Math.sin(obj.angle) * obj.glideForce;
+          var swayLift = Math.sin(obj.animT * obj.swaySpeed + obj.swayPhase) * obj.swayAmp;
+          var lift = Math.sin(obj.angle) * obj.glideForce + swayLift;
           obj.vx += lift; obj.vy += obj.grav;
           obj.vx *= obj.drag; obj.vy *= obj.drag;
           var spd = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
-          if (spd > 0.8) { obj.vx = obj.vx / spd * 0.8; obj.vy = obj.vy / spd * 0.8; }
+          var leafMaxSpeed = def.maxSpeed || 0.8;
+          if (spd > leafMaxSpeed) { obj.vx = obj.vx / spd * leafMaxSpeed; obj.vy = obj.vy / spd * leafMaxSpeed; }
           var _lvx = obj.vx * _currentTimeScale, _lvy = obj.vy * _currentTimeScale;
           p.pos.x += _lvx; p.pos.y += _lvy;
           p.lastPos.x = p.pos.x - _lvx; p.lastPos.y = p.pos.y - _lvy;
@@ -1270,6 +1463,8 @@ window.onload = function () {
           p.pos.x += (Math.random() - 0.5) * obj.wobbleAmp * 2;
           p.pos.y += (Math.random() - 0.5) * obj.wobbleAmp;
           obj.wingT += 0.55;
+        } else if (obj.kind === 'drop') {
+          obj.angleVel = 0;
         } else {
           obj.angleVel += (Math.random() - 0.5) * 0.0005;
           obj.angleVel *= 0.98;
@@ -1306,7 +1501,7 @@ window.onload = function () {
           obj.vx += Math.sin(obj.angle) * obj.glideForce;
           obj.vy += obj.grav;
           obj.vx *= obj.drag; obj.vy *= obj.drag;
-          var maxSpd = obj.kind === 'poop' ? 6.2 : 0.8;
+          var maxSpd = def.maxSpeed || 0.8;
           var spd2 = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
           if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
           p.pos.x += obj.vx; p.pos.y += obj.vy;
@@ -1427,6 +1622,69 @@ window.onload = function () {
       autoPlay = !!on;
       if (!autoPlay) target = null;
       return autoPlay;
+    },
+    getWaveEditorConfigs: function () {
+      return LEVEL_CONFIGS;
+    },
+    getCurrentLevelIndex: function () {
+      return currentLevelIndex;
+    },
+    getCurrentWaveIndex: function () {
+      return currentWaveIndex;
+    },
+    saveWaveEditorConfigs: function () {
+      saveWaveConfigsToStorage();
+    },
+    resetWaveEditorConfigs: function () {
+      resetWaveConfigsToDefault();
+      refreshWavePhaseHUD();
+      if (gameState === 'LEVEL_ACTIVE') refreshLevelTargetHUD();
+    },
+    saveLevelConditions: function () {
+      saveLevelConditionsToStorage();
+    },
+    resetLevelConditions: function (levelIndex) {
+      resetLevelConditionsToDefault(levelIndex);
+      if (gameState === 'LEVEL_ACTIVE') {
+        refreshLevelTargetHUD();
+        pendingLevelCheck = true;
+      }
+    },
+    getDefaultLevelTargets: function (levelIndex) {
+      return cloneJson(BASE_LEVEL_TARGETS[levelIndex]);
+    },
+    onLevelConditionsChange: function (levelIndex) {
+      if (levelIndex !== currentLevelIndex) return;
+      if (gameState === 'LEVEL_ACTIVE') {
+        refreshLevelTargetHUD();
+        pendingLevelCheck = true;
+      }
+    },
+    queueWaveEditorLiveApply: (function () {
+      var applyTimer = null;
+      return function (levelIndex, waveIndex, path) {
+        if (path === 'label' || path === 'question' || path === 'notes') return;
+        if (applyTimer) clearTimeout(applyTimer);
+        applyTimer = setTimeout(function () {
+          if (gameState !== 'LEVEL_ACTIVE') return;
+          if (levelIndex !== currentLevelIndex || waveIndex !== currentWaveIndex) return;
+          restartCurrentWaveFromEditor();
+        }, 280);
+      };
+    })(),
+    onWaveEditorChange: function (levelIndex, waveIndex) {
+      if (levelIndex === currentLevelIndex) {
+        currentWaveIndex = Math.min(currentWaveIndex, Math.max(0, LEVEL_CONFIGS[levelIndex].waves.length - 1));
+      }
+      if (gameState !== 'LEVEL_ACTIVE') return;
+      if (levelIndex === currentLevelIndex) refreshLevelTargetHUD();
+      if (levelIndex === currentLevelIndex) refreshWavePhaseHUD();
+    },
+    onWaveEditorCommit: function (levelIndex, waveIndex, path) {
+      if (gameState !== 'LEVEL_ACTIVE') return;
+      if (levelIndex !== currentLevelIndex || waveIndex !== currentWaveIndex) return;
+      if (path === 'label' || path === 'question' || path === 'notes') return;
+      restartCurrentWaveFromEditor();
     }
   });
 

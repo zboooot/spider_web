@@ -33,7 +33,9 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
   return {
     r: 14, collectRadius: 12, weight: P.leafWeight,
     stayFrames: Math.round(P.leafReleaseSec * 60),
-    gravity: 0.06, wrapDur: 50
+    gravity: Math.min(P.leafGravityMin, P.leafGravityMax) + Math.random() * Math.max(0, Math.abs(P.leafGravityMax - P.leafGravityMin)),
+    maxSpeed: P.leafMaxSpeed,
+    wrapDur: 50
   };
 }
 
@@ -116,11 +118,14 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
     this.grav = def.gravity;
     this.vx = 0; this.vy = 0;
     this.drag = 0.92;
-    this.angle = (Math.random() - 0.5) * 1.0;
-    this.angleVel = (Math.random() - 0.5) * 0.02;
+    this.angle = Math.random() * Math.PI * 2;
+    this.angleVel = (Math.random() * 2 - 1) * (Math.PI / 6) / 60;
     this.angleDrag = 0.97;
     this.angleTurb = 0.003;
     this.glideForce = 0.055;
+    this.swayPhase = Math.random() * Math.PI * 2;
+    this.swaySpeed = 0.045 + Math.random() * 0.025;
+    this.swayAmp = 0.020 + Math.random() * 0.025;
   }
 
   this.prevX = sx; this.prevY = sy;
@@ -162,6 +167,7 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb) {
   this.comp.constraints.push(this.cA);
   this.comp.constraints.push(this.cB);
   this.stuckOnConstraint = pt.c;
+  if (this.kind === 'drop') this.angleVel = 0;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
   this.stuckAngle = this.initAngle; /* 粘住后保持下落时的初始角度 */
