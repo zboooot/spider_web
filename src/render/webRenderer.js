@@ -2,6 +2,8 @@ import { DistanceConstraint } from '../engine/constraints.js';
 import { getNextPid } from '../systems/footSystem.js';
 import { statsDc } from '../debug/renderStats.js';
 import { spatialIndex, isWebConstraintAlive } from '../physics/SpatialIndexService.js';
+import { segmentHitsCircle } from '../entities/ThrownObj.js';
+import { TUTORIAL_STONE_PULL_FRAMES } from '../tutorial/tutorialController.js';
 
 var _pToCI = null;
 var _dangerFinal = null;
@@ -143,7 +145,7 @@ function _drawCalmSegments(ctx, comp, n) {
   }
 }
 
-function _needsDangerPass(thrownObjects) {
+function _needsDangerPass(thrownObjects, tutorialImpact) {
   for (var ti = 0; ti < thrownObjects.length; ti++) {
     var obj = thrownObjects[ti];
     if (obj.kind === 'drop') continue;
@@ -154,6 +156,10 @@ function _needsDangerPass(thrownObjects) {
     if (obj.stayTimer > ramp) return true;
   }
   return false;
+}
+
+function _applyTutorialStoneImpactDanger(comp, n, tutorialImpact) {
+  return;
 }
 
 function _applyDangerBfs(comp, n) {
@@ -467,7 +473,20 @@ function _drawRepairCompleteFlashes(ctx, getRepairCompleteFlashes, getBreakFrame
 /**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing, getRepairCompleteFlashes) {
+function _drawTutorialStoneImpactRing(ctx, tutorialImpact, now) {
+  if (!tutorialImpact || tutorialImpact.phase !== 'pull') return;
+  var progress = Math.min(1, tutorialImpact.timer / TUTORIAL_STONE_PULL_FRAMES);
+  var pulse = 0.45 + 0.55 * Math.abs(Math.sin(now / 1000 * (4 + progress * 6) * Math.PI));
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(tutorialImpact.x, tutorialImpact.y, tutorialImpact.r, 0, 2 * Math.PI);
+  ctx.strokeStyle = 'rgba(255,55,35,' + (0.25 + pulse * 0.45).toFixed(2) + ')';
+  ctx.lineWidth = 2.2 + progress * 3.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing, getRepairCompleteFlashes, getTutorialStoneImpact, getSnapCandidates) {
   var getLogicalTime = sixthArg ? null : fifthArg;
   var getBrokenEnds = sixthArg ? fifthArg : null;
   var getSnapTarget = sixthArg || null;
@@ -476,6 +495,27 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
   spiderweb.drawParticles = function (ctx, comp) {
     _drawWebParticles(ctx, comp);
     _drawBrokenEnds(ctx, getBrokenEnds);
+
+    var snapCandidates = getSnapCandidates ? getSnapCandidates() : null;
+    if (snapCandidates && snapCandidates.length) {
+      var candPulse = 0.42 + 0.58 * Math.abs(Math.sin(_brokenEndFrame * 0.12));
+      ctx.save();
+      for (var ci = 0; ci < snapCandidates.length; ci++) {
+        var cp = snapCandidates[ci];
+        if (!cp || !cp.pos) continue;
+        ctx.beginPath();
+        ctx.arc(cp.pos.x, cp.pos.y, 7.5 + candPulse * 2.2, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(170,235,255,' + (0.26 + candPulse * 0.36).toFixed(2) + ')';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cp.pos.x, cp.pos.y, 2.2, 0, 2 * Math.PI);
+        ctx.fillStyle = 'rgba(215,248,255,' + (0.45 + candPulse * 0.4).toFixed(2) + ')';
+        ctx.fill();
+        statsDc('stroke');
+      }
+      ctx.restore();
+    }
 
     /* ── 吸附目标高亮 ── */
     var snapPt = getSnapTarget ? getSnapTarget() : null;
@@ -498,6 +538,10 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
 
     /* ── 补网完成区域闪烁 ── */
     _drawRepairCompleteFlashes(ctx, getRepairCompleteFlashes, getBreakFrame);
+    var tutorialImpact = getTutorialStoneImpact ? getTutorialStoneImpact() : null;
+    if (tutorialImpact) {
+      _drawTutorialStoneImpactRing(ctx, tutorialImpact, Date.now());
+    }
   };
 
   spiderweb.drawConstraints = function (ctx, comp) {
@@ -506,7 +550,8 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
 
     var thrownObjects = getThrownObjects();
     var webBreakFlashes = getWebBreakFlashes();
-    var needDanger = _needsDangerPass(thrownObjects);
+    var tutorialImpact = getTutorialStoneImpact ? getTutorialStoneImpact() : null;
+    var needDanger = _needsDangerPass(thrownObjects, tutorialImpact);
     var needFlash = webBreakFlashes.length > 0;
 
     if (!needDanger && !needFlash) {
@@ -517,6 +562,10 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
     var now = getLogicalTime ? getLogicalTime() : Date.now();
     _dangerFinal.fill(0);
     _dangerRaw.fill(0);
+
+    if (tutorialImpact && tutorialImpact.phase === 'pull') {
+      _applyTutorialStoneImpactDanger(comp, n, tutorialImpact);
+    }
 
     if (needDanger) {
       for (var ti = 0; ti < thrownObjects.length; ti++) {
@@ -532,7 +581,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         if (obj.state === 'freeing') danger = 1;
         else if (obj.stayTimer > ramp) danger = 1;
         else if (obj.kind !== 'poop' && obj.state === 'stuck' && (obj._pickupTension || 0) > 0.08) danger = 1;
-        if (danger > 0) _dangerRaw[ci2] = 1;
+        if (danger > 0 && !_dangerRaw[ci2]) _dangerRaw[ci2] = 1;
       }
       _applyDangerBfs(comp, n);
     }

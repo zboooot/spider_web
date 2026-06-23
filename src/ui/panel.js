@@ -187,6 +187,7 @@ function initWaveEditor(callbacks) {
   var resetBtn = document.getElementById('btn-wave-reset');
   var levelSaveBtn = document.getElementById('btn-level-save');
   var levelResetBtn = document.getElementById('btn-level-reset');
+  var levelTutorialBtn = document.getElementById('btn-level-tutorial');
   var liveApplyTimer = null;
   var waveClipboard = null;
 
@@ -595,6 +596,14 @@ function initWaveEditor(callbacks) {
     levelSaveHintEl.textContent = 'Reset Level ' + (getSelectedLevelConditionIndex() + 1) + ' goals';
     setTimeout(function () { levelSaveHintEl.textContent = ''; }, 1800);
   });
+  if (levelTutorialBtn) {
+    levelTutorialBtn.addEventListener('click', function () {
+      if (!callbacks.startTutorial) return;
+      callbacks.startTutorial();
+      levelSaveHintEl.textContent = 'Started tutorial level';
+      setTimeout(function () { levelSaveHintEl.textContent = ''; }, 1800);
+    });
+  }
 
   waveClipboard = loadClipboard();
   syncToCurrentWave();

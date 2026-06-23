@@ -92,7 +92,7 @@ function createOneStub(cx, cy, anchorPt, spiderweb) {
  */
 var _noStubStreak = 0; /* 连续未出线头的破坏次数 */
 
-function createBreakStubs(edges, spiderweb, spatialIndex) {
+function createBreakStubs(edges, spiderweb, spatialIndex, forcedCount) {
   if (!edges || edges.length === 0) return;
 
   /* 收集所有涉及的端点作为锚点候选 */
@@ -105,12 +105,14 @@ function createBreakStubs(edges, spiderweb, spatialIndex) {
   /* 1-2条边→10%出1个线头，3-4条→50%出1个，5条以上→必出1个 */
   var n = edges.length;
   var count = 0;
-  if (n <= 2) { if (Math.random() < 0.1) count = 1; }
+  if (typeof forcedCount === 'number') {
+    count = Math.max(0, Math.floor(forcedCount));
+  } else if (n <= 2) { if (Math.random() < 0.1) count = 1; }
   else if (n <= 4) { if (Math.random() < 0.5) count = 1; }
   else { count = 1; }
 
   /* 每2次破坏保底1个线头 */
-  if (count === 0) {
+  if (count === 0 && typeof forcedCount !== 'number') {
     _noStubStreak++;
     if (_noStubStreak >= 2) { count = 1; _noStubStreak = 0; }
   } else {
@@ -323,6 +325,94 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
   }
 }
 
+export function segmentHitsCircle(ax, ay, bx, by, cx, cy, radius) {
+  var r2 = radius * radius;
+  var adx = ax - cx, ady = ay - cy;
+  if (adx * adx + ady * ady <= r2) return true;
+  var bdx = bx - cx, bdy = by - cy;
+  if (bdx * bdx + bdy * bdy <= r2) return true;
+  var sdx = bx - ax, sdy = by - ay;
+  var len2 = sdx * sdx + sdy * sdy;
+  if (len2 <= 1e-6) return false;
+  var t = ((cx - ax) * sdx + (cy - ay) * sdy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  var px = ax + sdx * t, py = ay + sdy * t;
+  var ddx = px - cx, ddy = py - cy;
+  return ddx * ddx + ddy * ddy <= r2;
+}
+
+function _edgeInsideBreakDisc(ax, ay, bx, by, bpx, bpy, breakR2) {
+  return !((ax * ax + ay * ay > breakR2) || (bx * bx + by * by > breakR2));
+}
+
+/**
+ * 以圆形冲击半径破坏蛛网。石头使用线段-圆相交，破坏面与石头半径一致。
+ * @returns {number} 被破坏的边数量
+ */
+export function breakWebInRadius(bpx, bpy, breakR, spiderweb, webBreakFlashes, breakFrame, onBreakSegment, spatialOpts, useSegmentHit, forcedStubCount) {
+  if (!spiderweb || !(breakR > 0)) return 0;
+  var breakR2 = breakR * breakR;
+  var broken = [];
+  var useBitmap = spatialOpts && spatialOpts.index;
+
+  function edgeIsHit(c) {
+    var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
+    var bx = c.b.pos.x - bpx, by = c.b.pos.y - bpy;
+    if (useSegmentHit) {
+      return segmentHitsCircle(c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y, bpx, bpy, breakR);
+    }
+    return _edgeInsideBreakDisc(ax, ay, bx, by, bpx, bpy, breakR2);
+  }
+
+  if (useBitmap) {
+    var idx = spatialOpts.index;
+    var cs = spiderweb.constraints;
+    for (var bi = 0; bi < cs.length; bi++) {
+      var c = cs[bi];
+      if (!(c instanceof DistanceConstraint)) continue;
+      if (c.__webGlobal) continue;
+      if (c.__webId && !idx.isAliveId(c.__webId)) continue;
+      if (!edgeIsHit(c)) continue;
+      broken.push({ a: c.a, b: c.b, distance: c.distance });
+      if (c.__webId) idx.removeConstraint(c.__webId);
+      else {
+        var wi = spiderweb.constraints.indexOf(c);
+        if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+      }
+      if (onBreakSegment) onBreakSegment(c, { skipDirty: true });
+      webBreakFlashes.push({
+        ax: c.a.pos.x, ay: c.a.pos.y,
+        bx: c.b.pos.x, by: c.b.pos.y,
+        t: breakFrame
+      });
+    }
+    if (spatialOpts.markDirtyAABB) {
+      spatialOpts.markDirtyAABB(bpx - breakR, bpy - breakR, bpx + breakR, bpy + breakR);
+    }
+  } else {
+    spiderweb.constraints = spiderweb.constraints.filter(function (c) {
+      if (!(c instanceof DistanceConstraint)) return true;
+      if (!edgeIsHit(c)) return true;
+      broken.push({ a: c.a, b: c.b, distance: c.distance });
+      return false;
+    });
+    for (var ri = 0; ri < broken.length; ri++) {
+      if (onBreakSegment) onBreakSegment(broken[ri]);
+      webBreakFlashes.push({
+        ax: broken[ri].a.pos.x, ay: broken[ri].a.pos.y,
+        bx: broken[ri].b.pos.x, by: broken[ri].b.pos.y,
+        t: breakFrame
+      });
+    }
+  }
+
+  if (broken.length > 0) {
+    createBreakStubs(broken, spiderweb, useBitmap ? spatialOpts.index : null, forcedStubCount);
+  }
+  return broken.length;
+}
+
 /**
  * 获取物体定义参数
  */
@@ -331,6 +421,11 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
     var speed = Math.max(0.05, P.wrapSpeed || 1);
     return Math.max(1, Math.round(base / speed));
   }
+  if (kind === 'stone') return {
+    r: 80, collectRadius: 0, weight: 8,
+    stayFrames: 0,
+    gravity: 3.4, wrapDur: 0
+  };
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
     stayFrames: Math.round(P.caterpillarReleaseSec * 60),
@@ -422,7 +517,12 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
 
   var sx, sy, svx = 0, svy = 0;
 
-  if (kind === 'boulder' || kind === 'poop') {
+  if (kind === 'stone') {
+    this._disableRestick = true;
+    this._holePunched = false;
+  }
+
+  if (kind === 'boulder' || kind === 'poop' || kind === 'stone') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
     this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
@@ -465,6 +565,7 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
   this.particle.lastPos.mutableSet(new Vec2(sx - svx, sy - svy));
   this.particle._ownerObj = this;
   this.particle._noSimDrag = false;
+  if (kind === 'stone') this.particle.__ignoreBounds = true;
   if (kind === 'bug') this.particle.__isBug = true;
   if (kind === 'bug') this.particle.__isBug = true;
   this.comp = new Composite();
@@ -599,7 +700,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     this.stuckOnConstraint = null;
   }
 
-  /* 毛毛虫额外破坏 */
+  /* 毛毛虫额外破坏（固定冲击半径，与毛毛虫玩法一致） */
   if (this.kind === 'boulder') {
     var bpx = p.pos.x, bpy = p.pos.y, breakR = 32, breakR2 = breakR * breakR;
     var boulderBroken = []; /* 收集所有被破坏的边信息 */

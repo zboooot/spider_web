@@ -850,6 +850,129 @@ function playSfxGameOver() {
   } catch (e) {}
 }
 
+function playSfxStoneFall() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var rumble = makeOscGain('triangle', 118, 0.08);
+    rumble.osc.frequency.setValueAtTime(118, now);
+    rumble.osc.frequency.exponentialRampToValueAtTime(62, now + 0.24);
+    rumble.gain.gain.setValueAtTime(0.001, now);
+    rumble.gain.gain.linearRampToValueAtTime(0.08, now + 0.03);
+    rumble.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+    rumble.osc.start(now); rumble.osc.stop(now + 0.3);
+  } catch (e) {}
+}
+
+function playSfxWebBreak() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var len = Math.floor(ctx.sampleRate * 0.12);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+      var t = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.4) * 0.7;
+    }
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    var bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 960;
+    bp.Q.value = 0.7;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.26, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    src.connect(bp); bp.connect(g); g.connect(ctx.destination);
+    src.start(now);
+  } catch (e) {}
+}
+
+function playSfxTutorialPrompt() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var a = makeOscGain('sine', 740, 0.06);
+    a.gain.gain.setValueAtTime(0.001, now);
+    a.gain.gain.linearRampToValueAtTime(0.06, now + 0.012);
+    a.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    a.osc.start(now); a.osc.stop(now + 0.18);
+    var b = makeOscGain('triangle', 1040, 0.04);
+    b.gain.gain.setValueAtTime(0.001, now + 0.03);
+    b.gain.gain.linearRampToValueAtTime(0.04, now + 0.05);
+    b.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    b.osc.start(now + 0.03); b.osc.stop(now + 0.22);
+  } catch (e) {}
+}
+
+function playSfxRepairConnect() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var a = makeOscGain('triangle', 620, 0.08);
+    a.gain.gain.setValueAtTime(0.001, now);
+    a.gain.gain.linearRampToValueAtTime(0.08, now + 0.01);
+    a.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    a.osc.frequency.setValueAtTime(620, now);
+    a.osc.frequency.exponentialRampToValueAtTime(880, now + 0.09);
+    a.osc.start(now); a.osc.stop(now + 0.13);
+  } catch (e) {}
+}
+
+function playSfxRepairComplete() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var freqs = [520, 660, 880];
+    for (var i = 0; i < freqs.length; i++) {
+      var tone = makeOscGain('sine', freqs[i], 0.06);
+      var t = now + i * 0.035;
+      tone.gain.gain.setValueAtTime(0.001, t);
+      tone.gain.gain.linearRampToValueAtTime(0.06, t + 0.012);
+      tone.gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      tone.osc.start(t); tone.osc.stop(t + 0.19);
+    }
+  } catch (e) {}
+}
+
+function playSfxRepairWeave() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var tone = makeOscGain('triangle', 760, 0.035);
+    tone.gain.gain.setValueAtTime(0.001, now);
+    tone.gain.gain.linearRampToValueAtTime(0.035, now + 0.008);
+    tone.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    tone.osc.frequency.setValueAtTime(760, now);
+    tone.osc.frequency.exponentialRampToValueAtTime(980, now + 0.06);
+    tone.osc.start(now); tone.osc.stop(now + 0.09);
+  } catch (e) {}
+}
+
+function playSfxCry() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var a = makeOscGain('triangle', 520, 0.045);
+    a.gain.gain.setValueAtTime(0.001, now);
+    a.gain.gain.linearRampToValueAtTime(0.045, now + 0.01);
+    a.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    a.osc.frequency.setValueAtTime(520, now);
+    a.osc.frequency.exponentialRampToValueAtTime(410, now + 0.14);
+    a.osc.start(now); a.osc.stop(now + 0.17);
+
+    var b = makeOscGain('sine', 760, 0.026);
+    b.gain.gain.setValueAtTime(0.001, now + 0.03);
+    b.gain.gain.linearRampToValueAtTime(0.026, now + 0.05);
+    b.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    b.osc.frequency.setValueAtTime(760, now + 0.03);
+    b.osc.frequency.exponentialRampToValueAtTime(620, now + 0.16);
+    b.osc.start(now + 0.03); b.osc.stop(now + 0.19);
+  } catch (e) {}
+}
+
 /* ══════════════════════════════════════════
    统一导出
 ══════════════════════════════════════════ */
@@ -886,5 +1009,12 @@ export var audioEngine = {
   playSfxPluckSnap: playSfxPluckSnap,
   playSfxPoopBurst: playSfxPoopBurst,
   playSfxSuccess: playSfxSuccess,
-  playSfxGameOver: playSfxGameOver
+  playSfxGameOver: playSfxGameOver,
+  playSfxStoneFall: playSfxStoneFall,
+  playSfxWebBreak: playSfxWebBreak,
+  playSfxTutorialPrompt: playSfxTutorialPrompt,
+  playSfxRepairConnect: playSfxRepairConnect,
+  playSfxRepairComplete: playSfxRepairComplete,
+  playSfxRepairWeave: playSfxRepairWeave,
+  playSfxCry: playSfxCry
 };
