@@ -281,13 +281,14 @@ window.onload = function () {
   var DEFAULTS = {
     webRadius: 1.45, webSegs: 30, webDepth: 11, webStiff: 0.6,
     radialWobbleScale: 0.55, spiralWobbleScale: 1.0,
+    /* Speed units are fixed-step units. Tune these values, not the RAF loop. */
     moveSpeed: 1.8,
     idleMoveRatio: 0.06,
     idleStepThresh: 20,
     idleStepSpeed: 0.09,
     idleStepCooldown: 11,
     idleStepReach: 34,
-    stepSpeed: 0.18, stepThresh: 22, restThresh: 50,
+    stepSpeed: 0.18, wrapSpeed: 1.0, stepThresh: 22, restThresh: 50,
     legStiff: 0.3, jointStiff: 0.35,
     stickDelayMin: 0.10, stickDelayMax: 0.45, stickCatchRadius: 18,
     stickMidBias: 0.8, stickHistory: 40,
@@ -573,6 +574,7 @@ window.onload = function () {
   var _webDrawApi = null;
   var spiderweb, spider, legConstraintCount, samplePoints = [], footState = [];
   var STEP_SPEED, STEP_THRESH, REST_THRESH, STEP_COOLDOWN = 6;
+  /* moveSpeed is pixels per fixed 60Hz logic step. Do not multiply by RAF delta. */
   var target = null, idleTarget = null, moveDir = null, moveSpeed = P.moveSpeed, arriveThreshold = 6;
   var _spawnAnim = { active: false, t: 0, fromY: 0, toY: 0, duration: 52 };
   var _samplePointsTopologyVersion = -1;
@@ -3383,14 +3385,18 @@ window.onload = function () {
   /* ================================================================
      MAIN LOOP
   ================================================================ */
+  var LOGIC_FPS = 60;
+  var FIXED_STEP_MS = 1000 / LOGIC_FPS;
+  var MAX_CATCHUP_STEPS = 4;
   var _lastTimestamp = 0;
+  var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
   var _wasBulletTime = false;
-  function fixedUpdate(frameScale) {
+  function fixedUpdate() {
     /* ── 子弹时间检测：仅拖拽断线头 stub 时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
-    /* 按实际帧时间缩放，恢复移动节奏；子弹时间冻结玩法逻辑 */
-    var timeScale = _isBulletTime ? 0.0 : frameScale;
+    /* Gameplay and physics are fixed 60Hz. Do not pass RAF delta into this function. */
+    var timeScale = _isBulletTime ? 0.0 : 1.0;
     _currentTimeScale = timeScale;
 
     /* ── 背景变暗切换（只在状态变化时调用一次） ── */
@@ -3763,7 +3769,7 @@ window.onload = function () {
     /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
     statsTimeStart('phys');
     var physicsIters = 11;
-    var physicsSteps = _isBulletTime ? 1 : Math.max(1, Math.min(3, Math.round(timeScale)));
+    var physicsSteps = 1;
     countSimStats(physicsIters * physicsSteps);
     for (var psi = 0; psi < physicsSteps; psi++) {
       sim.frame(
@@ -3975,10 +3981,20 @@ window.onload = function () {
   var loop = function (timestamp) {
     statsBeginFrame();
 
-    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
+    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
     _lastTimestamp = timestamp;
+    _fixedAccumulatorMs += elapsedMs;
 
-    var updateScale = fixedUpdate(elapsedMs / 16.67);
+    var steps = 0;
+    var updateScale = 0;
+    while (_fixedAccumulatorMs >= FIXED_STEP_MS && steps < MAX_CATCHUP_STEPS) {
+      updateScale += fixedUpdate();
+      _fixedAccumulatorMs -= FIXED_STEP_MS;
+      steps++;
+    }
+    if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
+      _fixedAccumulatorMs = 0;
+    }
 
     if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
       renderFrame(timestamp, updateScale);

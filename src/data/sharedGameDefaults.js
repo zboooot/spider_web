@@ -8,6 +8,7 @@ export var SHARED_GAME_DEFAULTS = {
     "spiralWobbleScale": 1,
     "moveSpeed": 8,
     "stepSpeed": 0.18,
+    "wrapSpeed": 1,
     "stepThresh": 10,
     "restThresh": 66,
     "legStiff": 0.9,

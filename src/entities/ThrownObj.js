@@ -327,20 +327,24 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
  * 获取物体定义参数
  */
 export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
+  function wrapDur(base) {
+    var speed = Math.max(0.05, P.wrapSpeed || 1);
+    return Math.max(1, Math.round(base / speed));
+  }
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
     stayFrames: Math.round(P.caterpillarReleaseSec * 60),
-    gravity: P.caterpillarGravity, wrapDur: 120
+    gravity: P.caterpillarGravity, wrapDur: wrapDur(120)
   };
   if (kind === 'bug') return {
     r: 9, collectRadius: 5, weight: P.flyWeight,
     stayFrames: Math.round(P.flyReleaseSec * 60),
-    gravity: 0, wrapDur: 80
+    gravity: 0, wrapDur: wrapDur(80)
   };
   if (kind === 'poop') return {
     r: 20, collectRadius: 17, weight: P.caterpillarWeight,
     stayFrames: Infinity,
-    gravity: P.caterpillarGravity, wrapDur: 120,
+    gravity: P.caterpillarGravity, wrapDur: wrapDur(120),
     peelDrag: 0.962
   };
   return {
@@ -348,7 +352,7 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
     stayFrames: Math.round(P.leafReleaseSec * 60),
     gravity: Math.min(P.leafGravityMin, P.leafGravityMax) + Math.random() * Math.max(0, Math.abs(P.leafGravityMax - P.leafGravityMin)),
     maxSpeed: P.leafMaxSpeed,
-    wrapDur: 40
+    wrapDur: wrapDur(40)
   };
 }
 

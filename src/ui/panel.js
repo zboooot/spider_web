@@ -35,6 +35,7 @@ export function initPanel(P, DEFAULTS, callbacks) {
   bindSlider('webStiff', 'web', P, callbacks);
   bindSlider('moveSpeed', 'motion', P, callbacks);
   bindSlider('stepSpeed', 'motion', P, callbacks);
+  bindSlider('wrapSpeed', 'motion', P, callbacks);
   bindSlider('stepThresh', 'motion', P, callbacks);
   bindSlider('restThresh', 'motion', P, callbacks);
   bindSlider('legStiff', 'spider', P, callbacks);
