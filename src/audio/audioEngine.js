@@ -18,6 +18,7 @@ var targetBgmVolume = 0.60;
 /* ── 游戏音效状态 ── */
 var bugBuzzNodes = {};
 var MAX_BUG_BUZZ = 3;
+var pickupTearLoop = null;
 
 /* ── 5套主题ID映射关卡索引 ── */
 var THEME_IDS = ['morning-jade', 'golden-autumn', 'misty-violet', 'cherry-blossom', 'midnight-lume'];
@@ -453,6 +454,38 @@ function playSfxWrap(progress) {
 function playCollectSound(kind) {
   try {
     var ctx = getAC();
+    if (kind === 'drop') {
+      var now = ctx.currentTime;
+      var len = Math.floor(ctx.sampleRate * 0.055);
+      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) {
+        var t = i / len;
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.1) * 0.18;
+      }
+      var src = ctx.createBufferSource();
+      src.buffer = buf;
+      var hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 1400;
+      var bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2400;
+      bp.Q.value = 0.8;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.11, now + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
+      src.connect(hp); hp.connect(bp); bp.connect(g); g.connect(ctx.destination);
+      src.start(now);
+
+      var whisper = makeOscGain('triangle', 860, 0.028);
+      whisper.osc.frequency.setValueAtTime(860, now);
+      whisper.osc.frequency.exponentialRampToValueAtTime(620, now + 0.05);
+      whisper.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+      whisper.osc.start(now); whisper.osc.stop(now + 0.07);
+      return;
+    }
     var freq = kind === 'boulder' ? 520 : kind === 'bug' ? 720 : 440;
     var n = makeOscGain('sine', freq, 0.22);
     n.osc.frequency.exponentialRampToValueAtTime(freq * 1.7, ctx.currentTime + 0.1);
@@ -462,6 +495,271 @@ function playCollectSound(kind) {
     n2.osc.frequency.exponentialRampToValueAtTime(freq * 3, ctx.currentTime + 0.12);
     n2.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
     n2.osc.start(ctx.currentTime); n2.osc.stop(ctx.currentTime + 0.15);
+  } catch (e) {}
+}
+
+function _createNoiseBuffer(durationSec) {
+  var ctx = getAC();
+  var len = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+  var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  var d = buf.getChannelData(0);
+  for (var i = 0; i < len; i++) {
+    d[i] = (Math.random() * 2 - 1) * 0.5;
+  }
+  return buf;
+}
+
+function startPickupTearLoop() {
+  try {
+    if (pickupTearLoop) return;
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var src = ctx.createBufferSource();
+    src.buffer = _createNoiseBuffer(0.18);
+    src.loop = true;
+
+    var hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 110;
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 620;
+    var bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 280;
+    bp.Q.value = 0.95;
+    var trem = ctx.createGain();
+    trem.gain.value = 0.001;
+
+    var wood = ctx.createBiquadFilter();
+    wood.type = 'bandpass';
+    wood.frequency.value = 220;
+    wood.Q.value = 1.2;
+    var woodGain = ctx.createGain();
+    woodGain.gain.value = 0.001;
+
+    var body = ctx.createOscillator();
+    body.type = 'triangle';
+    body.frequency.value = 70;
+    var bodyGain = ctx.createGain();
+    bodyGain.gain.value = 0.001;
+
+    var cello = ctx.createOscillator();
+    cello.type = 'sine';
+    cello.frequency.value = 50;
+    var celloGain = ctx.createGain();
+    celloGain.gain.value = 0.001;
+
+    var tension = ctx.createOscillator();
+    tension.type = 'triangle';
+    tension.frequency.value = 116;
+    var tensionGain = ctx.createGain();
+    tensionGain.gain.value = 0.001;
+
+    var air = ctx.createOscillator();
+    air.type = 'triangle';
+    air.frequency.value = 156;
+    var airGain = ctx.createGain();
+    airGain.gain.value = 0.001;
+
+    var scrape = ctx.createOscillator();
+    scrape.type = 'sine';
+    scrape.frequency.value = 228;
+    var scrapeGain = ctx.createGain();
+    scrapeGain.gain.value = 0.001;
+
+    var wobble = ctx.createOscillator();
+    wobble.type = 'sine';
+    wobble.frequency.value = 0.62;
+    var wobbleGain = ctx.createGain();
+    wobbleGain.gain.value = 10;
+
+    var shiver = ctx.createOscillator();
+    shiver.type = 'sine';
+    shiver.frequency.value = 1.3;
+    var shiverGain = ctx.createGain();
+    shiverGain.gain.value = 0.001;
+
+    var bowPulse = ctx.createOscillator();
+    bowPulse.type = 'triangle';
+    bowPulse.frequency.value = 0.58;
+    var bowPulseGain = ctx.createGain();
+    bowPulseGain.gain.value = 0.0;
+
+    var bite = ctx.createOscillator();
+    bite.type = 'sine';
+    bite.frequency.value = 2.2;
+    var biteGain = ctx.createGain();
+    biteGain.gain.value = 0.0;
+
+    wobble.connect(wobbleGain); wobbleGain.connect(bp.frequency);
+    shiver.connect(shiverGain); shiverGain.connect(trem.gain);
+    bowPulse.connect(bowPulseGain); bowPulseGain.connect(bodyGain.gain);
+    bowPulse.connect(bowPulseGain); bowPulseGain.connect(tensionGain.gain);
+    bite.connect(biteGain); biteGain.connect(trem.gain);
+    bite.connect(biteGain); biteGain.connect(tensionGain.gain);
+
+    src.connect(hp); hp.connect(lp); lp.connect(bp); bp.connect(trem); trem.connect(ctx.destination);
+    bp.connect(wood); wood.connect(woodGain); woodGain.connect(ctx.destination);
+    body.connect(bodyGain); bodyGain.connect(ctx.destination);
+    cello.connect(celloGain); celloGain.connect(ctx.destination);
+    tension.connect(tensionGain); tensionGain.connect(ctx.destination);
+    air.connect(airGain); airGain.connect(ctx.destination);
+    scrape.connect(scrapeGain); scrapeGain.connect(ctx.destination);
+
+    trem.gain.setValueAtTime(0.001, now);
+    bodyGain.gain.setValueAtTime(0.001, now);
+    celloGain.gain.setValueAtTime(0.001, now);
+    tensionGain.gain.setValueAtTime(0.001, now);
+    airGain.gain.setValueAtTime(0.001, now);
+    woodGain.gain.setValueAtTime(0.001, now);
+    scrapeGain.gain.setValueAtTime(0.001, now);
+    src.start(now);
+    body.start(now);
+    cello.start(now);
+    tension.start(now);
+    air.start(now);
+    scrape.start(now);
+    wobble.start(now);
+    shiver.start(now);
+    bowPulse.start(now);
+    bite.start(now);
+
+    pickupTearLoop = {
+      src: src,
+      hp: hp,
+      lp: lp,
+      bp: bp,
+      trem: trem,
+      body: body,
+      bodyGain: bodyGain,
+      cello: cello,
+      celloGain: celloGain,
+      tension: tension,
+      tensionGain: tensionGain,
+      air: air,
+      airGain: airGain,
+      wood: wood,
+      woodGain: woodGain,
+      scrape: scrape,
+      scrapeGain: scrapeGain,
+      wobble: wobble,
+      wobbleGain: wobbleGain,
+      shiver: shiver,
+      shiverGain: shiverGain,
+      bowPulse: bowPulse,
+      bowPulseGain: bowPulseGain,
+      bite: bite,
+      biteGain: biteGain
+    };
+  } catch (e) {}
+}
+
+function updatePickupTearLoop(intensity) {
+  try {
+    if (!pickupTearLoop) startPickupTearLoop();
+    if (!pickupTearLoop) return;
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var t = Math.max(0, Math.min(1, intensity || 0));
+    pickupTearLoop.lp.frequency.setTargetAtTime(360 + t * 220, now, 0.09);
+    pickupTearLoop.bp.frequency.setTargetAtTime(205 + t * 82, now, 0.08);
+    pickupTearLoop.bp.Q.setTargetAtTime(0.8 + t * 0.8, now, 0.06);
+    pickupTearLoop.wood.frequency.setTargetAtTime(190 + t * 36, now, 0.07);
+    pickupTearLoop.wood.Q.setTargetAtTime(1.0 + t * 0.8, now, 0.07);
+    pickupTearLoop.trem.gain.setTargetAtTime(0.0018 + t * 0.022, now, 0.06);
+    pickupTearLoop.body.frequency.setTargetAtTime(66 + t * 10, now, 0.09);
+    pickupTearLoop.bodyGain.gain.setTargetAtTime(0.011 + t * 0.036, now, 0.09);
+    pickupTearLoop.cello.frequency.setTargetAtTime(48 + t * 6, now, 0.09);
+    pickupTearLoop.celloGain.gain.setTargetAtTime(0.015 + t * 0.042, now, 0.09);
+    pickupTearLoop.tension.frequency.setTargetAtTime(110 + t * 15, now, 0.08);
+    pickupTearLoop.tensionGain.gain.setTargetAtTime(0.0022 + t * 0.009, now, 0.08);
+    pickupTearLoop.air.frequency.setTargetAtTime(150 + t * 16, now, 0.08);
+    pickupTearLoop.airGain.gain.setTargetAtTime(0.0012 + t * 0.004, now, 0.07);
+    pickupTearLoop.woodGain.gain.setTargetAtTime(0.007 + t * 0.018, now, 0.08);
+    pickupTearLoop.scrape.frequency.setTargetAtTime(214 + t * 14, now, 0.08);
+    pickupTearLoop.scrapeGain.gain.setTargetAtTime(0.0008 + t * 0.0035, now, 0.07);
+    pickupTearLoop.wobble.frequency.setTargetAtTime(0.45 + t * 0.38, now, 0.11);
+    pickupTearLoop.wobbleGain.gain.setTargetAtTime(7 + t * 9, now, 0.11);
+    pickupTearLoop.shiver.frequency.setTargetAtTime(0.9 + t * 0.8, now, 0.10);
+    pickupTearLoop.shiverGain.gain.setTargetAtTime(0.00035 + t * 0.0014, now, 0.08);
+    pickupTearLoop.bowPulse.frequency.setTargetAtTime(0.42 + t * 0.24, now, 0.14);
+    pickupTearLoop.bowPulseGain.gain.setTargetAtTime(0.006 + t * 0.014, now, 0.12);
+    pickupTearLoop.bite.frequency.setTargetAtTime(1.2 + t * 0.6, now, 0.10);
+    pickupTearLoop.biteGain.gain.setTargetAtTime(0.0007 + t * 0.0035, now, 0.08);
+  } catch (e) {}
+}
+
+function stopPickupTearLoop() {
+  if (!pickupTearLoop) return;
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var loop = pickupTearLoop;
+    loop.trem.gain.cancelScheduledValues(now);
+    loop.trem.gain.setValueAtTime(loop.trem.gain.value, now);
+    loop.trem.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.bodyGain.gain.cancelScheduledValues(now);
+    loop.bodyGain.gain.setValueAtTime(loop.bodyGain.gain.value, now);
+    loop.bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.celloGain.gain.cancelScheduledValues(now);
+    loop.celloGain.gain.setValueAtTime(loop.celloGain.gain.value, now);
+    loop.celloGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.tensionGain.gain.cancelScheduledValues(now);
+    loop.tensionGain.gain.setValueAtTime(loop.tensionGain.gain.value, now);
+    loop.tensionGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.airGain.gain.cancelScheduledValues(now);
+    loop.airGain.gain.setValueAtTime(loop.airGain.gain.value, now);
+    loop.airGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.woodGain.gain.cancelScheduledValues(now);
+    loop.woodGain.gain.setValueAtTime(loop.woodGain.gain.value, now);
+    loop.woodGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    loop.scrapeGain.gain.cancelScheduledValues(now);
+    loop.scrapeGain.gain.setValueAtTime(loop.scrapeGain.gain.value, now);
+    loop.scrapeGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    setTimeout(function () {
+      try { loop.src.stop(); } catch (e) {}
+      try { loop.body.stop(); } catch (e) {}
+      try { loop.cello.stop(); } catch (e) {}
+      try { loop.tension.stop(); } catch (e) {}
+      try { loop.air.stop(); } catch (e) {}
+      try { loop.scrape.stop(); } catch (e) {}
+      try { loop.wobble.stop(); } catch (e) {}
+      try { loop.shiver.stop(); } catch (e) {}
+      try { loop.bowPulse.stop(); } catch (e) {}
+      try { loop.bite.stop(); } catch (e) {}
+      try { loop.src.disconnect(); loop.body.disconnect(); loop.cello.disconnect(); loop.tension.disconnect(); loop.air.disconnect(); loop.wood.disconnect(); loop.scrape.disconnect(); loop.wobble.disconnect(); loop.shiver.disconnect(); loop.bowPulse.disconnect(); loop.bite.disconnect(); } catch (e) {}
+    }, 120);
+  } catch (e) {}
+  pickupTearLoop = null;
+}
+
+function playSfxPluckSnap() {
+  try {
+    var ctx = getAC();
+    var now = ctx.currentTime;
+    var clickLen = Math.floor(ctx.sampleRate * 0.008);
+    var clickBuf = ctx.createBuffer(1, clickLen, ctx.sampleRate);
+    var cd = clickBuf.getChannelData(0);
+    for (var i = 0; i < clickLen; i++) {
+      cd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / clickLen, 2.8);
+    }
+    var click = ctx.createBufferSource();
+    click.buffer = clickBuf;
+    var hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2600;
+    var g = ctx.createGain();
+    g.gain.value = 0.42;
+    click.connect(hp); hp.connect(g); g.connect(ctx.destination);
+    click.start(now);
+
+    var ping = makeOscGain('triangle', 1180, 0.095);
+    ping.osc.frequency.setValueAtTime(1180, now);
+    ping.osc.frequency.exponentialRampToValueAtTime(760, now + 0.09);
+    ping.gain.gain.setValueAtTime(0.095, now);
+    ping.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    ping.osc.start(now); ping.osc.stop(now + 0.11);
   } catch (e) {}
 }
 
@@ -582,6 +880,10 @@ export var audioEngine = {
   stopAllBugBuzz: stopAllBugBuzz,
   playSfxWrap: playSfxWrap,
   playCollectSound: playCollectSound,
+  startPickupTearLoop: startPickupTearLoop,
+  updatePickupTearLoop: updatePickupTearLoop,
+  stopPickupTearLoop: stopPickupTearLoop,
+  playSfxPluckSnap: playSfxPluckSnap,
   playSfxPoopBurst: playSfxPoopBurst,
   playSfxSuccess: playSfxSuccess,
   playSfxGameOver: playSfxGameOver

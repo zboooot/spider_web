@@ -217,7 +217,6 @@ export var SCORE_MULT = { boulder: 5, bug: 4, drop: 1, poop: 0 };
 
 function scaleWaveConfig(wave, difficultyLevel) {
   var d = difficultyLevel - 1;
-  var tScale = Math.pow(0.85, d);
   var iScale = Math.pow(0.88, d);
   var gScale = Math.pow(0.90, d);
   return {
@@ -227,8 +226,6 @@ function scaleWaveConfig(wave, difficultyLevel) {
     secondaryPressure: wave.secondaryPressure,
     notes: wave.notes,
     spawnWeights: wave.spawnWeights,
-    catR: Math.max(1.0, wave.catR * tScale),
-    flyR: Math.max(0.6, wave.flyR * tScale),
     burstMin: wave.burstMin,
     burstMax: wave.burstMax + Math.floor(d * 0.5),
     burstCount: Math.max(1, wave.burstCount || 1),

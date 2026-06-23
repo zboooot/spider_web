@@ -58,7 +58,7 @@ import {
   THEMES as BG_THEMES
 } from './render/sylvanBackground.js';
 
-import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX } from './ui/overlay.js';
+import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX, playFloatingText } from './ui/overlay.js';
 import { initPanel } from './ui/panel.js';
 
 import {
@@ -362,6 +362,8 @@ window.onload = function () {
     };
     hit.obj._pickupTension = 0;
     hit.obj._pickupCharge = 0;
+    audioEngine.startPickupTearLoop();
+    audioEngine.updatePickupTearLoop(0);
     _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
@@ -383,6 +385,7 @@ window.onload = function () {
         _pickupDrag.obj._pickupTension = 0;
         _pickupDrag.obj._pickupCharge = 0;
       }
+      audioEngine.stopPickupTearLoop();
       _suppressMoveCommand = true;
       _pickupDrag = null;
       sim.draggedEntity = null;
@@ -1876,6 +1879,8 @@ window.onload = function () {
 
   function beginPlucking(obj) {
     if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
+    audioEngine.stopPickupTearLoop();
+    audioEngine.playSfxPluckSnap();
     clearObjectConstraints(obj);
     obj.state = 'plucking';
     obj._pluckT = 0;
@@ -1889,7 +1894,7 @@ window.onload = function () {
     obj.particle.lastPos.y = obj.particle.pos.y;
     sim.draggedEntity = null;
     var pluckPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
-    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind);
+    playCollectFX(pluckPos.x, pluckPos.y, collectLayer, obj.kind, false);
   }
 
   function beginCollectObject(obj) {
@@ -2172,7 +2177,9 @@ window.onload = function () {
           obj._pickupTension = sTension;
           obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
           var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : STUCK_OVERFORCE_BUG;
+          audioEngine.updatePickupTearLoop(Math.min(1, Math.max(obj._pickupCharge, sAppliedForce / Math.max(1, sOverForce))));
           if (sAppliedForce >= sOverForce) {
+            audioEngine.stopPickupTearLoop();
             _pickupDrag = null;
             sim.draggedEntity = null;
             obj._pickupTension = 0; obj._pickupCharge = 0;
@@ -2185,6 +2192,7 @@ window.onload = function () {
               beginPlucking(obj);
               continue;
             } else if (sTension >= STUCK_BREAK_THRESHOLD) {
+              audioEngine.stopPickupTearLoop();
               _pickupDrag = null;
               sim.draggedEntity = null;
               obj._pickupTension = 0; obj._pickupCharge = 0;
@@ -2193,6 +2201,7 @@ window.onload = function () {
             }
           }
         } else {
+          audioEngine.stopPickupTearLoop();
           obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
           obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
         }
@@ -2304,6 +2313,8 @@ window.onload = function () {
           obj.state = 'wrapped';
           obj._popT = 0;
           audioEngine.playCollectSound(obj.kind);
+          var packedFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
+          playFloatingText(packedFxPos.x, packedFxPos.y, collectLayer, 'Packed');
         }
 
       } else if (obj.state === 'wrapped') {
@@ -2330,11 +2341,13 @@ window.onload = function () {
           }
           obj._pickupTension = tensionA + tensionB;
           obj._pickupCharge = Math.min(1, obj._pickupTension / Math.max(0.001, PICKUP_TENSION_THRESHOLD));
+          audioEngine.updatePickupTearLoop(Math.min(1, Math.max(obj._pickupCharge, appliedPullForce / Math.max(1, _getPickupForceThreshold(obj)))));
           if (obj._pickupTension >= PICKUP_TENSION_THRESHOLD && appliedPullForce >= _getPickupForceThreshold(obj)) {
             beginPlucking(obj);
             continue;
           }
         } else {
+          audioEngine.stopPickupTearLoop();
           obj._pickupTension = Math.max(0, (obj._pickupTension || 0) * 0.82 - 0.01);
           obj._pickupCharge = Math.max(0, (obj._pickupCharge || 0) - PICKUP_TENSION_RELEASE_RATE);
         }
@@ -2356,7 +2369,7 @@ window.onload = function () {
           if (autoPlay) _autoPlayPause = 24;
           audioEngine.playCollectSound(obj.kind);
           var collectFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
-          playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind);
+          playCollectFX(collectFxPos.x, collectFxPos.y, collectLayer, obj.kind, 'Collected');
           beginCollectObject(obj);
         }
 
