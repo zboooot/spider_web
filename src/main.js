@@ -386,7 +386,7 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; });
   }
 
   function _syncStepSearchTopology() {
@@ -546,6 +546,8 @@ window.onload = function () {
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
+  var _previewRing = null;  /* 拖拽 stub 时的 BFS 环路预览 */
+  var _previewSnapTarget = null; /* 上次计算预览时的 snapTarget，避免重复 BFS */
   var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
@@ -1308,9 +1310,17 @@ window.onload = function () {
    */
   var REPAIR_TENSOR = 0.3; /* 与原网 spiderweb.js 的 tensor 保持一致 */
 
-  function addRepairEdge(a, b, spiderweb) {
+  function addRepairEdge(a, b, spiderweb, animated) {
     var d = a.pos.dist(b.pos) * REPAIR_TENSOR;
-    spiderweb.constraints.push(new DistanceConstraint(a, b, 0.6, d));
+    var edge = new DistanceConstraint(a, b, 0.6, d);
+    if (animated) {
+      edge.__growT = 0;       /* 0→1 grow progress */
+      edge.__growDur = 12;    /* ~0.2s at 60fps */
+      edge.__flashT = 0;     /* 0→1 flash progress (white→normal) */
+      edge.__flashDur = 30;  /* ~0.5s at 60fps */
+    }
+    spiderweb.constraints.push(edge);
+    return edge;
   }
 
   function patchHole(ring, spiderweb) {
@@ -1369,9 +1379,9 @@ window.onload = function () {
     if (patchCount === 1) {
       /* 补1个点：连 A、B、路径中间点 */
       var mp1 = newParticles[0];
-      addRepairEdge(mp1, ringA, spiderweb);
-      addRepairEdge(mp1, ringB, spiderweb);
-      addRepairEdge(mp1, midNode, spiderweb);
+      addRepairEdge(mp1, ringA, spiderweb, true);
+      addRepairEdge(mp1, ringB, spiderweb, true);
+      addRepairEdge(mp1, midNode, spiderweb, true);
     } else if (patchCount === 2) {
       /* 补2个点 P Q */
       var P = newParticles[0], Q = newParticles[1];
@@ -1380,12 +1390,12 @@ window.onload = function () {
       var nodeNearA = ring[idxOneThird];
       var nodeNearB = ring[idxTwoThird];
       /* P 连 A、Q、路径1/3处 */
-      addRepairEdge(P, ringA, spiderweb);
-      addRepairEdge(P, Q, spiderweb);
-      addRepairEdge(P, nodeNearA, spiderweb);
+      addRepairEdge(P, ringA, spiderweb, true);
+      addRepairEdge(P, Q, spiderweb, true);
+      addRepairEdge(P, nodeNearA, spiderweb, true);
       /* Q 连 B、路径2/3处（P—Q 已建） */
-      addRepairEdge(Q, ringB, spiderweb);
-      addRepairEdge(Q, nodeNearB, spiderweb);
+      addRepairEdge(Q, ringB, spiderweb, true);
+      addRepairEdge(Q, nodeNearB, spiderweb, true);
     } else {
       /* 补3个点 P Q R */
       var P3 = newParticles[0], Q3 = newParticles[1], R3 = newParticles[2];
@@ -1396,15 +1406,55 @@ window.onload = function () {
       var nodeMid3 = ring[idxMid];
       var nodeQuarterB = ring[idxThreeQuarter];
       /* P 连 A、Q、路径1/4处 */
-      addRepairEdge(P3, ringA, spiderweb);
-      addRepairEdge(P3, Q3, spiderweb);
-      addRepairEdge(P3, nodeQuarterA, spiderweb);
+      addRepairEdge(P3, ringA, spiderweb, true);
+      addRepairEdge(P3, Q3, spiderweb, true);
+      addRepairEdge(P3, nodeQuarterA, spiderweb, true);
       /* Q 连 R、路径中间点（P—Q 已建） */
-      addRepairEdge(Q3, R3, spiderweb);
-      addRepairEdge(Q3, nodeMid3, spiderweb);
+      addRepairEdge(Q3, R3, spiderweb, true);
+      addRepairEdge(Q3, nodeMid3, spiderweb, true);
       /* R 连 B、路径3/4处（Q—R 已建） */
-      addRepairEdge(R3, ringB, spiderweb);
-      addRepairEdge(R3, nodeQuarterB, spiderweb);
+      addRepairEdge(R3, ringB, spiderweb, true);
+      addRepairEdge(R3, nodeQuarterB, spiderweb, true);
+    }
+  }
+
+  /**
+   * 在连接点喷出丝线粒子，方向朝对端散开
+   */
+  function _spawnRepairSilk(x, y, toX, toY) {
+    var dx = toX - x, dy = toY - y;
+    var baseAng = Math.atan2(dy, dx);
+    /* 中心闪光 */
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.04,
+      r: 6,
+      grow: 0.3,
+      drag: 1,
+      speedScale: 1,
+      smoke: true,
+      occlude: 0.6,
+      color: '#ddeeff'
+    });
+    /* 散射丝线粒子 */
+    for (var i = 0; i < 10; i++) {
+      var ang = baseAng + (Math.random() - 0.5) * 2.2;
+      var spd = 2.0 + Math.random() * 3.0;
+      _burstParticles.push({
+        x: x + (Math.random() - 0.5) * 4,
+        y: y + (Math.random() - 0.5) * 4,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life: 1.0,
+        decay: 0.035 + Math.random() * 0.02,
+        r: 2.0 + Math.random() * 2.0,
+        drag: 0.92,
+        speedScale: 1,
+        smoke: false,
+        color: '#e8e8f0'
+      });
     }
   }
 
@@ -1425,8 +1475,8 @@ window.onload = function () {
         /* 先 BFS 找最小环（在建新边之前，否则 BFS 会直接走新边） */
         var path = bfsPath(anchorPt, snapTarget, spiderweb);
 
-        /* 建 A—B 主线（立即） */
-        addRepairEdge(anchorPt, snapTarget, spiderweb);
+        /* 建 A—B 主线（带生长动画） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb, true);
 
         /* 环够大则把补丁任务放入队列，等蜘蛛过来修 */
         if (path && path.length > 4) {
@@ -1438,17 +1488,24 @@ window.onload = function () {
           }
           rcx /= path.length;
           rcy /= path.length;
+          /* 补点数决定修复时长：1/2/3个点 → 1/2/3秒（60/120/180帧） */
+          var _pc = path.length <= 6 ? 1 : path.length <= 9 ? 2 : 3;
+          var _dur = _pc * 60;
           repairQueue.push({
             ring: path,
             pos: new Vec2(rcx, rcy),
             state: 'pending',
-            timer: REPAIR_WORK_DUR
+            timer: _dur,
+            duration: _dur
           });
         }
       } else {
-        /* 只修一根 */
-        addRepairEdge(anchorPt, snapTarget, spiderweb);
+        /* 只修一根（带生长动画） */
+        addRepairEdge(anchorPt, snapTarget, spiderweb, true);
       }
+      /* 修复粒子效果：两个连接点各喷丝线粒子 */
+      _spawnRepairSilk(anchorPt.pos.x, anchorPt.pos.y, snapTarget.pos.x, snapTarget.pos.y);
+      _spawnRepairSilk(snapTarget.pos.x, snapTarget.pos.y, anchorPt.pos.x, anchorPt.pos.y);
     }
 
     /* 删掉 stub 的锚定边 */
@@ -2593,6 +2650,29 @@ window.onload = function () {
       applyBgVignette(_isBulletTime);
     }
 
+    /* ── 拖拽 stub 时实时预览 BFS 环路 ── */
+    if (_isBulletTime && sim.snapTarget && sim.draggedEntity && sim.draggedEntity.__isStub) {
+      if (sim.snapTarget !== _previewSnapTarget) {
+        _previewSnapTarget = sim.snapTarget;
+        /* 找 stub 的锚点 */
+        var _pvAnchor = null;
+        for (var _pvi = 0; _pvi < spiderweb.constraints.length; _pvi++) {
+          var _pvc = spiderweb.constraints[_pvi];
+          if (!_pvc.__isStubAnchor) continue;
+          if (_pvc.a === sim.draggedEntity) { _pvAnchor = _pvc.b; break; }
+          if (_pvc.b === sim.draggedEntity) { _pvAnchor = _pvc.a; break; }
+        }
+        if (_pvAnchor && _pvAnchor !== sim.snapTarget) {
+          _previewRing = bfsPath(_pvAnchor, sim.snapTarget, spiderweb);
+        } else {
+          _previewRing = null;
+        }
+      }
+    } else {
+      _previewRing = null;
+      _previewSnapTarget = null;
+    }
+
     /* ── 弹性拖拽平滑阻尼：按时间缩放，避免低帧更慢 ── */
     var dragLerp = 1 - Math.pow(0.9, Math.max(0, timeScale));
     _smoothDrag.x += (_dragOffset.x - _smoothDrag.x) * dragLerp;
@@ -2684,6 +2764,47 @@ window.onload = function () {
           target = null;
           isRepairing = true;
           rTask.timer -= _currentTimeScale;
+
+          /* 持续喷丝线粒子：数量少但范围大 */
+          var sx = spider.thorax.pos.x;
+          var sy = spider.thorax.pos.y;
+          var _repairDir = Math.atan2(rTask.pos.y - sy, rTask.pos.x - sx);
+          if (Math.floor(rTask.timer) % 2 === 0) {
+            var sAng = Math.random() * Math.PI * 2;
+            var sSpd = 2.5 + Math.random() * 4.0;
+            _burstParticles.push({
+              x: sx + (Math.random() - 0.5) * 16,
+              y: sy + (Math.random() - 0.5) * 16,
+              vx: Math.cos(sAng) * sSpd,
+              vy: Math.sin(sAng) * sSpd,
+              life: 1.0,
+              decay: 0.018 + Math.random() * 0.012,
+              r: 1.5 + Math.random() * 1.5,
+              drag: 0.95,
+              speedScale: 1,
+              smoke: false,
+              color: ['#e8e8f0', '#d0d8e8', '#ffffff'][Math.floor(Math.random() * 3)]
+            });
+          }
+          /* 偶尔喷一个带 glow 的大粒子 */
+          if (Math.floor(rTask.timer) % 10 === 0) {
+            _burstParticles.push({
+              x: sx + (Math.random() - 0.5) * 20,
+              y: sy + (Math.random() - 0.5) * 20,
+              vx: (Math.random() - 0.5) * 1.5,
+              vy: (Math.random() - 0.5) * 1.5,
+              life: 1.0,
+              decay: 0.025,
+              r: 4,
+              grow: 0.2,
+              drag: 0.97,
+              speedScale: 1,
+              smoke: true,
+              occlude: 0.45,
+              color: '#ddeeff'
+            });
+          }
+
           if (rTask.timer <= 0) {
             patchHole(rTask.ring, spiderweb);
             repairQueue.shift();
@@ -2894,7 +3015,7 @@ window.onload = function () {
     /* ── 补网修复进度圈 ── */
     if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') {
       var rt = repairQueue[0];
-      var progress = 1 - rt.timer / REPAIR_WORK_DUR;
+      var progress = 1 - rt.timer / (rt.duration || 60);
       var rpx = rt.pos.x, rpy = rt.pos.y;
       var rStartA = -Math.PI / 2;
       sim.ctx.beginPath();
