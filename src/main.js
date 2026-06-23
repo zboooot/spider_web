@@ -745,7 +745,11 @@ window.onload = function () {
     _spawnAnim.fromY = spawnFromY;
     _spawnAnim.toY = cy;
     _spawnAnim.duration = 52;
-    setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () { return wrappingTarget; });
+    setupSpiderDraw(spider, legConstraintCount, footState, blinkState, function () {
+      if (wrappingTarget) return wrappingTarget;
+      if (repairQueue.length > 0 && repairQueue[0].state === 'repairing') return _repairAnimProxy;
+      return null;
+    });
     spiderAI.reset(spiderweb);
     var _spatialOpts = USE_LEGACY_COLLISION ? null : { index: spatialIndex, queryBuf: spatialQueryBuf };
     setTimeout(function () {
@@ -815,6 +819,12 @@ window.onload = function () {
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
   var repairCompleteFlashes = []; /* 补网完成后的区域闪烁 [{ring, t, duration}] */
+  var _repairAnimProxy = {  /* 补网时复用打包动画的代理目标 */
+    particle: { pos: { x: 0, y: 0 } },
+    wrapT: 0,
+    animT: 0,
+    wrapDur: 60
+  };
   var _previewRing = null;  /* 拖拽 stub 时的 BFS 环路预览 */
   var _previewSnapTarget = null; /* 上次计算预览时的 snapTarget，避免重复 BFS */
   var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
@@ -3503,6 +3513,7 @@ window.onload = function () {
             if (_bestRD2 <= 14 * 14) {
               rTask.state = 'repairing';
               target = null;
+              _repairAnimProxy.animT = 0;
             }
           } else {
             /* ring 上没有存活节点，放弃任务 */
@@ -3512,6 +3523,12 @@ window.onload = function () {
           target = null;
           isRepairing = true;
           rTask.timer -= _currentTimeScale;
+          var _rDur = rTask.duration || 60;
+          _repairAnimProxy.particle.pos.x = rTask.pos.x;
+          _repairAnimProxy.particle.pos.y = rTask.pos.y;
+          _repairAnimProxy.wrapT = 1 - rTask.timer / _rDur;
+          _repairAnimProxy.wrapDur = _rDur;
+          if (_currentTimeScale > 0) _repairAnimProxy.animT += _currentTimeScale;
 
           /* 持续喷丝线粒子：数量少但范围大 */
           var sx = spider.thorax.pos.x;
