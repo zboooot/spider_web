@@ -12,11 +12,6 @@ var _n = 0;
 
 var _DEFAULT_STROKE = 'rgba(230,230,230,0.55)';
 var _DEFAULT_WIDTH = 1.6;
-var _TRUNK_WIDTH = 3.2;
-
-function _baseWidthForConstraint(c) {
-  return c && c.__mainTrunk ? _TRUNK_WIDTH : _DEFAULT_WIDTH;
-}
 
 function _aliveWebSeg(c) {
   return c instanceof DistanceConstraint && isWebConstraintAlive(c, spatialIndex);
@@ -95,7 +90,7 @@ function _drawCalmSegments(ctx, comp, n) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
-      ctx.lineWidth = _baseWidthForConstraint(c);
+      ctx.lineWidth = _DEFAULT_WIDTH;
       ctx.beginPath();
       ctx.moveTo(c.a.pos.x, c.a.pos.y);
       ctx.lineTo(c.b.pos.x, c.b.pos.y);
@@ -196,7 +191,7 @@ function _drawDangerSegments(ctx, comp, n, now) {
           } else {
             strokeR = 230; strokeG = 230; strokeB = 230; strokeA = 0.55;
           }
-          strokeW = _baseWidthForConstraint(c);
+          strokeW = 1.6;
         } else if (isDirect) {
           var flashHz = 1 + d * 7;
           var phase = (now / 1000 * flashHz) % 1;
@@ -205,19 +200,19 @@ function _drawDangerSegments(ctx, comp, n, now) {
           strokeG = Math.round(230 * (1 - d * 0.92));
           strokeB = Math.round(230 * (1 - d));
           strokeA = 0.4 + blink * (0.55 + d * 0.45);
-          strokeW = _baseWidthForConstraint(c) + d * 5.0 + blink * d * 2.4;
+          strokeW = 1.6 + d * 5.0 + blink * d * 2.4;
         } else {
           strokeR = Math.round(230 + 25 * d);
           strokeG = Math.round(230 * (1 - d * 0.92));
           strokeB = Math.round(230 * (1 - d));
           strokeA = 0.3 + d * 0.5;
-          strokeW = _baseWidthForConstraint(c) + d * 3.0;
+          strokeW = 1.6 + d * 3.0;
         }
         ctx.strokeStyle = 'rgba(' + strokeR + ',' + strokeG + ',' + strokeB + ',' + strokeA + ')';
         ctx.lineWidth = strokeW;
       } else {
         ctx.strokeStyle = _DEFAULT_STROKE;
-        ctx.lineWidth = _baseWidthForConstraint(c);
+        ctx.lineWidth = _DEFAULT_WIDTH;
       }
       ctx.stroke();
       statsDc('line');

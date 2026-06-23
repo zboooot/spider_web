@@ -20,6 +20,11 @@ export function VerletJS(width, height, canvas) {
   this.onRepairDrop = null;     /* 回调：function(stub, snapTarget) */
   this.selectionRadius = 20;
   this.stubSelectionRadius = 44; /* stub 专用选中半径，适配移动端手指 */
+  this.webTugRadius = 52;        /* 完整网线拖拽的选中线段半径 */
+  this.webTugStrength = 0.28;    /* 主节点拖拽跟随强度 */
+  this.webTugNeighborHops = 2;   /* 连带拉扯的跳数 */
+  this.webTugNeighborFalloff = 0.48; /* 每跳力度衰减 */
+  this.webTugSpreadRadius = 96;  /* 以指针为中心的影响半径 */
   this.suppressClick = false;    /* stub 拖拽后抑制本次 click/tap */
   this.highlightColor = "#4f545c";
 
@@ -35,7 +40,10 @@ export function VerletJS(width, height, canvas) {
 
   this.canvas.oncontextmenu = function (e) { e.preventDefault(); };
 
-  this.canvas.onmousedown = function () {
+  this.canvas.onmousedown = function (e) {
+    var r = _this.canvas.getBoundingClientRect();
+    _this.mouse.x = (e.clientX - r.left) * (_this.width / r.width);
+    _this.mouse.y = (e.clientY - r.top) * (_this.height / r.height);
     _this.mouseDown = true;
     var n = _this.nearestEntity();
     if (n) _this.draggedEntity = n;
@@ -48,6 +56,9 @@ export function VerletJS(width, height, canvas) {
       if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
         _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
       }
+    } else if (_this.draggedEntity && _this.draggedEntity.__isWebTug) {
+      _this.suppressClick = true;
+      _this.draggedEntity.__isWebTug = false;
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
@@ -77,6 +88,9 @@ export function VerletJS(width, height, canvas) {
       if (_this.draggedEntity.__isWebParticle && _this.snapTarget && _this.onRepairDrop) {
         _this.onRepairDrop(_this.draggedEntity, _this.snapTarget);
       }
+    } else if (_this.draggedEntity && _this.draggedEntity.__isWebTug) {
+      _this.suppressClick = true;
+      _this.draggedEntity.__isWebTug = false;
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
@@ -103,6 +117,100 @@ function _constraintAlive(con, aliveCheck) {
   if (!aliveCheck) return true;
   if (con.__webId && !aliveCheck(con)) return false;
   return true;
+}
+
+function _nearestPointOnSeg(px, py, ax, ay, bx, by) {
+  var dx = bx - ax;
+  var dy = by - ay;
+  var len2 = dx * dx + dy * dy;
+  if (len2 < 1e-6) return { x: ax, y: ay, t: 0 };
+  var t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return { x: ax + t * dx, y: ay + t * dy, t: t };
+}
+
+function _isParticlePinned(particle, constraints) {
+  for (var i = 0; i < constraints.length; i++) {
+    if (constraints[i] instanceof PinConstraint && constraints[i].a === particle) return true;
+  }
+  return false;
+}
+
+function _webNodeConnCount(particle, constraints) {
+  var conn = 0;
+  for (var i = 0; i < constraints.length; i++) {
+    var c = constraints[i];
+    if (!(c instanceof DistanceConstraint)) continue;
+    if (c.__isStubAnchor) continue;
+    if (c.a === particle || c.b === particle) conn++;
+  }
+  return conn;
+}
+
+function _findWebCompositeForParticle(sim, particle) {
+  var c, i;
+  for (c in sim.composites) {
+    if (!sim.composites[c].__isWeb) continue;
+    var pts = sim.composites[c].particles;
+    for (i in pts) {
+      if (pts[i] === particle) return sim.composites[c];
+    }
+  }
+  return null;
+}
+
+function _applyWebTugPull(sim, primary, mx, my) {
+  var tug = sim.webTugStrength || 0.28;
+  var spreadR = sim.webTugSpreadRadius || 96;
+  var maxHop = sim.webTugNeighborHops || 2;
+  var hopFalloff = sim.webTugNeighborFalloff || 0.48;
+  var webComp = _findWebCompositeForParticle(sim, primary);
+
+  if (!webComp) {
+    primary.pos.x += (mx - primary.pos.x) * tug;
+    primary.pos.y += (my - primary.pos.y) * tug;
+    return;
+  }
+
+  var wcs = webComp.constraints;
+  var visited = [];
+  var queue = [{ p: primary, hop: 0, weight: 1 }];
+  var minWeight = 0.035;
+
+  while (queue.length > 0) {
+    var item = queue.shift();
+    var pt = item.p;
+    if (visited.indexOf(pt) !== -1) continue;
+    visited.push(pt);
+    if (pt.__isStub) continue;
+    if (pt !== primary && _isParticlePinned(pt, wcs)) continue;
+
+    var dx = mx - pt.pos.x;
+    var dy = my - pt.pos.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var distW = dist < spreadR ? 1 - dist / spreadR : 0.14;
+    var w = item.weight * distW;
+    if (w < minWeight) continue;
+
+    var s = tug * w;
+    pt.pos.x += dx * s;
+    pt.pos.y += dy * s;
+
+    if (item.hop >= maxHop) continue;
+    for (var wi = 0; wi < wcs.length; wi++) {
+      var con = wcs[wi];
+      if (!(con instanceof DistanceConstraint)) continue;
+      if (con.__isStubAnchor) continue;
+      var nb = null;
+      if (con.a === pt) nb = con.b;
+      else if (con.b === pt) nb = con.a;
+      else continue;
+      if (!nb || nb.__isStub || nb._noSimDrag) continue;
+      if (visited.indexOf(nb) !== -1) continue;
+      queue.push({ p: nb, hop: item.hop + 1, weight: item.weight * hopFalloff });
+    }
+  }
 }
 
 VerletJS.prototype._integrateParticles = function (gX, gY) {
@@ -138,6 +246,8 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
     if (this.draggedEntity.__isStub) {
       /* stub 直接跟手 */
       this.draggedEntity.pos.mutableSet(this.mouse);
+    } else if (this.draggedEntity.__isWebTug) {
+      _applyWebTugPull(this, this.draggedEntity, this.mouse.x, this.mouse.y);
     } else {
       /* 其他实体弹性跟随 */
       var _dp = this.draggedEntity.pos;
@@ -298,9 +408,11 @@ VerletJS.prototype.draw = function () {
   }
   var nearest = this.draggedEntity || this.nearestEntity();
   if (nearest) {
+    var hlR = nearest.__isWebTug ? 13 : (nearest.__isStub ? 10 : 8);
     this.ctx.beginPath();
-    this.ctx.arc(nearest.pos.x, nearest.pos.y, 8, 0, 2 * Math.PI);
-    this.ctx.strokeStyle = this.highlightColor;
+    this.ctx.arc(nearest.pos.x, nearest.pos.y, hlR, 0, 2 * Math.PI);
+    this.ctx.strokeStyle = nearest.__isWebTug ? 'rgba(210,230,255,0.85)' : this.highlightColor;
+    this.ctx.lineWidth = nearest.__isWebTug ? 2.2 : 1.6;
     this.ctx.stroke();
     statsDc('stroke');
   }
@@ -327,43 +439,46 @@ VerletJS.prototype.nearestEntity = function () {
   }
   if (bestStub) {
     bestStub.__isWebParticle = true;
+    bestStub.__isWebTug = false;
     return bestStub;
   }
 
-  /* 第二优先级：找最近的其他可拖拽粒子 */
-  var baseR2 = this.selectionRadius * this.selectionRadius;
-  var entity = null, d2N = 0, csN = null, entityComp = null;
-  for (c in this.composites) {
-    var ps2 = this.composites[c].particles;
-    for (i in ps2) {
-      if (ps2[i]._noSimDrag) continue;
-      var d2b = ps2[i].pos.dist2(this.mouse);
-      if (d2b <= baseR2 && (entity == null || d2b < d2N)) {
-        entity = ps2[i];
-        csN = this.composites[c].constraints;
-        entityComp = this.composites[c];
-        d2N = d2b;
-      }
-    }
-  }
-  if (!entity) return null;
-  /* 锚点不可拖 */
-  for (i in csN) {
-    if (csN[i] instanceof PinConstraint && csN[i].a == entity) return null;
-  }
-  /* 网线粒子：只有断线头（连接数==1）可拖，完整节点（>=2）不可拖 */
-  if (entityComp && entityComp.__isWeb) {
-    var connCount = 0;
-    for (i in csN) {
-      if (csN[i] instanceof PinConstraint) continue;
-      if (csN[i].a === entity || csN[i].b === entity) connCount++;
-    }
-    if (connCount >= 2) return null;
-    if (!entity.__isStub) return null;
-    entity.__isWebParticle = true;
-  } else {
-    entity.__isWebParticle = false;
+  /* 第二优先级：最近的存活网线段（轻微弹性拖拽；上层猎物由 shouldAllowWebTug 屏蔽） */
+  if (this.shouldAllowWebTug && !this.shouldAllowWebTug(this.mouse.x, this.mouse.y)) {
     return null;
   }
-  return entity;
+  var tugR2 = this.webTugRadius * this.webTugRadius;
+  var bestTug = null;
+  var bestTugD2 = Infinity;
+  for (c in this.composites) {
+    if (!this.composites[c].__isWeb) continue;
+    var wcs = this.composites[c].constraints;
+    for (i = 0; i < wcs.length; i++) {
+      var con = wcs[i];
+      if (!(con instanceof DistanceConstraint)) continue;
+      if (con.__isStubAnchor) continue;
+      var ax = con.a.pos.x;
+      var ay = con.a.pos.y;
+      var bx = con.b.pos.x;
+      var by = con.b.pos.y;
+      var proj = _nearestPointOnSeg(this.mouse.x, this.mouse.y, ax, ay, bx, by);
+      var sdx = this.mouse.x - proj.x;
+      var sdy = this.mouse.y - proj.y;
+      var sd2 = sdx * sdx + sdy * sdy;
+      if (sd2 > tugR2 || sd2 >= bestTugD2) continue;
+      var pick = proj.t <= 0.5 ? con.a : con.b;
+      if (pick.__isStub || pick._noSimDrag) continue;
+      if (_isParticlePinned(pick, wcs)) continue;
+      if (_webNodeConnCount(pick, wcs) < 2) continue;
+      bestTug = pick;
+      bestTugD2 = sd2;
+    }
+  }
+  if (bestTug) {
+    bestTug.__isWebParticle = true;
+    bestTug.__isWebTug = true;
+    return bestTug;
+  }
+
+  return null;
 };

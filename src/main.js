@@ -375,30 +375,49 @@ window.onload = function () {
     return 3;
   }
 
-  function _findWrappedPreyAt(clientX, clientY) {
-    var pos = _getCanvasPos(clientX, clientY);
+  function _isStuckDragOnly(obj) {
+    return obj.state === 'stuck' && (obj.kind === 'drop' || obj.kind === 'bug');
+  }
+
+  function _pickPreyAt(x, y, states) {
+    var allowed = states || ['wrapped', 'stuck'];
     var best = null;
     var bestD2 = Infinity;
-    for (var oi = 0; oi < thrownObjects.length; oi++) {
+    for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
-      if (obj.state !== 'wrapped' && obj.state !== 'stuck') continue;
-      if (obj.state === 'stuck' && obj.kind === 'drop') continue;
+      if (!obj || allowed.indexOf(obj.state) === -1) continue;
       var p = obj.particle.pos;
-      var radius = _getWrappedPickupRadius(obj);
-      var dx = pos.x - p.x, dy = pos.y - p.y, d2 = dx * dx + dy * dy;
+      var radius = obj.state === 'wrapped' || obj.state === 'stuck'
+        ? _getWrappedPickupRadius(obj)
+        : (obj.def ? obj.def.r * 2.2 : 16);
+      var dx = x - p.x;
+      var dy = y - p.y;
+      var d2 = dx * dx + dy * dy;
       if (d2 > radius * radius) continue;
       if (d2 < bestD2) {
         best = obj;
         bestD2 = d2;
       }
     }
-    return best ? { obj: best, pos: pos } : null;
+    return best;
   }
 
+  function _findWrappedPreyAt(clientX, clientY) {
+    var pos = _getCanvasPos(clientX, clientY);
+    var obj = _pickPreyAt(pos.x, pos.y, ['wrapped', 'stuck']);
+    return obj ? { obj: obj, pos: pos } : null;
+  }
+
+  sim.shouldAllowWebTug = function (x, y) {
+    return !_pickPreyAt(x, y, ['wrapped', 'stuck']);
+  };
+
   function _beginWrappedPickup(clientX, clientY) {
-    if (sim.draggedEntity && sim.draggedEntity.__isStub) return false; /* stub 优先 */
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) return false;
     var hit = _findWrappedPreyAt(clientX, clientY);
     if (!hit) return false;
+    sim.draggedEntity = null;
+    sim.snapTarget = null;
     _pickupDrag = {
       obj: hit.obj,
       startX: hit.obj.particle.pos.x,
@@ -913,15 +932,7 @@ window.onload = function () {
   document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
 
   function pickObjectAt(x, y) {
-    for (var i = thrownObjects.length - 1; i >= 0; i--) {
-      var obj = thrownObjects[i];
-      if (!obj || obj.state !== 'stuck') continue;
-      var r = obj.def ? obj.def.r * 2.2 : 16;
-      var dx = obj.particle.pos.x - x;
-      var dy = obj.particle.pos.y - y;
-      if (dx * dx + dy * dy <= r * r) return obj;
-    }
-    return null;
+    return _pickPreyAt(x, y, ['wrapped', 'stuck']);
   }
 
   function _isWebAttachedState(state) {
@@ -1407,7 +1418,6 @@ window.onload = function () {
 
   function _onWebSegmentBroken(c, opts) {
     if (!c) return;
-    if (c.__mainTrunk) return;
     if (c.__webId) spatialIndex.removeConstraint(c.__webId);
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
@@ -2228,29 +2238,8 @@ window.onload = function () {
           obj._pickupCharge = Math.min(1, sTension / Math.max(0.001, STUCK_PLUCK_THRESHOLD));
           var sOverForce = obj.kind === 'boulder' ? STUCK_OVERFORCE_BOULDER : obj.kind === 'poop' ? STUCK_OVERFORCE_POOP : STUCK_OVERFORCE_BUG;
           audioEngine.updatePickupTearLoop(Math.min(1, Math.max(obj._pickupCharge, sAppliedForce / Math.max(1, sOverForce))));
-          if (sAppliedForce >= sOverForce) {
-            audioEngine.stopPickupTearLoop();
-            _pickupDrag = null;
-            sim.draggedEntity = null;
-            obj._pickupTension = 0; obj._pickupCharge = 0;
-            if (obj.kind === 'poop') {
-              obj.peelOff(sPullDx, sPullDy);
-            } else {
-              obj.state = 'freeing'; obj.freeTimer = 0;
-            }
-            continue;
-          } else if (sAppliedForce >= sForceThresh) {
-            if (sTension >= STUCK_PLUCK_THRESHOLD) {
-              _pickupDrag = null;
-              sim.draggedEntity = null;
-              if (obj.kind === 'poop') {
-                obj._pickupTension = 0; obj._pickupCharge = 0;
-                obj.peelOff(sPullDx, sPullDy);
-              } else {
-                beginPlucking(obj);
-              }
-              continue;
-            } else if (sTension >= STUCK_BREAK_THRESHOLD) {
+          if (!_isStuckDragOnly(obj)) {
+            if (sAppliedForce >= sOverForce) {
               audioEngine.stopPickupTearLoop();
               _pickupDrag = null;
               sim.draggedEntity = null;
@@ -2261,6 +2250,29 @@ window.onload = function () {
                 obj.state = 'freeing'; obj.freeTimer = 0;
               }
               continue;
+            } else if (sAppliedForce >= sForceThresh) {
+              if (sTension >= STUCK_PLUCK_THRESHOLD) {
+                _pickupDrag = null;
+                sim.draggedEntity = null;
+                if (obj.kind === 'poop') {
+                  obj._pickupTension = 0; obj._pickupCharge = 0;
+                  obj.peelOff(sPullDx, sPullDy);
+                } else {
+                  beginPlucking(obj);
+                }
+                continue;
+              } else if (sTension >= STUCK_BREAK_THRESHOLD) {
+                audioEngine.stopPickupTearLoop();
+                _pickupDrag = null;
+                sim.draggedEntity = null;
+                obj._pickupTension = 0; obj._pickupCharge = 0;
+                if (obj.kind === 'poop') {
+                  obj.peelOff(sPullDx, sPullDy);
+                } else {
+                  obj.state = 'freeing'; obj.freeTimer = 0;
+                }
+                continue;
+              }
             }
           }
         } else {
@@ -3017,7 +3029,7 @@ window.onload = function () {
     _lastTimestamp = timestamp;
 
     /* ── 子弹时间检测：拖拽断线头时进入 ── */
-    var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isWebParticle);
+    var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
     /* timeScale: 正常=帧率补偿，子弹时间=0.15 */
     var timeScale = _isBulletTime ? 0.0 : delta / 16.67;
     _currentTimeScale = timeScale;

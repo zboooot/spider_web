@@ -203,19 +203,6 @@ export function collapseChain(stub, spiderweb, spatialIndex) {
      * outgoing == 0 → 死端，链脱网
      */
     var edges = getEdges(current);
-    var touchesMainTrunk = false;
-    for (var ti = 0; ti < edges.length; ti++) {
-      if (edges[ti].__mainTrunk) { touchesMainTrunk = true; break; }
-    }
-    if (touchesMainTrunk) {
-      for (var di = 0; di < chainEdges.length; di++) removeEdge(chainEdges[di]);
-      for (var pi = 0; pi < chainNodes.length; pi++) removePt(chainNodes[pi]);
-      if (stubEdge.a === stub) stubEdge.b = current;
-      else stubEdge.a = current;
-      var trunkDx = stub.pos.x - current.pos.x, trunkDy = stub.pos.y - current.pos.y;
-      stubEdge.distance = Math.sqrt(trunkDx * trunkDx + trunkDy * trunkDy) || 1;
-      return;
-    }
     var outgoing = 0;
     for (var oi = 0; oi < edges.length; oi++) {
       if (edges[oi].__isStubAnchor) continue;
@@ -319,7 +306,6 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
 
         /* 删边（bitmap 模式下标记死亡） */
         var edgeToRemove = spiderweb.constraints[edgeIdx];
-        if (edgeToRemove.__mainTrunk) break;
         if (spatialIndex && edgeToRemove.__webId) {
           spatialIndex.removeConstraint(edgeToRemove.__webId);
         } else {
@@ -566,29 +552,27 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
 
   if (this.stuckOnConstraint) {
     var bc = this.stuckOnConstraint;
-    if (this.kind === 'bug' && !bc.__mainTrunk) {
+    if (this.kind === 'bug') {
       var nearBc = findNearestWebSegment(p.pos.x, p.pos.y, spiderweb, spatialOpts, bc);
       if (nearBc) bc = nearBc;
     }
-    if (!bc.__mainTrunk) {
-      if (this.kind !== 'drop') {
-        webBreakFlashes.push({
-          ax: bc.a.pos.x, ay: bc.a.pos.y,
-          bx: bc.b.pos.x, by: bc.b.pos.y,
-          t: _breakFrame
-        });
-      }
-      if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false, sourceObj: this } : { sourceObj: this });
-      if (useBitmap) {
-        if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
-      } else {
-        var wi = spiderweb.constraints.indexOf(bc);
-        if (wi !== -1) spiderweb.constraints.splice(wi, 1);
-      }
-
-      /* 记录断裂边信息，创建断线头 */
-      createBreakStubs([{ a: bc.a, b: bc.b, distance: bc.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
+    if (this.kind !== 'drop') {
+      webBreakFlashes.push({
+        ax: bc.a.pos.x, ay: bc.a.pos.y,
+        bx: bc.b.pos.x, by: bc.b.pos.y,
+        t: _breakFrame
+      });
     }
+    if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false, sourceObj: this } : { sourceObj: this });
+    if (useBitmap) {
+      if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
+    } else {
+      var wi = spiderweb.constraints.indexOf(bc);
+      if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+    }
+
+    /* 记录断裂边信息，创建断线头 */
+    createBreakStubs([{ a: bc.a, b: bc.b, distance: bc.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
     this.stuckOnConstraint = null;
   }
 
@@ -603,7 +587,6 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         var c = cs[bi];
         if (!(c instanceof DistanceConstraint)) continue;
         if (c.__webGlobal) continue;
-        if (c.__mainTrunk) continue;
         if (!c.__webId || !idx.isAliveId(c.__webId)) continue;
         var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
         var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
@@ -624,7 +607,6 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     } else {
       spiderweb.constraints = spiderweb.constraints.filter(function (c) {
         if (!(c instanceof DistanceConstraint)) return true;
-        if (c.__mainTrunk) return true;
         var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
         var bx2 = c.b.pos.x - bpx, by2 = c.b.pos.y - bpy;
         var keep = (ax * ax + ay * ay > breakR2) || (bx2 * bx2 + by2 * by2 > breakR2);
