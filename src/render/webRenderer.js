@@ -245,9 +245,51 @@ function _drawBrokenEnds(ctx, getBrokenEnds) {
 }
 
 /**
+ * 绘制补网任务的环高亮：沿 ring 节点连线画发光边
+ */
+var _repairHighlightFrame = 0;
+function _drawRepairRingHighlight(ctx, getRepairQueue) {
+  if (!getRepairQueue) return;
+  var queue = getRepairQueue();
+  if (!queue || queue.length === 0) return;
+
+  _repairHighlightFrame++;
+  var pulse = 0.35 + 0.25 * Math.sin(_repairHighlightFrame * 0.08);
+
+  ctx.save();
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+
+  for (var qi = 0; qi < queue.length; qi++) {
+    var task = queue[qi];
+    var ring = task.ring;
+    if (!ring || ring.length < 2) continue;
+
+    /* 任务状态不同颜色微调 */
+    var r = 120, g = 210, b = 255; /* 浅蓝 */
+    if (task.state === 'repairing') { r = 100; g = 255; b = 180; } /* 修复中偏绿 */
+
+    ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + pulse.toFixed(2) + ')';
+
+    /* 画环上相邻节点之间的连线 */
+    ctx.beginPath();
+    ctx.moveTo(ring[0].pos.x, ring[0].pos.y);
+    for (var ri = 1; ri < ring.length; ri++) {
+      ctx.lineTo(ring[ri].pos.x, ring[ri].pos.y);
+    }
+    /* 闭合环：首尾相连（首尾通过修复边连接） */
+    ctx.lineTo(ring[0].pos.x, ring[0].pos.y);
+    ctx.stroke();
+    statsDc('stroke');
+  }
+
+  ctx.restore();
+}
+
+/**
  * 设置蜘蛛网的自定义绘制函数
  */
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue) {
   var getLogicalTime = sixthArg ? null : fifthArg;
   var getBrokenEnds = sixthArg ? fifthArg : null;
   var getSnapTarget = sixthArg || null;
@@ -269,6 +311,9 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
       ctx.stroke();
       ctx.restore();
     }
+
+    /* ── 补网任务环高亮 ── */
+    _drawRepairRingHighlight(ctx, getRepairQueue);
   };
 
   spiderweb.drawConstraints = function (ctx, comp) {

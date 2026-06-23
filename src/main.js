@@ -386,7 +386,7 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; });
   }
 
   function _syncStepSearchTopology() {
@@ -1251,12 +1251,13 @@ window.onload = function () {
   function bfsPath(A, B, spiderweb) {
     if (A === B) return [A];
 
-    /* 建邻接表 */
+    /* 建邻接表（排除已死边和 stubAnchor） */
     var adj = {};
     for (var i = 0; i < spiderweb.constraints.length; i++) {
       var c = spiderweb.constraints[i];
       if (!(c instanceof DistanceConstraint)) continue;
       if (c.__isStubAnchor) continue;
+      if (!_constraintAlive(c)) continue;
       var idA = c.a.__pid, idB = c.b.__pid;
       if (!idA || !idB) continue;
       if (!adj[idA]) adj[idA] = [];
