@@ -1463,12 +1463,18 @@ window.onload = function () {
     webRescanCover = 0;
   }
 
+  var _webScanIsRepair = false; /* 当前扫描是否由修复触发 */
   function _applyWebCover(covered) {
     if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
+    if (_webScanIsRepair && pct > webLossPct) {
+      /* 修复触发的扫描：不允许损失增大（物理收缩导致的覆盖减少不计入） */
+      pct = webLossPct;
+    }
     webLossPct = pct;
+    _webScanIsRepair = false;
     /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
     _refreshBrokenEnds();
   }
@@ -1784,6 +1790,7 @@ window.onload = function () {
     /* 刷新断线头列表和网完整度 */
     _refreshBrokenEnds();
     webScanPending = 3;
+    _webScanIsRepair = true;
   }
 
   /**
@@ -2444,6 +2451,7 @@ window.onload = function () {
             }
           }
           webScanPending = 12;
+          _webScanIsRepair = false; /* 破坏触发的扫描，允许损失增大 */
         }
 
       } else if (obj.state === 'falling2') {
@@ -3318,6 +3326,7 @@ window.onload = function () {
             repairQueue.shift();
             _refreshBrokenEnds();
             webScanPending = 3;
+            _webScanIsRepair = true;
             isRepairing = false;
           }
         }
