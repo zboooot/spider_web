@@ -471,6 +471,36 @@ export function clearObjectConstraints(obj) {
   }
 }
 
+export function breakWebSegmentAsBug(seg, spiderweb, webBreakFlashes, _breakFrame, onBreakSegment, spatialOpts) {
+  if (!seg || !spiderweb) return false;
+  var useBitmap = spatialOpts && spatialOpts.index;
+  webBreakFlashes.push({
+    ax: seg.a.pos.x, ay: seg.a.pos.y,
+    bx: seg.b.pos.x, by: seg.b.pos.y,
+    t: _breakFrame
+  });
+  if (onBreakSegment) onBreakSegment(seg, useBitmap ? { skipDirty: false } : null);
+  if (useBitmap) {
+    if (seg.__webId) spatialOpts.index.removeConstraint(seg.__webId);
+  } else {
+    var wi = spiderweb.constraints.indexOf(seg);
+    if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+  }
+
+  createBreakStubs([{ a: seg.a, b: seg.b, distance: seg.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
+
+  var _si = useBitmap ? spatialOpts.index : null;
+  var stubList = [];
+  for (var sci = 0; sci < spiderweb.particles.length; sci++) {
+    if (spiderweb.particles[sci].__isStub) stubList.push(spiderweb.particles[sci]);
+  }
+  for (var sci2 = 0; sci2 < stubList.length; sci2++) {
+    collapseChain(stubList[sci2], spiderweb, _si);
+  }
+  cleanDanglingTails(spiderweb, _si);
+  return true;
+}
+
 ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   if (!pt) return false;
   if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {

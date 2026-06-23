@@ -7,7 +7,7 @@ import { VerletJS } from './engine/VerletJS.js';
 
 import { createSpiderweb } from './entities/spiderweb.js';
 import { createSpider } from './entities/spider.js';
-import { ThrownObj, clearObjectConstraints, collapseChain } from './entities/ThrownObj.js';
+import { ThrownObj, clearObjectConstraints, collapseChain, breakWebSegmentAsBug } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
@@ -336,6 +336,7 @@ window.onload = function () {
   var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0 };
   var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
   var isGameplayTestMode = false;
+  var debugSpawnEnabled = true;
 
   function updateBlink() {
     var blinkInterval = blinkState.mood === 'startled' ? 40 + Math.floor(Math.random() * 60)
@@ -1555,6 +1556,7 @@ window.onload = function () {
       enterWavePause();
       return;
     }
+    if (!debugSpawnEnabled) return;
     if (!levelCfg.waves.length) return;
     if (spawnPhase === 'cooldown') {
       cooldownTimer += _currentTimeScale;
@@ -1591,6 +1593,22 @@ window.onload = function () {
     obj._W = W; obj._H = H;
     thrownObjects.push(obj);
     updateBadge(kind, 1);
+  }
+
+  function debugBugBreakWeb() {
+    if (!spiderweb) return;
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    var seg = findNearestWebSegment(webCx, webCy, spiderweb, _spatialOpts(), null);
+    if (!seg) return;
+    if (!breakWebSegmentAsBug(seg, spiderweb, webBreakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts())) return;
+    spiderweb._topologyVersion = (spiderweb._topologyVersion || 0) + 1;
+    if (_webDrawApi) {
+      for (var i = 0; i < webBreakFlashes.length; i++) {
+        if (!webBreakFlashes[i].affectedCI) _webDrawApi.annotateFlash(webBreakFlashes[i]);
+      }
+    }
+    _refreshBrokenEnds();
+    webScanPending = 12;
   }
 
   function clearAllObjects() {
@@ -2257,7 +2275,15 @@ window.onload = function () {
       autoPlay = !!on;
       if (!autoPlay) target = null;
       return autoPlay;
-    }
+    },
+    isSpawnEnabled: function () {
+      return debugSpawnEnabled;
+    },
+    toggleSpawnEnabled: function () {
+      debugSpawnEnabled = !debugSpawnEnabled;
+      return debugSpawnEnabled;
+    },
+    debugBugBreakWeb: debugBugBreakWeb
   });
 
   /* ── 调试：手动触发 collapseChain ── */
