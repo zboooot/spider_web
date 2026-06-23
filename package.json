@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev-server.js",
     "apply-shared-defaults": "node scripts/apply-shared-defaults.js",
+    "test": "node --test",
     "build": "vite build",
     "preview": "vite preview"
   },

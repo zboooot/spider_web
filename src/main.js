@@ -1584,12 +1584,18 @@ window.onload = function () {
     webRescanCover = 0;
   }
 
+  var _webScanIsRepair = false; /* 当前扫描是否由修复触发 */
   function _applyWebCover(covered) {
     if (!webInitCells) return;
     var loss = 1 - covered / webInitCells;
     if (loss < 0) loss = 0;
     var pct = Math.round(loss * 100);
+    if (_webScanIsRepair && pct > webLossPct) {
+      /* 修复触发的扫描：不允许损失增大（物理收缩导致的覆盖减少不计入） */
+      pct = webLossPct;
+    }
     webLossPct = pct;
+    _webScanIsRepair = false;
     /* 顺带更新断线头 + 清除孤立点（事件驱动，不每帧执行） */
     _refreshBrokenEnds();
   }
@@ -1704,6 +1710,8 @@ window.onload = function () {
       edge.__flashDur = 30;  /* ~0.5s at 60fps */
     }
     spiderweb.constraints.push(edge);
+    /* 注册到 spatialIndex，让碰撞检测能发现修复边 */
+    if (!USE_LEGACY_COLLISION) assignWebConstraintIds(spiderweb);
     return edge;
   }
 
@@ -1905,6 +1913,7 @@ window.onload = function () {
     /* 刷新断线头列表和网完整度 */
     _refreshBrokenEnds();
     webScanPending = 3;
+    _webScanIsRepair = true;
   }
 
   /**
@@ -2582,6 +2591,7 @@ window.onload = function () {
             }
           }
           webScanPending = 12;
+          _webScanIsRepair = false; /* 破坏触发的扫描，允许损失增大 */
         }
 
       } else if (obj.state === 'falling2') {
@@ -3297,17 +3307,14 @@ window.onload = function () {
   /* ================================================================
      MAIN LOOP
   ================================================================ */
-  var FIXED_STEP_MS = 1000 / 60;
-  var MAX_CATCHUP_STEPS = 4;
   var _lastTimestamp = 0;
-  var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
   var _wasBulletTime = false;
-  function fixedUpdate() {
-    /* ── 子弹时间检测：拖拽断线头时进入 ── */
+  function fixedUpdate(frameScale) {
+    /* ── 子弹时间检测：仅拖拽断线头 stub 时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
-    /* 固定 60Hz 逻辑步：正常每步=1 帧，子弹时间冻结玩法逻辑 */
-    var timeScale = _isBulletTime ? 0.0 : 1.0;
+    /* 按实际帧时间缩放，恢复移动节奏；子弹时间冻结玩法逻辑 */
+    var timeScale = _isBulletTime ? 0.0 : frameScale;
     _currentTimeScale = timeScale;
 
     /* ── 背景变暗切换（只在状态变化时调用一次） ── */
@@ -3485,6 +3492,7 @@ window.onload = function () {
             repairQueue.shift();
             _refreshBrokenEnds();
             webScanPending = 3;
+            _webScanIsRepair = true;
             isRepairing = false;
           }
         }
@@ -3846,20 +3854,10 @@ window.onload = function () {
   var loop = function (timestamp) {
     statsBeginFrame();
 
-    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
+    var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 50) : 16.67;
     _lastTimestamp = timestamp;
-    _fixedAccumulatorMs += elapsedMs;
 
-    var steps = 0;
-    var updateScale = 0;
-    while (_fixedAccumulatorMs >= FIXED_STEP_MS && steps < MAX_CATCHUP_STEPS) {
-      updateScale += fixedUpdate();
-      _fixedAccumulatorMs -= FIXED_STEP_MS;
-      steps++;
-    }
-    if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
-      _fixedAccumulatorMs = 0;
-    }
+    var updateScale = fixedUpdate(elapsedMs / 16.67);
 
     if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
       renderFrame(timestamp, updateScale);
