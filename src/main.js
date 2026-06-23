@@ -1589,6 +1589,8 @@ window.onload = function () {
       edge.__flashDur = 30;  /* ~0.5s at 60fps */
     }
     spiderweb.constraints.push(edge);
+    /* 注册到 spatialIndex，让碰撞检测能发现修复边 */
+    if (!USE_LEGACY_COLLISION) assignWebConstraintIds(spiderweb);
     return edge;
   }
 
