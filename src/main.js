@@ -332,6 +332,17 @@ window.onload = function () {
   sim.gravity = new Vec2(0, 0);
   sim.stubReachRadius = P.stubReachRadius;
   sim.snapRadius = P.stubSnapRadius;
+  sim.hasObjectAt = function (x, y) {
+    for (var i = thrownObjects.length - 1; i >= 0; i--) {
+      var obj = thrownObjects[i];
+      if (!obj || obj.state !== 'stuck') continue;
+      var r = obj.def ? obj.def.r * 2.2 : 16;
+      var dx = obj.particle.pos.x - x;
+      var dy = obj.particle.pos.y - y;
+      if (dx * dx + dy * dy <= r * r) return true;
+    }
+    return false;
+  };
 
   /* ── 拖拽弹性视差交互状态机 ── */
   var _dragStart = { x: 0, y: 0 };
@@ -3144,18 +3155,28 @@ window.onload = function () {
         var rTask = repairQueue[0];
         if (rTask.state === 'pending') {
           rTask.state = 'walking';
-          _autoTarget.x = rTask.pos.x;
-          _autoTarget.y = rTask.pos.y;
-          target = _autoTarget;
-          isRepairing = true;
-        } else if (rTask.state === 'walking') {
-          _autoTarget.x = rTask.pos.x;
-          _autoTarget.y = rTask.pos.y;
-          target = _autoTarget;
-          isRepairing = true;
-          if (spider.thorax.pos.dist2(rTask.pos) <= 14 * 14) {
-            rTask.state = 'repairing';
-            target = null;
+        }
+        if (rTask.state === 'walking') {
+          /* 动态找 ring 上离蜘蛛最近的存活节点作为目标 */
+          var _bestRN = null, _bestRD2 = Infinity;
+          for (var _rni = 0; _rni < rTask.ring.length; _rni++) {
+            var _rn = rTask.ring[_rni];
+            if (spiderweb.particles.indexOf(_rn) === -1) continue;
+            var _rd2 = spider.thorax.pos.dist2(_rn.pos);
+            if (_rd2 < _bestRD2) { _bestRD2 = _rd2; _bestRN = _rn; }
+          }
+          if (_bestRN) {
+            _autoTarget.x = _bestRN.pos.x;
+            _autoTarget.y = _bestRN.pos.y;
+            target = _autoTarget;
+            isRepairing = true;
+            if (_bestRD2 <= 14 * 14) {
+              rTask.state = 'repairing';
+              target = null;
+            }
+          } else {
+            /* ring 上没有存活节点，放弃任务 */
+            repairQueue.shift();
           }
         } else if (rTask.state === 'repairing') {
           target = null;

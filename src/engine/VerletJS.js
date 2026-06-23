@@ -312,8 +312,13 @@ VerletJS.prototype.nearestEntity = function () {
     }
   }
   if (bestStub) {
-    bestStub.__isWebParticle = true;
-    return bestStub;
+    /* 如果点击位置同时有 stuck 物体，物体优先，不拖 stub */
+    if (this.hasObjectAt && this.hasObjectAt(this.mouse.x, this.mouse.y)) {
+      /* 跳过 stub，走后续流程（最终 return null，让 click 处理物体） */
+    } else {
+      bestStub.__isWebParticle = true;
+      return bestStub;
+    }
   }
 
   /* 第二优先级：找最近的其他可拖拽粒子 */
