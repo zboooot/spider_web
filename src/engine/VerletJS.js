@@ -3,6 +3,21 @@ import { Composite } from './Composite.js';
 import { PinConstraint, DistanceConstraint } from './constraints.js';
 import { statsDc } from '../debug/renderStats.js';
 
+export function pickNearestSnapCandidate(candidates) {
+  if (!candidates || !candidates.length) return null;
+  var best = null;
+  var bestScore = Infinity;
+  for (var i = 0; i < candidates.length; i++) {
+    var entry = candidates[i];
+    if (!entry || !entry.pt || !entry.pt.pos) continue;
+    if (entry.d2 < bestScore) {
+      bestScore = entry.d2;
+      best = entry;
+    }
+  }
+  return best;
+}
+
 /**
  * Verlet 物理引擎主类
  */
@@ -15,6 +30,7 @@ export function VerletJS(width, height, canvas) {
   this.mouseDown = false;
   this.draggedEntity = null;
   this.snapTarget = null;       /* 当前吸附的存活节点 */
+  this.snapCandidates = [];     /* 当前可连线候选节点 */
   this.snapRadius = 28;         /* 吸附触发距离（由 P.stubSnapRadius 覆盖） */
   this.stubReachRadius = 200;   /* stub 拖拽最大范围（由 P.stubReachRadius 覆盖） */
   this.onRepairDrop = null;     /* 回调：function(stub, snapTarget) */
@@ -54,6 +70,7 @@ export function VerletJS(width, height, canvas) {
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
+    _this.snapCandidates.length = 0;
   };
 
   this.canvas.onmousemove = function (e) {
@@ -86,6 +103,7 @@ export function VerletJS(width, height, canvas) {
     }
     _this.draggedEntity = null;
     _this.snapTarget = null;
+    _this.snapCandidates.length = 0;
   }, { passive: false });
 
   this.canvas.addEventListener('touchmove', function (e) {
@@ -151,6 +169,7 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
       _dp.y += (this.mouse.y - _dp.y) * 0.08;
     }
     this.snapTarget = null;
+    this.snapCandidates.length = 0;
     /* 断线头拖拽时：检测附近存活网节点，吸附 */
     if (this.draggedEntity.__isWebParticle && this.draggedEntity.__isStub) {
       var c, i;
@@ -168,6 +187,7 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
       }
 
       var snap = null, snapD2 = this.snapRadius * this.snapRadius;
+      var candidates = [];
       for (c in this.composites) {
         if (!this.composites[c].__isWeb) continue;
         var wps = this.composites[c].particles;
@@ -183,10 +203,14 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
             if (wcs[wi].a === wp || wcs[wi].b === wp) wConn++;
           }
           if (wConn < 2) continue;
+          var reachD2 = this.stubReachRadius * this.stubReachRadius;
           var wd2 = wp.pos.dist2(this.draggedEntity.pos);
+          if (wd2 <= reachD2) candidates.push({ pt: wp, d2: wd2 });
           if (wd2 < snapD2) { snapD2 = wd2; snap = wp; }
         }
       }
+      var nearestCandidate = pickNearestSnapCandidate(candidates);
+      this.snapCandidates = nearestCandidate ? [nearestCandidate.pt] : [];
       this.snapTarget = snap;
       if (snap) this.draggedEntity.pos.mutableSet(snap.pos);
     }

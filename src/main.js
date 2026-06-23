@@ -448,10 +448,21 @@ window.onload = function () {
     if (dragMode === 'pluck') {
       audioEngine.startPickupTearLoop();
       audioEngine.updatePickupTearLoop(0);
+      if (isTutorialActive() && isTutorialInsectKind(hit.obj.kind) && hit.obj.state === 'wrapped') {
+        tutorialController.handleEvent('prey_drag_started', { kind: hit.obj.kind });
+        processTutorialActions();
+      }
     }
     _suppressMoveCommand = true;
     sim.draggedEntity = null;
     return true;
+  }
+
+  function consumeTutorialAdvanceInput() {
+    if (!isTutorialActive()) return false;
+    tutorialController.handleEvent('handoff_confirmed');
+    processTutorialActions();
+    return tutorialBlackoutEl.style.display === 'flex';
   }
 
   function _updateWrappedPickup(clientX, clientY) {
@@ -481,6 +492,10 @@ window.onload = function () {
   }
 
   window.addEventListener('mousedown', function (e) {
+    if (consumeTutorialAdvanceInput()) {
+      _suppressMoveCommand = true;
+      return;
+    }
     _beginWrappedPickup(e.clientX, e.clientY);
     var p = _getCanvasPos(e.clientX, e.clientY);
     _dragStart.x = p.x; _dragStart.y = p.y;
@@ -506,6 +521,10 @@ window.onload = function () {
   });
   window.addEventListener('touchstart', function (e) {
     if (e.touches.length > 0) {
+      if (consumeTutorialAdvanceInput()) {
+        _suppressMoveCommand = true;
+        return;
+      }
       _beginWrappedPickup(e.touches[0].clientX, e.touches[0].clientY);
       var p = _getCanvasPos(e.touches[0].clientX, e.touches[0].clientY);
       _dragStart.x = p.x; _dragStart.y = p.y;
@@ -573,7 +592,7 @@ window.onload = function () {
   if (typeof window !== 'undefined') window._gaitTune = Object.assign({}, _gaitTuneDefaults, window._gaitTune || {});
 
   /* ── blink + mood ── */
-  var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0 };
+  var blinkState = { scale: 1, blinking: false, t: 0, nextBlink: 180 + Math.floor(Math.random() * 240), mood: 'calm', headShake: 0, headShakeAmp: 0, faceAnimT: 0, crySfxCooldown: 0 };
   var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
   var isGameplayTestMode = false;
 
@@ -588,6 +607,18 @@ window.onload = function () {
       else if (blinkState.t <= 2) { var t2 = blinkState.t - 1; blinkState.scale = 0.05 + 0.95 * (t2 < 0.5 ? 2 * t2 * t2 : -1 + (4 - 2 * t2) * t2); }
       else { blinkState.scale = 1; blinkState.blinking = false; blinkState.t = 0; blinkState.nextBlink = blinkInterval; }
     } else { blinkState.nextBlink--; if (blinkState.nextBlink <= 0) { blinkState.blinking = true; blinkState.t = 0; } }
+
+    if (blinkState.mood === 'crying') {
+      blinkState.faceAnimT += 1;
+      blinkState.crySfxCooldown--;
+      if (blinkState.crySfxCooldown <= 0) {
+        audioEngine.playSfxCry();
+        blinkState.crySfxCooldown = 28 + Math.floor(Math.random() * 18);
+      }
+    } else {
+      blinkState.faceAnimT = 0;
+      blinkState.crySfxCooldown = 0;
+    }
 
     if (blinkState.headShake > 0) {
       blinkState.headShake--;
@@ -627,7 +658,18 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; }, function () { return tutorialStoneImpact; });
+    setupWebDraw(
+      spiderweb,
+      function () { return thrownObjects; },
+      function () { return webBreakFlashes; },
+      function () { return _breakFrame; },
+      function () { return brokenEnds; },
+      function () { return sim.snapTarget; },
+      function () { return repairQueue; },
+      function () { return _previewRing; },
+      function () { return tutorialStoneImpact; },
+      function () { return sim.snapCandidates; }
+    );
   }
 
   function _syncStepSearchTopology() {
@@ -855,23 +897,44 @@ window.onload = function () {
   var tutorialTargets = cloneJson(TUTORIAL_TARGETS);
   var tutorialHintEl = document.getElementById('tutorial-hint');
   var tutorialFocusEl = document.createElement('div');
+  var tutorialFocusRingEl = document.createElement('div');
   var tutorialFocusIconEl = document.createElement('div');
+  var tutorialBlackoutEl = document.createElement('div');
   var tutorialSpawnQueue = [];
   var _tutorialRepairDragDone = false;
   var _tutorialRepairPending = false;
   var _tutorialStubNotified = false;
   var tutorialStoneImpact = null;
   var tutorialFocusActive = false;
+  var tutorialFocusTarget = 'stub';
   var _urlSearchParams = new URLSearchParams(window.location.search);
 
   tutorialFocusEl.className = 'tutorial-focus-overlay';
   tutorialFocusEl.style.display = 'none';
+  tutorialFocusRingEl.className = 'tutorial-focus-ring';
   tutorialFocusIconEl.className = 'tutorial-focus-icon';
+  tutorialFocusEl.appendChild(tutorialFocusRingEl);
   tutorialFocusEl.appendChild(tutorialFocusIconEl);
   screenShellEl.appendChild(tutorialFocusEl);
+  tutorialBlackoutEl.className = 'tutorial-blackout';
+  tutorialBlackoutEl.style.display = 'none';
+  screenShellEl.appendChild(tutorialBlackoutEl);
 
   function isTutorialActive() {
     return tutorialActive && tutorialController.isActive();
+  }
+
+  function isTutorialSpiderLocked() {
+    if (!isTutorialActive()) return false;
+    var phase = tutorialController.getPhase();
+    return phase === 'intro_wait' || phase === 'breakers';
+  }
+
+  function setTutorialFlyVisibility(visible) {
+    var invBug = document.getElementById('inv-bug');
+    if (invBug) invBug.style.display = visible ? '' : 'none';
+    var btnBug = document.getElementById('btn-bug');
+    if (btnBug) btnBug.style.display = visible ? '' : 'none';
   }
 
   function showTutorialHint(text) {
@@ -882,7 +945,7 @@ window.onload = function () {
       return;
     }
     tutorialHintEl.textContent = text;
-    tutorialHintEl.style.display = 'block';
+    tutorialHintEl.style.display = tutorialHintEl.classList.contains('tutorial-hint-focused') ? 'block' : 'none';
   }
 
   function hideTutorialHint() {
@@ -901,38 +964,107 @@ window.onload = function () {
     return null;
   }
 
+  function getTutorialPreyFocusPoint() {
+    for (var i = 0; i < thrownObjects.length; i++) {
+      var obj = thrownObjects[i];
+      if (!obj || !obj.particle || !isTutorialInsectKind(obj.kind)) continue;
+      if (obj.state !== 'wrapped') continue;
+      return {
+        x: obj.particle.pos.x,
+        y: obj.particle.pos.y,
+        r: Math.max(62, (obj.def ? obj.def.r : 12) * 5.4)
+      };
+    }
+    return null;
+  }
+
+  function getTutorialInventoryFocusPoint() {
+    var slot = document.getElementById('inv-boulder');
+    if (!slot) return null;
+    var rect = slot.getBoundingClientRect();
+    var stageRect = screenShellEl.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width * 0.5 - stageRect.left,
+      y: rect.top + rect.height * 0.5 - stageRect.top,
+      r: Math.max(rect.width, rect.height) * 0.72
+    };
+  }
+
   function updateTutorialFocusPrompt() {
     if (!tutorialFocusActive) return;
-    var focus = getTutorialStubFocusPoint();
+    var focus = tutorialFocusTarget === 'prey'
+      ? getTutorialPreyFocusPoint()
+      : tutorialFocusTarget === 'inventory'
+        ? getTutorialInventoryFocusPoint()
+        : getTutorialStubFocusPoint();
     if (!focus) return;
     tutorialFocusEl.style.setProperty('--focus-x', focus.x + 'px');
     tutorialFocusEl.style.setProperty('--focus-y', focus.y + 'px');
     tutorialFocusEl.style.setProperty('--focus-r', focus.r + 'px');
+    tutorialHintEl.style.setProperty('--hint-x', focus.x + 'px');
+    tutorialHintEl.style.setProperty('--hint-y', (focus.y + focus.r + 18) + 'px');
+    tutorialFocusRingEl.style.display = tutorialFocusTarget === 'stub' ? 'block' : 'none';
+    tutorialFocusIconEl.style.display = tutorialFocusTarget === 'inventory' ? 'none' : 'block';
   }
 
-  function showTutorialFocusPrompt(text) {
+  function showTutorialFocusPrompt(text, target, showHint) {
     tutorialFocusActive = true;
+    tutorialFocusTarget = target || 'stub';
     tutorialFocusEl.style.display = 'block';
+    tutorialHintEl.classList.add('tutorial-hint-focused');
     updateTutorialFocusPrompt();
-    showTutorialHint(text || '拖拽连网修复');
+    audioEngine.playSfxTutorialPrompt();
+    if (showHint === false) hideTutorialHint();
+    else showTutorialHint(text || (tutorialFocusTarget === 'prey' ? '拖拽摘走你的猎物' : '拖拽连网修复'));
   }
 
   function hideTutorialFocusPrompt() {
     tutorialFocusActive = false;
     tutorialFocusEl.style.display = 'none';
+    tutorialHintEl.classList.remove('tutorial-hint-focused');
+  }
+
+  function showTutorialBlackoutMessage(text) {
+    audioEngine.playSfxTutorialPrompt();
+    tutorialBlackoutEl.textContent = text || '';
+    tutorialBlackoutEl.style.display = 'flex';
+  }
+
+  function hideTutorialBlackoutMessage() {
+    tutorialBlackoutEl.textContent = '';
+    tutorialBlackoutEl.style.display = 'none';
   }
 
   function setSpiderMood(mood) {
     blinkState.mood = mood || 'calm';
     if (mood === 'crying') {
-      blinkState.headShake = 120;
-      blinkState.headShakeAmp = 2.8;
+      blinkState.headShake = 150;
+      blinkState.headShakeAmp = 3.4;
+      blinkState.faceAnimT = 0;
+      blinkState.crySfxCooldown = 8;
+    } else if (mood === 'shock') {
+      blinkState.headShake = 95;
+      blinkState.headShakeAmp = 3.2;
+      blinkState.faceAnimT = 0;
+      blinkState.crySfxCooldown = 0;
     } else if (mood === 'curious') {
       blinkState.headShake = Math.max(blinkState.headShake, 18);
       blinkState.headShakeAmp = Math.max(blinkState.headShakeAmp, 0.8);
+      blinkState.crySfxCooldown = 0;
     } else {
       blinkState.headShake = Math.min(blinkState.headShake, 12);
+      blinkState.crySfxCooldown = 0;
     }
+  }
+
+  function playTutorialStoneFallSound() {
+    if (!isTutorialActive()) return;
+    audioEngine.playSfxStoneFall();
+  }
+
+  function playTutorialWebBreakSound() {
+    if (!tutorialActive) return;
+    audioEngine.playSfxWebBreak();
   }
 
   function notifyTutorialStubIfNeeded() {
@@ -962,12 +1094,14 @@ window.onload = function () {
       if (action.type === 'show_message') {
         showTutorialHint(action.text || '');
       } else if (action.type === 'show_focus_prompt') {
-        showTutorialFocusPrompt(action.text || '拖拽连网修复');
+        showTutorialFocusPrompt(action.text || '拖拽连网修复', action.target || 'stub', action.showHint);
       } else if (action.type === 'hide_focus_prompt') {
         hideTutorialFocusPrompt();
-        hideTutorialHint();
       } else if (action.type === 'set_spider_mood') {
         setSpiderMood(action.mood);
+      } else if (action.type === 'show_blackout_message') {
+        hideTutorialHint();
+        showTutorialBlackoutMessage(action.text || '开始工作吧！');
       } else if (action.type === 'spawn_batch' && action.batch) {
         for (var bi = 0; bi < action.batch.length; bi++) {
           var spec = action.batch[bi];
@@ -1018,6 +1152,7 @@ window.onload = function () {
     if (kind === 'stone') obj._disableRestick = true;
     thrownObjects.push(obj);
     updateBadge(kind, 1);
+    if (kind === 'stone' && spec._tutorialTag === 'breaker') playTutorialStoneFallSound();
     return obj;
   }
 
@@ -1041,7 +1176,9 @@ window.onload = function () {
     tutorialStoneImpact = null;
     tutorialTargets = cloneJson(TUTORIAL_TARGETS);
     hideTutorialFocusPrompt();
+    hideTutorialBlackoutMessage();
     setSpiderMood('calm');
+    setTutorialFlyVisibility(true);
     hideTutorialHint();
   }
 
@@ -1072,6 +1209,7 @@ window.onload = function () {
     buildWeb();
     buildSpider();
     tutorialActive = true;
+    setTutorialFlyVisibility(false);
     tutorialController = createTutorialController(W, H, cx, cy);
     tutorialController.start();
     processTutorialActions();
@@ -1397,6 +1535,7 @@ window.onload = function () {
   }
 
   function setPriorityTarget(x, y) {
+    if (isTutorialSpiderLocked()) return;
     var picked = pickObjectAt(x, y);
     if (picked) {
       userPriorityTarget = { type: 'object', obj: picked };
@@ -1417,7 +1556,7 @@ window.onload = function () {
   }
 
   function isTargetObjectChaseable(obj) {
-    if (isTutorialActive() && !isTutorialInsectKind(obj.kind)) return false;
+    if (isTutorialActive() && (obj.kind === 'poop' || obj.kind === 'stone')) return false;
     return !!(
       obj
       && thrownObjects.indexOf(obj) !== -1
@@ -2033,6 +2172,7 @@ window.onload = function () {
     }
 
     if (anchorPt && anchorPt !== snapTarget) {
+      audioEngine.playSfxRepairConnect();
       if (P.repairPatch) {
         /* 先 BFS 找最小环（在建新边之前，否则 BFS 会直接走新边） */
         var path = bfsPath(anchorPt, snapTarget, spiderweb);
@@ -2244,21 +2384,24 @@ window.onload = function () {
     if (badgeEl) badgeEl.textContent = objCounts[kind];
   }
 
-  function directWebBreakAt(x, y, breakR) {
+  function directWebBreakAt(x, y, breakR, forcedStubCount) {
     if (!spiderweb || !(breakR > 0)) return 0;
     if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
     var breakFlashes = tutorialActive ? [] : webBreakFlashes;
     var broke = breakWebInRadius(
       x, y, breakR,
-      spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), true, tutorialActive ? 1 : undefined
+      spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), true,
+      forcedStubCount != null ? forcedStubCount : (tutorialActive ? 1 : undefined)
     );
     if (broke === 0 && tutorialActive) {
       broke = breakWebInRadius(
         x, y, breakR * 1.45,
-        spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), false, 1
+        spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), false,
+        forcedStubCount != null ? forcedStubCount : 1
       );
     }
     if (broke > 0) {
+      if (tutorialActive) playTutorialWebBreakSound();
       if (tutorialActive) {
         applyWebImpactKick(spiderweb.particles, x, y, breakR * 1.18, Math.max(2.4, breakR * 0.08));
       }
@@ -2280,6 +2423,7 @@ window.onload = function () {
     tutorialStoneImpact = createTutorialStoneImpact(x, y, stoneR);
     tutorialStoneImpact.stoneObj = obj;
     tutorialStoneImpact.breakScale = obj._tutorialBreakScale || 1.18;
+    tutorialStoneImpact.forcedStubCount = obj._tutorialForcedStubCount;
     obj._tutorialPullTension = 0.01;
   }
 
@@ -2543,10 +2687,14 @@ window.onload = function () {
     var idx = thrownObjects.indexOf(obj);
     if (idx !== -1) thrownObjects.splice(idx, 1);
     updateBadge(obj.kind, -1);
+    if (isTutorialActive() && obj._tutorialTag === 'prey') {
+      tutorialController.handleEvent('object_resolved', { kind: obj.kind });
+      processTutorialActions();
+    }
   }
 
   function tryCollectObjects() {
-    if (wrappingTarget !== null || poopStunTimer > 0) return;
+    if (wrappingTarget !== null || poopStunTimer > 0 || isTutorialSpiderLocked()) return;
     var priorityObj = getActivePriorityObject();
     if (userPriorityTarget) {
       if (userPriorityTarget.type === 'point') return;
@@ -2557,7 +2705,7 @@ window.onload = function () {
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
       if (priorityObj && obj !== priorityObj) continue;
-      if (isTutorialActive() && !isTutorialInsectKind(obj.kind)) continue;
+      if (isTutorialActive() && (obj.kind === 'poop' || obj.kind === 'stone')) continue;
       if (obj.playerDragging) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
@@ -3697,6 +3845,11 @@ window.onload = function () {
           target = null;
           isRepairing = true;
           rTask.timer -= _currentTimeScale;
+          var _repairBeat = Math.floor(rTask.timer / 10);
+          if (rTask._repairBeat !== _repairBeat) {
+            rTask._repairBeat = _repairBeat;
+            audioEngine.playSfxRepairWeave();
+          }
 
           /* 持续喷丝线粒子：数量少但范围大 */
           var sx = spider.thorax.pos.x;
@@ -3740,6 +3893,7 @@ window.onload = function () {
 
           if (rTask.timer <= 0) {
             patchHole(rTask.ring, spiderweb);
+            audioEngine.playSfxRepairComplete();
             repairQueue.shift();
             _refreshBrokenEnds();
             webScanPending = 3;
@@ -3804,6 +3958,8 @@ window.onload = function () {
     var isWrapping = (wrappingTarget !== null);
     var moving = false; moveDir = null;
     if (isPoopStunned) {
+      target = null;
+    } else if (isTutorialSpiderLocked()) {
       target = null;
     } else if (isWrapping) {
       target = null;

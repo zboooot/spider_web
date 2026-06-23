@@ -5,20 +5,27 @@
 export var TUTORIAL_TARGETS = { boulder: 2, bug: 0, drop: 0 };
 var FPS = 60;
 var INTRO_DELAY_FRAMES = 3 * FPS;
-var REPAIR_REACTION_FRAMES = 2 * FPS;
+var REPAIR_SHOCK_FRAMES = Math.round(1.5 * FPS);
+var REPAIR_CRY_FRAMES = Math.round(2.5 * FPS);
+var HANDOFF_BLACKOUT_FRAMES = 90;
 
 var PHASE = {
   IDLE: 'idle',
   INTRO_WAIT: 'intro_wait',
   BREAKERS: 'breakers',
-  WAIT_REPAIR_REACTION: 'wait_repair_reaction',
+  WAIT_REPAIR_SHOCK: 'wait_repair_shock',
+  WAIT_REPAIR_CRY: 'wait_repair_cry',
   WAIT_REPAIR_DRAG: 'wait_repair_drag',
   WAIT_REPAIR_DROP: 'wait_repair_drop',
   WAIT_REPAIR_FINISH: 'wait_repair_finish',
   WAVE_ONE: 'wave_one',
   WAIT_COLLECT_ONE: 'wait_collect_one',
+  WAIT_COLLECT_ONE_DRAG: 'wait_collect_one_drag',
   WAVE_TWO: 'wave_two',
   WAIT_COLLECT_TWO: 'wait_collect_two',
+  WAIT_COLLECT_TWO_DRAG: 'wait_collect_two_drag',
+  WAIT_HANDOFF_TAP: 'wait_handoff_tap',
+  WAIT_HANDOFF_BLACKOUT: 'wait_handoff_blackout',
   DONE: 'done'
 };
 
@@ -201,8 +208,23 @@ export function buildBreakersBatch(W, H, cx, cy) {
 }
 
 export function buildDemoWave(W, H, cx, cy, waveIndex) {
-  var spread = waveIndex === 1 ? 28 : 40;
   return [
+    {
+      kind: 'drop',
+      x: cx - 64,
+      y: -18,
+      vx: 0.18,
+      vy: 1.3,
+      _tutorialTag: 'prey'
+    },
+    {
+      kind: 'drop',
+      x: cx + 52,
+      y: -14,
+      vx: -0.12,
+      vy: 1.15,
+      _tutorialTag: 'prey'
+    },
     {
       kind: 'boulder',
       x: cx + (waveIndex === 1 ? -12 : 18),
@@ -222,6 +244,8 @@ export function createTutorialController(W, H, cx, cy) {
   var insectTarget = TUTORIAL_TARGETS.boulder;
   var collected = 0;
   var repairDragDone = false;
+  var waveDropCleared = 0;
+  var waveWrappedReady = false;
 
   function pushAction(type, payload) {
     var action = { type: type };
@@ -237,6 +261,26 @@ export function createTutorialController(W, H, cx, cy) {
     pushAction('show_message', { text: text });
   }
 
+  function resetWaveReadiness() {
+    waveDropCleared = 0;
+    waveWrappedReady = false;
+  }
+
+  function maybePromptCollect() {
+    if (waveDropCleared < 2 || !waveWrappedReady) return;
+    if (phase === PHASE.WAVE_ONE) {
+      phase = PHASE.WAIT_COLLECT_ONE;
+      pushAction('show_focus_prompt', { text: '拖拽摘走你的猎物', target: 'prey' });
+      showMessage('拖拽摘走你的猎物');
+      return;
+    }
+    if (phase === PHASE.WAVE_TWO) {
+      phase = PHASE.WAIT_COLLECT_TWO;
+      pushAction('show_focus_prompt', { text: '拖拽摘走你的猎物', target: 'prey' });
+      showMessage('拖拽摘走你的猎物');
+    }
+  }
+
   return {
     start: function () {
       phase = PHASE.INTRO_WAIT;
@@ -244,6 +288,7 @@ export function createTutorialController(W, H, cx, cy) {
       collected = 0;
       repairDragDone = false;
       insectTarget = TUTORIAL_TARGETS.boulder;
+      resetWaveReadiness();
       actions = [];
       showMessage('教学关：观察蛛网，稍后会有石头砸破网线并穿过去。');
     },
@@ -257,9 +302,21 @@ export function createTutorialController(W, H, cx, cy) {
         showMessage('石头正在砸向蛛网。');
         return;
       }
-      if (phase === PHASE.WAIT_REPAIR_REACTION && frame >= REPAIR_REACTION_FRAMES) {
+      if (phase === PHASE.WAIT_REPAIR_SHOCK && frame >= REPAIR_SHOCK_FRAMES) {
+        phase = PHASE.WAIT_REPAIR_CRY;
+        frame = 0;
+        pushAction('set_spider_mood', { mood: 'crying' });
+        return;
+      }
+      if (phase === PHASE.WAIT_REPAIR_CRY && frame >= REPAIR_CRY_FRAMES) {
         phase = PHASE.WAIT_REPAIR_DRAG;
-        pushAction('show_focus_prompt', { text: '拖拽连网修复' });
+        pushAction('show_focus_prompt', { text: '拖拽连网修复', target: 'stub', showHint: true });
+        return;
+      }
+      if (phase === PHASE.WAIT_HANDOFF_BLACKOUT && frame >= HANDOFF_BLACKOUT_FRAMES) {
+        phase = PHASE.DONE;
+        pushAction('mark_completed');
+        pushAction('handoff_to_level_1');
       }
     },
 
@@ -268,9 +325,9 @@ export function createTutorialController(W, H, cx, cy) {
       if (phase === PHASE.IDLE || phase === PHASE.DONE) return;
 
       if (name === 'stub_available' && (phase === PHASE.BREAKERS || phase === PHASE.INTRO_WAIT)) {
-        phase = PHASE.WAIT_REPAIR_REACTION;
+        phase = PHASE.WAIT_REPAIR_SHOCK;
         frame = 0;
-        pushAction('set_spider_mood', { mood: 'crying' });
+        pushAction('set_spider_mood', { mood: 'shock' });
         return;
       }
 
@@ -290,6 +347,7 @@ export function createTutorialController(W, H, cx, cy) {
 
       if (name === 'repair_finished' && phase === PHASE.WAIT_REPAIR_FINISH) {
         phase = PHASE.WAVE_ONE;
+        resetWaveReadiness();
         pushAction('clear_breakers');
         pushAction('set_insect_target', { targets: TUTORIAL_TARGETS });
         pushAction('set_spider_mood', { mood: 'curious' });
@@ -301,21 +359,43 @@ export function createTutorialController(W, H, cx, cy) {
         return;
       }
 
-      if (name === 'object_wrapped' && isTutorialInsectKind(data.kind)) {
-        if (phase === PHASE.WAVE_ONE) {
-          phase = PHASE.WAIT_COLLECT_ONE;
-          showMessage('打包完成！拖拽猎物收进背包。');
-        } else if (phase === PHASE.WAVE_TWO) {
-          phase = PHASE.WAIT_COLLECT_TWO;
-          showMessage('再收一个就完成教学目标。');
+      if (name === 'object_resolved' && data.kind === 'drop') {
+        if (phase === PHASE.WAVE_ONE || phase === PHASE.WAVE_TWO) {
+          waveDropCleared++;
+          maybePromptCollect();
         }
         return;
       }
 
+      if (name === 'object_wrapped' && isTutorialInsectKind(data.kind)) {
+        if (phase === PHASE.WAVE_ONE) {
+          waveWrappedReady = true;
+          maybePromptCollect();
+        } else if (phase === PHASE.WAVE_TWO) {
+          waveWrappedReady = true;
+          maybePromptCollect();
+        }
+        return;
+      }
+
+      if (name === 'prey_drag_started') {
+        if (phase === PHASE.WAIT_COLLECT_ONE) {
+          phase = PHASE.WAIT_COLLECT_ONE_DRAG;
+          pushAction('hide_focus_prompt');
+          return;
+        }
+        if (phase === PHASE.WAIT_COLLECT_TWO) {
+          phase = PHASE.WAIT_COLLECT_TWO_DRAG;
+          pushAction('hide_focus_prompt');
+          return;
+        }
+      }
+
       if (name === 'object_collected' && data.kind === 'boulder') {
         collected++;
-        if (collected === 1 && phase === PHASE.WAIT_COLLECT_ONE) {
+        if (collected === 1 && (phase === PHASE.WAIT_COLLECT_ONE || phase === PHASE.WAIT_COLLECT_ONE_DRAG)) {
           phase = PHASE.WAVE_TWO;
+          resetWaveReadiness();
           pushAction('spawn_batch', {
             batch: buildDemoWave(W, H, cx, cy, 2),
             label: 'wave_two'
@@ -323,12 +403,18 @@ export function createTutorialController(W, H, cx, cy) {
           showMessage('很好！再来一只毛毛虫。');
           return;
         }
-        if (collected >= TUTORIAL_TARGETS.boulder) {
-          phase = PHASE.DONE;
-          showMessage('教学完成！准备进入正式关卡。');
-          pushAction('mark_completed');
-          pushAction('handoff_to_level_1');
+        if (collected >= TUTORIAL_TARGETS.boulder && (phase === PHASE.WAIT_COLLECT_TWO || phase === PHASE.WAIT_COLLECT_TWO_DRAG)) {
+          phase = PHASE.WAIT_HANDOFF_TAP;
+          pushAction('show_focus_prompt', { text: '收集目标达成', target: 'inventory', showHint: true });
+          return;
         }
+      }
+
+      if (name === 'handoff_confirmed' && phase === PHASE.WAIT_HANDOFF_TAP) {
+        phase = PHASE.WAIT_HANDOFF_BLACKOUT;
+        frame = 0;
+        pushAction('hide_focus_prompt');
+        pushAction('show_blackout_message', { text: '开始工作吧！' });
       }
     },
 

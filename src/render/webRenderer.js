@@ -378,7 +378,7 @@ function _drawTutorialStoneImpactRing(ctx, tutorialImpact, now) {
   ctx.restore();
 }
 
-export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing, getTutorialStoneImpact) {
+export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, getBreakFrame, fifthArg, sixthArg, getRepairQueue, getPreviewRing, getTutorialStoneImpact, getSnapCandidates) {
   var getLogicalTime = sixthArg ? null : fifthArg;
   var getBrokenEnds = sixthArg ? fifthArg : null;
   var getSnapTarget = sixthArg || null;
@@ -387,6 +387,27 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
   spiderweb.drawParticles = function (ctx, comp) {
     _drawWebParticles(ctx, comp);
     _drawBrokenEnds(ctx, getBrokenEnds);
+
+    var snapCandidates = getSnapCandidates ? getSnapCandidates() : null;
+    if (snapCandidates && snapCandidates.length) {
+      var candPulse = 0.42 + 0.58 * Math.abs(Math.sin(_brokenEndFrame * 0.12));
+      ctx.save();
+      for (var ci = 0; ci < snapCandidates.length; ci++) {
+        var cp = snapCandidates[ci];
+        if (!cp || !cp.pos) continue;
+        ctx.beginPath();
+        ctx.arc(cp.pos.x, cp.pos.y, 7.5 + candPulse * 2.2, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(170,235,255,' + (0.26 + candPulse * 0.36).toFixed(2) + ')';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cp.pos.x, cp.pos.y, 2.2, 0, 2 * Math.PI);
+        ctx.fillStyle = 'rgba(215,248,255,' + (0.45 + candPulse * 0.4).toFixed(2) + ')';
+        ctx.fill();
+        statsDc('stroke');
+      }
+      ctx.restore();
+    }
 
     /* ── 吸附目标高亮 ── */
     var snapPt = getSnapTarget ? getSnapTarget() : null;

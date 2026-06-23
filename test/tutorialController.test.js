@@ -148,7 +148,11 @@ test('tutorial flow reaches handoff after two collections', function () {
   types = drainTypes(ctrl);
   assert.ok(types.includes('set_spider_mood'));
 
-  for (var ri = 0; ri < 120; ri++) ctrl.tick(1);
+  for (var ri = 0; ri < 90; ri++) ctrl.tick(1);
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('set_spider_mood'));
+
+  for (var ci = 0; ci < 150; ci++) ctrl.tick(1);
   types = drainTypes(ctrl);
   assert.ok(types.includes('show_focus_prompt'));
 
@@ -163,13 +167,39 @@ test('tutorial flow reaches handoff after two collections', function () {
   assert.ok(types.includes('set_insect_target'));
   assert.equal(ctrl.getInsectTarget(), TUTORIAL_TARGETS.boulder);
 
+  ctrl.handleEvent('object_resolved', { kind: 'drop' });
+  ctrl.handleEvent('object_resolved', { kind: 'drop' });
   ctrl.handleEvent('object_wrapped', { kind: 'boulder' });
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('show_focus_prompt'));
+
+  ctrl.handleEvent('prey_drag_started');
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('hide_focus_prompt'));
+
   ctrl.handleEvent('object_collected', { kind: 'boulder' });
   types = drainTypes(ctrl);
   assert.ok(types.includes('spawn_batch'));
 
+  ctrl.handleEvent('object_resolved', { kind: 'drop' });
+  ctrl.handleEvent('object_resolved', { kind: 'drop' });
   ctrl.handleEvent('object_wrapped', { kind: 'boulder' });
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('show_focus_prompt'));
+
+  ctrl.handleEvent('prey_drag_started');
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('hide_focus_prompt'));
+
   ctrl.handleEvent('object_collected', { kind: 'boulder' });
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('show_focus_prompt'));
+
+  ctrl.handleEvent('handoff_confirmed');
+  types = drainTypes(ctrl);
+  assert.ok(types.includes('show_blackout_message'));
+
+  for (var bi = 0; bi < 90; bi++) ctrl.tick(1);
   types = drainTypes(ctrl);
   assert.ok(types.includes('mark_completed'));
   assert.ok(types.includes('handoff_to_level_1'));
