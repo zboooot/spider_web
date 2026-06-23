@@ -129,10 +129,6 @@
           <canvas class="inventory-art" id="inv-bug-art" width="48" height="48"></canvas>
           <div class="inventory-count" id="inv-bug-count">0</div>
         </div>
-        <div class="inventory-slot" id="inv-drop">
-          <canvas class="inventory-art" id="inv-drop-art" width="48" height="48"></canvas>
-          <div class="inventory-count" id="inv-drop-count">0</div>
-        </div>
       </div>
 
       <!-- Perf stats -->
@@ -148,18 +144,6 @@
               <span class="web-hud-sign">%</span>
             </span>
           </div>
-        </div>
-        <div class="silk-hud">
-          <svg class="silk-hud-icon" viewBox="0 0 48 48" aria-hidden="true">
-            <g fill="none" stroke="#e9dfbf" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M24 8 C18 8 14 13 14 19 C14 22 15 25 17 28 C19 31 20 34 20 39 L28 39 C28 34 29 31 31 28 C33 25 34 22 34 19 C34 13 30 8 24 8 Z" fill="rgba(230,220,180,0.65)" stroke-width="2.4"/>
-              <path d="M17 18 C20 20 28 20 31 18" stroke-width="1.8"/>
-              <path d="M16 23 C20 25 28 25 32 23" stroke-width="1.8"/>
-              <path d="M18 28 C21 30 27 30 30 28" stroke-width="1.8"/>
-              <path d="M20 33 C22 34 26 34 28 33" stroke-width="1.8"/>
-            </g>
-          </svg>
-          <div class="silk-hud-count" id="silk-count">0</div>
         </div>
       </div>
       <div class="wave-bar" id="wave-bar" style="display:none">03:00</div>
@@ -339,10 +323,6 @@
         <div class="wave-estimate-value" id="wave-estimate-bug">--</div>
       </div>
       <div class="wave-estimate-item">
-        <div class="wave-estimate-label">Level Leaf</div>
-        <div class="wave-estimate-value" id="wave-estimate-drop">--</div>
-      </div>
-      <div class="wave-estimate-item">
         <div class="wave-estimate-label">Level Poop</div>
         <div class="wave-estimate-value" id="wave-estimate-poop">--</div>
       </div>
@@ -400,27 +380,19 @@
       </div>
     </div>
 
-    <div class="group-title">Trap Timing</div>
+    <div class="group-title">Spawns</div>
     <div class="wave-grid">
-      <div class="row wave-cell">
-        <label>Caterpillar (sec)</label>
-        <input type="number" id="wave-catR" min="0.5" max="12" step="0.1">
+      <div class="wave-spawn-stack">
+        <div class="row wave-cell">
+          <label>Caterpillar (weight)</label>
+          <input type="number" id="wave-weight-boulder" min="0" max="1" step="0.01">
+        </div>
       </div>
-      <div class="row wave-cell">
-        <label>Fly (sec)</label>
-        <input type="number" id="wave-flyR" min="0.5" max="12" step="0.1">
-      </div>
-    </div>
-
-    <div class="group-title">Spawn Weights</div>
-    <div class="wave-grid">
-      <div class="row wave-cell">
-        <label>Caterpillar (weight)</label>
-        <input type="number" id="wave-weight-boulder" min="0" max="1" step="0.01">
-      </div>
-      <div class="row wave-cell">
-        <label>Fly (weight)</label>
-        <input type="number" id="wave-weight-bug" min="0" max="1" step="0.01">
+      <div class="wave-spawn-stack">
+        <div class="row wave-cell">
+          <label>Fly (weight)</label>
+          <input type="number" id="wave-weight-bug" min="0" max="1" step="0.01">
+        </div>
       </div>
       <div class="row wave-cell">
         <label>Leaf (weight)</label>
@@ -454,10 +426,6 @@
       <div class="row wave-cell">
         <label>Fly Goal</label>
         <input type="number" id="level-target-bug" min="0" max="999" step="1">
-      </div>
-      <div class="row wave-cell wave-cell-span-2">
-        <label>Leaf Goal</label>
-        <input type="number" id="level-target-drop" min="0" max="999" step="1">
       </div>
     </div>
     <div class="wave-btn-row wave-btn-row-2">

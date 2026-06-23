@@ -21,6 +21,7 @@ import {
   findNearestWebSegment,
   mergeStickHits, stickHitScratch
 } from './systems/stickSystem.js';
+import { findWrappedReanchorPoint } from './systems/wrappedSupport.js';
 
 import {
   buildWebGridList, cellCovered,
@@ -123,17 +124,27 @@ window.onload = function () {
     });
   }
 
-  function isLegacyLateLevelWaveConfig(savedLevel, baseLevel, levelIndex) {
-    if (levelIndex < 3) return false;
-    if (!savedLevel || !Array.isArray(savedLevel.waves)) return true;
-    if (!baseLevel || !Array.isArray(baseLevel.waves)) return false;
-    if (savedLevel.waves.length !== baseLevel.waves.length) return true;
-    for (var i = 0; i < savedLevel.waves.length; i++) {
-      var wave = savedLevel.waves[i];
-      if (!wave) return true;
-      if (!wave.label || !wave.question || !wave.notes || !wave.spawnWeights) return true;
-    }
-    return false;
+  function mergePlainObject(baseObj, savedObj) {
+    var out = cloneJson(baseObj || {});
+    if (!savedObj || typeof savedObj !== 'object') return out;
+    Object.keys(savedObj).forEach(function (key) {
+      if (savedObj[key] != null) out[key] = savedObj[key];
+    });
+    return out;
+  }
+
+  function mergeWaveWithBase(baseWave, savedWave) {
+    var out = cloneJson(baseWave || {});
+    if (!savedWave || typeof savedWave !== 'object') return out;
+    Object.keys(savedWave).forEach(function (key) {
+      if (key === 'catR' || key === 'flyR') return;
+      if (key === 'spawnWeights') {
+        out.spawnWeights = mergePlainObject(baseWave && baseWave.spawnWeights, savedWave.spawnWeights);
+      } else if (savedWave[key] != null) {
+        out[key] = savedWave[key];
+      }
+    });
+    return out;
   }
 
   function loadSavedWaveConfigs() {
@@ -141,23 +152,38 @@ window.onload = function () {
       var raw = localStorage.getItem(WAVE_CONFIG_STORAGE_KEY);
       if (!raw) return;
       var parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.length !== BASE_LEVEL_CONFIGS.length) return;
-      for (var i = 0; i < parsed.length; i++) {
-        var level = parsed[i];
-        if (!level) continue;
-        if (isLegacyLateLevelWaveConfig(level, BASE_LEVEL_CONFIGS[i], i)) {
-          LEVEL_CONFIGS[i].waves = cloneJson(BASE_LEVEL_CONFIGS[i].waves);
-          continue;
+      if (!Array.isArray(parsed)) return;
+      for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+        var baseLevel = BASE_LEVEL_CONFIGS[i];
+        var savedLevel = parsed[i];
+        if (!savedLevel || !Array.isArray(savedLevel.waves)) continue;
+        var nextWaves = [];
+        var waveCount = Math.max(baseLevel.waves.length, savedLevel.waves.length);
+        for (var wi = 0; wi < waveCount; wi++) {
+          var baseWave = baseLevel.waves[Math.min(wi, baseLevel.waves.length - 1)];
+          var savedWave = savedLevel.waves[wi];
+          nextWaves.push(mergeWaveWithBase(baseWave, savedWave));
         }
-        if (Array.isArray(level.waves)) LEVEL_CONFIGS[i].waves = cloneJson(level.waves);
+        LEVEL_CONFIGS[i].waves = nextWaves;
       }
       normalizeWaveConfigs(LEVEL_CONFIGS);
     } catch (e) { }
   }
 
+  function sanitizeWaveForStorage(wave) {
+    var out = cloneJson(wave || {});
+    delete out.catR;
+    delete out.flyR;
+    return out;
+  }
+
   function saveWaveConfigsToStorage() {
     var wavePayload = LEVEL_CONFIGS.map(function (level) {
-      return { waves: cloneJson(level.waves) };
+      return {
+        waves: (level.waves || []).map(function (wave) {
+          return sanitizeWaveForStorage(wave);
+        })
+      };
     });
     localStorage.setItem(WAVE_CONFIG_STORAGE_KEY, JSON.stringify(wavePayload));
   }
@@ -175,9 +201,10 @@ window.onload = function () {
       var raw = localStorage.getItem(LEVEL_CONDITIONS_STORAGE_KEY);
       if (!raw) return;
       var parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.length !== BASE_LEVEL_TARGETS.length) return;
-      for (var i = 0; i < parsed.length; i++) {
-        if (parsed[i]) LEVEL_CONFIGS[i].targets = cloneJson(parsed[i]);
+      if (!Array.isArray(parsed)) return;
+      for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
+        if (!parsed[i]) continue;
+        LEVEL_CONFIGS[i].targets = mergePlainObject(BASE_LEVEL_TARGETS[i], parsed[i]);
       }
     } catch (e) { }
   }
@@ -192,12 +219,13 @@ window.onload = function () {
   function resetLevelConditionsToDefault(levelIndex) {
     if (typeof levelIndex === 'number') {
       LEVEL_CONFIGS[levelIndex].targets = cloneJson(BASE_LEVEL_TARGETS[levelIndex]);
+      saveLevelConditionsToStorage();
     } else {
       for (var i = 0; i < LEVEL_CONFIGS.length; i++) {
         LEVEL_CONFIGS[i].targets = cloneJson(BASE_LEVEL_TARGETS[i]);
       }
+      localStorage.removeItem(LEVEL_CONDITIONS_STORAGE_KEY);
     }
-    localStorage.removeItem(LEVEL_CONDITIONS_STORAGE_KEY);
   }
 
   loadSavedWaveConfigs();
@@ -810,7 +838,7 @@ window.onload = function () {
 
   function refreshLevelTargetHUD() {
     var cfg = getLevelCfgAt(currentLevelIndex);
-    ['boulder', 'bug', 'drop'].forEach(function (k) {
+    ['boulder', 'bug'].forEach(function (k) {
       var el = document.getElementById('inv-' + k + '-count');
       if (el) el.textContent = levelCollected[k] + '/' + (cfg.targets[k] || 0);
     });
@@ -1026,7 +1054,12 @@ window.onload = function () {
   }
 
   function isTargetObjectChaseable(obj) {
-    return !!(obj && thrownObjects.indexOf(obj) !== -1 && obj.state === 'stuck' && !obj.playerDragging);
+    return !!(
+      obj
+      && thrownObjects.indexOf(obj) !== -1
+      && obj.state === 'stuck'
+      && !obj.playerDragging
+    );
   }
 
   function pauseAndClearCurrentTarget() {
@@ -1168,7 +1201,7 @@ window.onload = function () {
     inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
     clearAllObjects();
     var cfg = getLevelCfgAt(n);
-    ['boulder', 'bug', 'drop'].forEach(function (k) {
+    ['boulder', 'bug'].forEach(function (k) {
       var el = document.getElementById('inv-' + k + '-count');
       if (el) el.textContent = '0/' + cfg.targets[k];
     });
@@ -1277,7 +1310,7 @@ window.onload = function () {
 
   function checkLevelComplete() {
     var cfg = getLevelCfgAt(currentLevelIndex);
-    var done = ['boulder', 'bug', 'drop'].every(function (k) {
+    var done = ['boulder', 'bug'].every(function (k) {
       return levelCollected[k] >= (cfg.targets[k] || 0);
     });
     if (done) endLevel();
@@ -1923,6 +1956,46 @@ window.onload = function () {
     obj._silkSpiral = buildSilkSpiral(obj);
   }
 
+  function preserveWrappedSupport(obj) {
+    var p = obj.particle.pos;
+    var reanchorPoint = findWrappedReanchorPoint(
+      p.x,
+      p.y,
+      obj.stuckOnConstraint,
+      spiderweb,
+      _spatialOpts()
+    );
+    if (!reanchorPoint) return false;
+    return obj.reanchorWrappedToPoint(reanchorPoint, spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+  }
+
+  function finishLeafWrap(obj) {
+    wrappingTarget = null;
+    if (autoPlay) _autoPlayPause = 24;
+    audioEngine.playCollectSound(obj.kind);
+    var leafFxPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
+    playCollectFX(leafFxPos.x, leafFxPos.y, collectLayer, obj.kind);
+    var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
+    var _colors = ['#aaffaa', '#ffffaa', '#ffffff'];
+    for (var _pi = 0; _pi < 14; _pi++) {
+      var _ang = (_pi / 14) * Math.PI * 2 + Math.random() * 0.3;
+      var _spd = 1.8 + Math.random() * 2.8;
+      _burstParticles.push({
+        x: _bx, y: _by,
+        vx: Math.cos(_ang) * _spd,
+        vy: Math.sin(_ang) * _spd,
+        life: 1.0,
+        decay: 0.045 + Math.random() * 0.025,
+        r: 2.2 + Math.random() * 2.0,
+        color: _colors[Math.floor(Math.random() * _colors.length)]
+      });
+    }
+    obj.destroy(sim);
+    var idx = thrownObjects.indexOf(obj);
+    if (idx !== -1) thrownObjects.splice(idx, 1);
+    updateBadge(obj.kind, -1);
+  }
+
   function tryCollectObjects() {
     if (wrappingTarget !== null || poopStunTimer > 0) return;
     var priorityObj = getActivePriorityObject();
@@ -1961,7 +2034,7 @@ window.onload = function () {
     }
   }
 
-  /* ── 投掷物运动积分（粘网查询在 physics+build 之后） ── */
+  /* ── 投掷物运动积分（保持旧 gameplay：先按当前路径做粘网判定，再进 physics） ── */
   function integrateThrownObjects() {
     for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
       var obj = thrownObjects[oi];
@@ -1972,9 +2045,14 @@ window.onload = function () {
         if (obj.kind === 'boulder' || obj.kind === 'poop') {
           obj.segT += 0.22 * _currentTimeScale;
           var bGrav = obj.grav * 2.6 * _currentTimeScale;
-          p.pos.y += bGrav;
-          p.lastPos.x = p.pos.x;
-          p.lastPos.y = p.pos.y - bGrav;
+          var driftX = (obj.spawnVx || 0) * _currentTimeScale;
+          var driftY = (obj.spawnVy || 0) * _currentTimeScale;
+          p.pos.x += driftX;
+          p.pos.y += driftY + bGrav;
+          p.lastPos.x = p.pos.x - driftX;
+          p.lastPos.y = p.pos.y - (driftY + bGrav);
+          obj.spawnVx = (obj.spawnVx || 0) * 0.985;
+          obj.spawnVy = (obj.spawnVy || 0) * 0.985;
         } else if (obj.kind === 'bug') {
           var bx = obj.baseVx + Math.sin(obj.animT * obj.buzzFreqX + obj.buzzPhaseX) * obj.buzzAmp * 0.08
             + Math.cos(obj.animT * obj.buzzFreqX * 1.7 + obj.buzzPhaseX) * obj.buzzAmp * 0.04
@@ -2058,9 +2136,9 @@ window.onload = function () {
           audioEngine.playSfxLand(obj.kind);
           var _ws = obj._stickIsRadial ? P.radialWobbleScale : P.spiralWobbleScale;
           if (obj.kind === 'drop') {
-            obj.state = 'wrapped';
-            obj._popT = 0;
-            obj.particle._noSimDrag = true;
+            obj.state = 'stuck';
+            obj.stayTimer = 0;
+            obj.wobbleAmp = 0.04;
           } else {
             obj.state = 'stuck'; obj.stayTimer = 0;
             if (obj.kind === 'boulder') obj.wobbleAmp = 0.10 * _ws;
@@ -2215,9 +2293,13 @@ window.onload = function () {
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
-        obj.wrapT = Math.min(1, obj.wrapT + _currentTimeScale / obj.wrapDur);
+        obj.wrapT = Math.min(1, obj.wrapT + (_currentTimeScale === 0 ? 0 : 1 / obj.wrapDur));
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
+          if (obj.kind === 'drop') {
+            finishLeafWrap(obj);
+            continue;
+          }
           wrappingTarget = null;
           obj.state = 'wrapped';
           obj._popT = 0;
@@ -2225,6 +2307,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'wrapped') {
+        preserveWrappedSupport(obj);
         if (obj._popT <= obj._popDur) obj._popT++;
         if (_pickupDrag && _pickupDrag.obj === obj) {
           var targetGripX = _pickupDrag.pointerX - _pickupDrag.gripDX;
@@ -2284,16 +2367,16 @@ window.onload = function () {
         var opacity = 1;
 
         if (obj.collectPause > 0) {
-          obj.collectPause -= _currentTimeScale;
-          obj.collectFlash += _currentTimeScale;
-          var holdT = Math.min(1, 1 - Math.max(0, obj.collectPause) / 12);
+          obj.collectPause--;
+          obj.collectFlash++;
+          var holdT = 1 - obj.collectPause / 12;
           var pulse = Math.sin(holdT * Math.PI * 3.2) * 0.18;
           drawX += Math.sin(obj.collectFlash * 0.9) * 1.8;
           drawY += Math.cos(obj.collectFlash * 0.8) * 1.1;
           scale = 1.05 + holdT * 0.42 + pulse;
           opacity = 0.82 + Math.abs(Math.sin(holdT * Math.PI * 4)) * 0.18;
         } else {
-          obj.travelT = Math.min(1, obj.travelT + _currentTimeScale / obj.collectDur);
+          obj.travelT = Math.min(1, obj.travelT + 1 / obj.collectDur);
           var easeIn = obj.travelT * obj.travelT * obj.travelT;
           drawX = obj.collectFromX + (obj.collectToX - obj.collectFromX) * easeIn;
           drawY = obj.collectFromY + (obj.collectToY - obj.collectFromY) * easeIn;
@@ -2973,7 +3056,7 @@ window.onload = function () {
     }
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
-    if (_autoPlayPause > 0) { _autoPlayPause -= timeScale; }
+    if (_autoPlayPause > 0) { _autoPlayPause--; }
     if (!isPoopStunned && autoPlay && !wrappingTarget && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
@@ -3013,7 +3096,7 @@ window.onload = function () {
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > arriveThreshold && !_isBulletTime) {
         moving = true;
-        var scaledSpeed = moveSpeed * timeScale;
+        var scaledSpeed = moveSpeed;
         var dirX = dx / dist, dirY = dy / dist;
 
         /* 玩家优先目标导航：绕开其他掉落物，不在路上触发打包 */
@@ -3050,9 +3133,9 @@ window.onload = function () {
     /* feet */
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
-      if (fs.cooldown > 0) fs.cooldown -= timeScale;
+      if (fs.cooldown > 0) fs.cooldown--;
       if (fs.stepping) {
-        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : timeScale));
+        fs.t = Math.min(1, fs.t + STEP_SPEED * ((_isBulletTime || isPoopStunned) ? 0 : 1));
         var ease = fs.t < 0.5 ? 2 * fs.t * fs.t : -1 + (4 - 2 * fs.t) * fs.t;
         fs.current.x = fs.from.x + (fs.targetPos.x - fs.from.x) * ease;
         fs.current.y = fs.from.y + (fs.targetPos.y - fs.from.y) * ease;
@@ -3079,7 +3162,11 @@ window.onload = function () {
       }
     }
 
-    if (!_isBulletTime) integrateThrownObjects();
+    if (!_isBulletTime) {
+      integrateThrownObjects();
+      if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+      queryThrownStick();
+    }
     statsTimeEnd();
 
     /* Phase C：physics → build → query（单步 11 iter，仅蛛网受重力） */
@@ -3123,7 +3210,6 @@ window.onload = function () {
 
     /* wave system + 投掷物更新：子弹时间时全部冻结 */
     if (!_isBulletTime) {
-      queryThrownStick();
       updateLevelTimer();
       updateLevelSpawner();
       checkWebIntegrity();

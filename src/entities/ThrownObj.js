@@ -17,6 +17,17 @@ function _isEdgeAlive(c, spatialIndex) {
   return spatialIndex.isAliveId(c.__webId);
 }
 
+function _resolveStickConstraint(pt, spiderweb, aliveCheck) {
+  if (!pt) return null;
+  if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
+    var sid = pt.constraintId != null ? pt.constraintId : (pt.c && pt.c.__webId);
+    if (!sid || !aliveCheck.isAliveId(sid)) return null;
+    if (!pt.c) pt.c = aliveCheck.getConstraint(sid);
+    if (!pt.c) return null;
+  } else if (spiderweb.constraints.indexOf(pt.c) === -1) return null;
+  return pt.c;
+}
+
 /**
  * 找到离指定位置最近的、仍有存活连接的粒子作为锚点。
  * 优先选择真正网线连接数 >= 2 的网格节点（避免把 stub 锚定到链中间节点上）。
@@ -316,16 +327,14 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
  * 获取物体定义参数
  */
 export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
-  var waveCfg = (gameState === 'LEVEL_ACTIVE' || gameState === 'LEVEL_INTRO')
-    ? getWaveCfgFn(currentLevelIndex, currentWaveIndex) : null;
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
-    stayFrames: Math.round((waveCfg ? waveCfg.catR : P.caterpillarReleaseSec) * 60),
+    stayFrames: Math.round(P.caterpillarReleaseSec * 60),
     gravity: P.caterpillarGravity, wrapDur: 120
   };
   if (kind === 'bug') return {
     r: 9, collectRadius: 5, weight: P.flyWeight,
-    stayFrames: Math.round((waveCfg ? waveCfg.flyR : P.flyReleaseSec) * 60),
+    stayFrames: Math.round(P.flyReleaseSec * 60),
     gravity: 0, wrapDur: 80
   };
   if (kind === 'poop') return {
@@ -476,31 +485,36 @@ export function clearObjectConstraints(obj) {
   }
 }
 
+function _attachObjectToConstraint(obj, constraint, x, y, distanceScale, minDistance) {
+  var p = obj.particle;
+  p.pos.mutableSet(new Vec2(x, y));
+  p.lastPos.mutableSet(new Vec2(x, y));
+  var dA = p.pos.dist(constraint.a.pos);
+  var dB = p.pos.dist(constraint.b.pos);
+  obj.cA = new DistanceConstraint(p, constraint.a, 0.95, Math.max(minDistance, dA * distanceScale));
+  obj.cB = new DistanceConstraint(p, constraint.b, 0.95, Math.max(minDistance, dB * distanceScale));
+  obj.comp.constraints.push(obj.cA);
+  obj.comp.constraints.push(obj.cB);
+  obj.stuckOnConstraint = constraint;
+  obj._stickIsRadial = !!constraint.isRadial;
+  if (obj.kind === 'drop') obj.angleVel = 0;
+  return { dA: dA, dB: dB };
+}
+
 ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
-  if (!pt) return false;
-  if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
-    var sid = pt.constraintId != null ? pt.constraintId : (pt.c && pt.c.__webId);
-    if (!sid || !aliveCheck.isAliveId(sid)) return false;
-    if (!pt.c) pt.c = aliveCheck.getConstraint(sid);
-    if (!pt.c) return false;
-  } else if (spiderweb.constraints.indexOf(pt.c) === -1) return false;
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
   var p = this.particle;
-  p.pos.mutableSet(new Vec2(pt.x, pt.y));
-  p.lastPos.mutableSet(new Vec2(pt.x, pt.y));
-  var dA = p.pos.dist(pt.c.a.pos);
-  var dB = p.pos.dist(pt.c.b.pos);
+  clearObjectConstraints(this);
+  var attached = _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, 0);
+  var dA = attached.dA;
+  var dB = attached.dB;
   this.stickyFromA = dA;
   this.stickyFromB = dB;
   this.stickyToA = Math.max(this.def.r * 0.4, dA * 0.35);
   this.stickyToB = Math.max(this.def.r * 0.4, dB * 0.35);
-  this.cA = new DistanceConstraint(p, pt.c.a, 0.95, dA);
-  this.cB = new DistanceConstraint(p, pt.c.b, 0.95, dB);
-  this.comp.constraints.push(this.cA);
-  this.comp.constraints.push(this.cB);
-  this.stuckOnConstraint = pt.c;
-  if (this.kind === 'drop') this.angleVel = 0;
-  this._stickIsRadial = !!pt.c.isRadial;
-  if (this.kind === 'drop') this.angleVel = 0;
+  this.cA.distance = dA;
+  this.cB.distance = dB;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
   this.stuckAngle = this.initAngle; /* 粘住后保持下落时的初始角度 */
@@ -511,12 +525,24 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   var ivy = p.pos.y - p.lastPos.y;
   var impactScale = this.def.weight * 1.8;
   var idx = ivx * impactScale, idy = ivy * impactScale;
-  pt.c.a.pos.x += idx; pt.c.a.pos.y += idy;
-  pt.c.b.pos.x += idx; pt.c.b.pos.y += idy;
+  constraint.a.pos.x += idx; constraint.a.pos.y += idy;
+  constraint.b.pos.x += idx; constraint.b.pos.y += idy;
   var bounceFactor = this.def.weight * 1.2;
-  pt.c.a.lastPos.x += ivx * bounceFactor;
-  pt.c.b.lastPos.x += ivx * bounceFactor;
+  constraint.a.lastPos.x += ivx * bounceFactor;
+  constraint.b.lastPos.x += ivx * bounceFactor;
 
+  return true;
+};
+
+ThrownObj.prototype.reanchorWrappedToPoint = function (pt, spiderweb, aliveCheck) {
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
+  clearObjectConstraints(this);
+  _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, this.def.r * 0.4);
+  this.state = 'wrapped';
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this.particle._noSimDrag = true;
   return true;
 };
 

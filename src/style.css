@@ -466,6 +466,14 @@ canvas{
 .wave-cell{
   margin-bottom:0;
 }
+.wave-spawn-stack{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.wave-subfield{
+  padding-top:2px;
+}
 .wave-cell-span-2{
   grid-column:1 / span 2;
 }

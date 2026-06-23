@@ -128,8 +128,7 @@ function initWaveEditor(callbacks) {
   var waveSelect = document.getElementById('wave-edit-wave');
   var levelFieldMap = {
     boulder: document.getElementById('level-target-boulder'),
-    bug: document.getElementById('level-target-bug'),
-    drop: document.getElementById('level-target-drop')
+    bug: document.getElementById('level-target-bug')
   };
   var metaEl = document.getElementById('wave-edit-meta');
   var estimateFallingEl = document.getElementById('wave-estimate-falling');
@@ -138,7 +137,6 @@ function initWaveEditor(callbacks) {
   var estimateCollectEls = {
     boulder: document.getElementById('wave-estimate-boulder'),
     bug: document.getElementById('wave-estimate-bug'),
-    drop: document.getElementById('wave-estimate-drop'),
     poop: document.getElementById('wave-estimate-poop')
   };
   var saveHintEl = document.getElementById('wave-save-hint');
@@ -165,8 +163,6 @@ function initWaveEditor(callbacks) {
     burstMin: { el: document.getElementById('wave-burstMin'), integer: true },
     burstMax: { el: document.getElementById('wave-burstMax'), integer: true },
     burstCount: { el: document.getElementById('wave-burstCount'), integer: true },
-    catR: { el: document.getElementById('wave-catR'), integer: false },
-    flyR: { el: document.getElementById('wave-flyR'), integer: false },
     'spawnWeights.boulder': { el: document.getElementById('wave-weight-boulder'), integer: false },
     'spawnWeights.bug': { el: document.getElementById('wave-weight-bug'), integer: false },
     'spawnWeights.drop': { el: document.getElementById('wave-weight-drop'), integer: false },

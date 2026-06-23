@@ -270,7 +270,7 @@ export function triangleScore(n) {
  */
 export function calcCollectedSilk(collected, targets) {
   var s = 0;
-  ['boulder', 'bug', 'drop'].forEach(function (k) {
+  ['boulder', 'bug'].forEach(function (k) {
     var got = collected[k] || 0;
     var tgt = targets[k] || 0;
     var inTarget = Math.min(got, tgt);

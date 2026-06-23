@@ -24,7 +24,7 @@ export function hideOverlay() {
 export function refreshWaveHUD(flashKind, gameState, getLevelCfgFn, currentLevel, levelCollected) {
   if (gameState !== 'LEVEL_ACTIVE' && gameState !== 'LEVEL_INTRO') return;
   var cfg = getLevelCfgFn(currentLevel);
-  ['boulder', 'bug', 'drop'].forEach(function (k) {
+  ['boulder', 'bug'].forEach(function (k) {
     var el = document.getElementById('inv-' + k + '-count');
     if (el) {
       el.textContent = levelCollected[k] + '/' + cfg.targets[k];
