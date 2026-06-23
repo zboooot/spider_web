@@ -402,8 +402,57 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
 
     var _isWrapping = obj.state === 'wrapping';
 
+    /* ── 落石（穿透破网，不粘连） ── */
+    if (obj.kind === 'stone') {
+      ctx.save();
+      ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
+      var stoneR = def.r;
+      var pullT = obj._tutorialPullTension || 0;
+      ctx.rotate((obj.angle || 0) * 0.45);
+      var stoneGrad = ctx.createRadialGradient(-stoneR * 0.28, -stoneR * 0.42, stoneR * 0.08, 0, 0, stoneR * 1.02);
+      stoneGrad.addColorStop(0, '#d6dbe0');
+      stoneGrad.addColorStop(0.38, '#a3abb4');
+      stoneGrad.addColorStop(0.78, '#707982');
+      stoneGrad.addColorStop(1, '#4a535c');
+      ctx.beginPath();
+      ctx.moveTo(-stoneR * 0.78, -stoneR * 0.22);
+      ctx.lineTo(-stoneR * 0.42, -stoneR * 0.82);
+      ctx.lineTo(stoneR * 0.24, -stoneR * 0.9);
+      ctx.lineTo(stoneR * 0.82, -stoneR * 0.34);
+      ctx.lineTo(stoneR * 0.72, stoneR * 0.36);
+      ctx.lineTo(stoneR * 0.18, stoneR * 0.88);
+      ctx.lineTo(-stoneR * 0.46, stoneR * 0.78);
+      ctx.lineTo(-stoneR * 0.9, stoneR * 0.18);
+      ctx.closePath();
+      ctx.fillStyle = stoneGrad;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(24,28,34,' + (0.52 + pullT * 0.12).toFixed(2) + ')';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-stoneR * 0.28, -stoneR * 0.34);
+      ctx.lineTo(-stoneR * 0.04, -stoneR * 0.52);
+      ctx.lineTo(stoneR * 0.16, -stoneR * 0.28);
+      ctx.lineTo(stoneR * 0.02, -stoneR * 0.04);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(stoneR * 0.08, stoneR * 0.18);
+      ctx.lineTo(stoneR * 0.34, stoneR * 0.06);
+      ctx.lineTo(stoneR * 0.28, stoneR * 0.34);
+      ctx.lineTo(stoneR * 0.02, stoneR * 0.42);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(38,42,47,0.22)';
+      ctx.fill();
+      statsDc('poly', 3);
+      applyPriorityFlashRect(ctx, -stoneR, -stoneR, stoneR * 2, stoneR * 2);
+      ctx.restore();
+    }
+
     /* ── 毛毛虫 ── */
-    if (obj.kind === 'boulder') {
+    else if (obj.kind === 'boulder') {
       ctx.save(); ctx.translate(px, py);
       if (obj._drawStretchScale !== 1 || obj._drawStretchSquash !== 1) {
         ctx.rotate(obj._drawStretchAngle || 0);

@@ -26,7 +26,7 @@ export function VerletJS(width, height, canvas) {
   var _this = this;
 
   this.bounds = function (p) {
-    if (p.__isBug) return; /* 苍蝇不受边界约束，由环绕逻辑处理 */
+    if (p.__isBug || p.__ignoreBounds) return; /* 特殊对象不受边界约束 */
     if (p.pos.y < 0) p.pos.y = 0;
     if (p.pos.y > this.height - 1) p.pos.y = this.height - 1;
     if (p.pos.x < 0) p.pos.x = 0;
@@ -38,7 +38,10 @@ export function VerletJS(width, height, canvas) {
   this.canvas.onmousedown = function () {
     _this.mouseDown = true;
     var n = _this.nearestEntity();
-    if (n) _this.draggedEntity = n;
+    if (n) {
+      _this.draggedEntity = n;
+      if (_this.onDragStart) _this.onDragStart(n);
+    }
   };
 
   this.canvas.onmouseup = function () {
@@ -66,7 +69,10 @@ export function VerletJS(width, height, canvas) {
     _this.mouse.x = (t.clientX - r.left) * (_this.width / r.width);
     _this.mouse.y = (t.clientY - r.top) * (_this.height / r.height);
     var n = _this.nearestEntity();
-    if (n) _this.draggedEntity = n;
+    if (n) {
+      _this.draggedEntity = n;
+      if (_this.onDragStart) _this.onDragStart(n);
+    }
   }, { passive: false });
 
   this.canvas.addEventListener('touchend', function (e) {

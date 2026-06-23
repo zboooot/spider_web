@@ -7,7 +7,7 @@ import { VerletJS } from './engine/VerletJS.js';
 
 import { createSpiderweb } from './entities/spiderweb.js';
 import { createSpider } from './entities/spider.js';
-import { ThrownObj, clearObjectConstraints, collapseChain } from './entities/ThrownObj.js';
+import { ThrownObj, clearObjectConstraints, collapseChain, breakWebInRadius } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
@@ -61,6 +61,19 @@ import {
 
 import { initOverlay, showOverlay, hideOverlay, refreshWaveHUD, playCollectFX, playFloatingText } from './ui/overlay.js';
 import { initPanel } from './ui/panel.js';
+import {
+  createTutorialController,
+  shouldStartTutorial,
+  isTutorialInsectKind,
+  shouldTriggerTutorialStoneImpact,
+  resolveTutorialStoneImpactPoint,
+  createTutorialStoneImpact,
+  tickTutorialStoneImpact,
+  applyWebPullTowardPoint,
+  applyWebImpactKick,
+  TUTORIAL_STONE_PULL_FRAMES,
+  TUTORIAL_TARGETS
+} from './tutorial/tutorialController.js';
 
 import {
   statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
@@ -565,7 +578,8 @@ window.onload = function () {
   var isGameplayTestMode = false;
 
   function updateBlink() {
-    var blinkInterval = blinkState.mood === 'startled' ? 40 + Math.floor(Math.random() * 60)
+    var blinkInterval = blinkState.mood === 'crying'   ? 18 + Math.floor(Math.random() * 26)
+                      : blinkState.mood === 'startled' ? 40 + Math.floor(Math.random() * 60)
                       : blinkState.mood === 'curious'  ? 120 + Math.floor(Math.random() * 180)
                       : 180 + Math.floor(Math.random() * 300);
     if (blinkState.blinking) {
@@ -613,7 +627,7 @@ window.onload = function () {
     if (wi !== 0) { sim.composites.splice(wi, 1); sim.composites.unshift(spiderweb); }
     samplePoints = getWebSamplePoints(spiderweb, 4);
     _samplePointsTopologyVersion = spiderweb._topologyVersion || 0;
-    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; });
+    setupWebDraw(spiderweb, function () { return thrownObjects; }, function () { return webBreakFlashes; }, function () { return _breakFrame; }, function () { return brokenEnds; }, function () { return sim.snapTarget; }, function () { return repairQueue; }, function () { return _previewRing; }, function () { return tutorialStoneImpact; });
   }
 
   function _syncStepSearchTopology() {
@@ -836,8 +850,271 @@ window.onload = function () {
   var webGridBuildIdx = 0;
   var webGridInitCover = 0;
 
+  var tutorialActive = false;
+  var tutorialController = createTutorialController(W, H, cx, cy);
+  var tutorialTargets = cloneJson(TUTORIAL_TARGETS);
+  var tutorialHintEl = document.getElementById('tutorial-hint');
+  var tutorialFocusEl = document.createElement('div');
+  var tutorialFocusIconEl = document.createElement('div');
+  var tutorialSpawnQueue = [];
+  var _tutorialRepairDragDone = false;
+  var _tutorialRepairPending = false;
+  var _tutorialStubNotified = false;
+  var tutorialStoneImpact = null;
+  var tutorialFocusActive = false;
+  var _urlSearchParams = new URLSearchParams(window.location.search);
+
+  tutorialFocusEl.className = 'tutorial-focus-overlay';
+  tutorialFocusEl.style.display = 'none';
+  tutorialFocusIconEl.className = 'tutorial-focus-icon';
+  tutorialFocusEl.appendChild(tutorialFocusIconEl);
+  screenShellEl.appendChild(tutorialFocusEl);
+
+  function isTutorialActive() {
+    return tutorialActive && tutorialController.isActive();
+  }
+
+  function showTutorialHint(text) {
+    if (!tutorialHintEl) return;
+    if (!text) {
+      tutorialHintEl.style.display = 'none';
+      tutorialHintEl.textContent = '';
+      return;
+    }
+    tutorialHintEl.textContent = text;
+    tutorialHintEl.style.display = 'block';
+  }
+
+  function hideTutorialHint() {
+    showTutorialHint('');
+  }
+
+  function getTutorialStubFocusPoint() {
+    if (brokenEnds && brokenEnds.length > 0 && brokenEnds[0] && brokenEnds[0].pos) {
+      return { x: brokenEnds[0].pos.x, y: brokenEnds[0].pos.y, r: 78 };
+    }
+    if (!spiderweb) return null;
+    for (var i = 0; i < spiderweb.particles.length; i++) {
+      var pt = spiderweb.particles[i];
+      if (pt && pt.__isStub && pt.pos) return { x: pt.pos.x, y: pt.pos.y, r: 78 };
+    }
+    return null;
+  }
+
+  function updateTutorialFocusPrompt() {
+    if (!tutorialFocusActive) return;
+    var focus = getTutorialStubFocusPoint();
+    if (!focus) return;
+    tutorialFocusEl.style.setProperty('--focus-x', focus.x + 'px');
+    tutorialFocusEl.style.setProperty('--focus-y', focus.y + 'px');
+    tutorialFocusEl.style.setProperty('--focus-r', focus.r + 'px');
+  }
+
+  function showTutorialFocusPrompt(text) {
+    tutorialFocusActive = true;
+    tutorialFocusEl.style.display = 'block';
+    updateTutorialFocusPrompt();
+    showTutorialHint(text || '拖拽连网修复');
+  }
+
+  function hideTutorialFocusPrompt() {
+    tutorialFocusActive = false;
+    tutorialFocusEl.style.display = 'none';
+  }
+
+  function setSpiderMood(mood) {
+    blinkState.mood = mood || 'calm';
+    if (mood === 'crying') {
+      blinkState.headShake = 120;
+      blinkState.headShakeAmp = 2.8;
+    } else if (mood === 'curious') {
+      blinkState.headShake = Math.max(blinkState.headShake, 18);
+      blinkState.headShakeAmp = Math.max(blinkState.headShakeAmp, 0.8);
+    } else {
+      blinkState.headShake = Math.min(blinkState.headShake, 12);
+    }
+  }
+
+  function notifyTutorialStubIfNeeded() {
+    if (!isTutorialActive() || _tutorialStubNotified || !spiderweb) return;
+    for (var si = 0; si < spiderweb.particles.length; si++) {
+      if (spiderweb.particles[si].__isStub) {
+        _tutorialStubNotified = true;
+        tutorialController.handleEvent('stub_available');
+        processTutorialActions();
+        return;
+      }
+    }
+  }
+
+  function notifyTutorialRepairFinishedIfNeeded() {
+    if (!isTutorialActive() || !_tutorialRepairDragDone || !_tutorialRepairPending) return;
+    if (repairQueue.length > 0) return;
+    _tutorialRepairPending = false;
+    tutorialController.handleEvent('repair_finished');
+    processTutorialActions();
+  }
+
+  function processTutorialActions() {
+    var actions = tutorialController.drainActions();
+    for (var ai = 0; ai < actions.length; ai++) {
+      var action = actions[ai];
+      if (action.type === 'show_message') {
+        showTutorialHint(action.text || '');
+      } else if (action.type === 'show_focus_prompt') {
+        showTutorialFocusPrompt(action.text || '拖拽连网修复');
+      } else if (action.type === 'hide_focus_prompt') {
+        hideTutorialFocusPrompt();
+        hideTutorialHint();
+      } else if (action.type === 'set_spider_mood') {
+        setSpiderMood(action.mood);
+      } else if (action.type === 'spawn_batch' && action.batch) {
+        for (var bi = 0; bi < action.batch.length; bi++) {
+          var spec = action.batch[bi];
+          if ((spec.delayFrames || 0) > 0) tutorialSpawnQueue.push(Object.assign({}, spec));
+          else launchObjectSpec(spec);
+        }
+      } else if (action.type === 'set_insect_target') {
+        tutorialTargets = cloneJson(action.targets || TUTORIAL_TARGETS);
+        refreshLevelTargetHUD();
+      } else if (action.type === 'clear_breakers') {
+        for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
+          var breaker = thrownObjects[oi];
+          if (!breaker || breaker._tutorialTag !== 'breaker') continue;
+          breaker.destroy(sim);
+          thrownObjects.splice(oi, 1);
+          updateBadge(breaker.kind, -1);
+        }
+      } else if (action.type === 'mark_completed') {
+        try { localStorage.setItem('spiderTutorialCompleted', '1'); } catch (e) { }
+      } else if (action.type === 'handoff_to_level_1') {
+        completeTutorialAndStartLevelOne();
+      }
+    }
+  }
+
+  function launchObjectSpec(spec) {
+    var kind = spec.kind || 'boulder';
+    var obj = new ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgAt, currentLevelIndex, currentWaveIndex);
+    obj._W = W; obj._H = H;
+    if (spec.x != null && spec.y != null) {
+      obj.particle.pos.x = spec.x;
+      obj.particle.pos.y = spec.y;
+      obj.particle.lastPos.x = spec.x - (spec.vx || 0);
+      obj.particle.lastPos.y = spec.y - (spec.vy || 0);
+      obj.prevX = spec.x;
+      obj.prevY = spec.y;
+    }
+    if (spec.vx != null) obj.spawnVx = spec.vx;
+    if (spec.vy != null) obj.spawnVy = spec.vy;
+    if (spec.defOverrides) {
+      Object.assign(obj.def, spec.defOverrides);
+      if (spec.defOverrides.stayFrames != null) obj.stayFrames = spec.defOverrides.stayFrames;
+      if (spec.defOverrides.gravity != null) obj.grav = spec.defOverrides.gravity;
+    }
+    if (spec._tutorialTag) obj._tutorialTag = spec._tutorialTag;
+    if (spec.breakScale != null) obj._tutorialBreakScale = spec.breakScale;
+    if (spec.forcedStubCount != null) obj._tutorialForcedStubCount = spec.forcedStubCount;
+    if (kind === 'stone') obj._disableRestick = true;
+    thrownObjects.push(obj);
+    updateBadge(kind, 1);
+    return obj;
+  }
+
+  function tickTutorialSpawnQueue(dt) {
+    if (!tutorialSpawnQueue.length) return;
+    for (var i = tutorialSpawnQueue.length - 1; i >= 0; i--) {
+      var spec = tutorialSpawnQueue[i];
+      spec.delayFrames = Math.max(0, (spec.delayFrames || 0) - (dt || 1));
+      if (spec.delayFrames > 0) continue;
+      tutorialSpawnQueue.splice(i, 1);
+      launchObjectSpec(spec);
+    }
+  }
+
+  function resetTutorialState() {
+    tutorialActive = false;
+    tutorialSpawnQueue = [];
+    _tutorialRepairDragDone = false;
+    _tutorialRepairPending = false;
+    _tutorialStubNotified = false;
+    tutorialStoneImpact = null;
+    tutorialTargets = cloneJson(TUTORIAL_TARGETS);
+    hideTutorialFocusPrompt();
+    setSpiderMood('calm');
+    hideTutorialHint();
+  }
+
+  function startTutorial() {
+    isGameplayTestMode = false;
+    difficultyLevel = 1;
+    resetTutorialState();
+    wrappingTarget = null;
+    repairQueue = [];
+    target = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    clearPoopDragState();
+    silkCount = 0;
+    refreshSilkHUD();
+    totalSilkCount = 0;
+    poopStunTimer = 0;
+    currentLevelIndex = 0;
+    currentWaveIndex = 0;
+    gameFrames = 0;
+    levelScored = false;
+    levelCollected = { boulder: 0, bug: 0, drop: 0 };
+    inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
+    clearAllObjects();
+    var phaseBarEl = document.getElementById('phase-bar');
+    if (phaseBarEl) phaseBarEl.style.display = 'none';
+    webOverride = createWebOverrideForLevel(0);
+    buildWeb();
+    buildSpider();
+    tutorialActive = true;
+    tutorialController = createTutorialController(W, H, cx, cy);
+    tutorialController.start();
+    processTutorialActions();
+    gameState = 'LEVEL_ACTIVE';
+    hideOverlay();
+    levelTimer = 0;
+    webWarmupFrames = 90;
+    webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
+    webRescanIdx = 0; webRescanCover = 0; webLossPct = 0;
+    webIntegrityState.webGridList = null;
+    webIntegrityState.cellCovered = null;
+    webIntegrityState.coveredCount = 0;
+    webIntegrityState.dirtyIndices = [];
+    webIntegrityState.dirtyFlags = null;
+    webGridBuildIdx = 0; webGridInitCover = 0;
+    brokenEnds = [];
+    autoPlay = true;
+    P.bgTheme = 0;
+    switchSylvanTheme(0);
+    document.querySelectorAll('.bg-theme-dot').forEach(function (d, idx) {
+      d.classList.toggle('active', idx === 0);
+    });
+    if (P.bgMusicOn) audioEngine.playLevelBGM(0);
+    refreshLevelTargetHUD();
+    refreshWavePhaseHUD();
+  }
+
+  function completeTutorialAndStartLevelOne() {
+    resetTutorialState();
+    gameFrames = 0;
+    webOverride = createWebOverrideForLevel(0);
+    buildWeb();
+    buildSpider();
+    startLevel(0);
+  }
+
   /* helper: get level/wave cfg with current difficulty */
-  function getLevelCfgAt(n) { return getLevelCfg(n, difficultyLevel); }
+  function getLevelCfgAt(n) {
+    if (tutorialActive) {
+      return { targets: cloneJson(tutorialTargets), waves: [] };
+    }
+    return getLevelCfg(n, difficultyLevel);
+  }
   function getWaveCfgAt(levelIndex, waveIndex) { return getWaveCfg(levelIndex, waveIndex, difficultyLevel); }
 
   function refreshWavePhaseHUD() {
@@ -845,6 +1122,11 @@ window.onload = function () {
     if (!el) return;
     if (gameState !== 'LEVEL_ACTIVE') {
       el.style.display = 'none';
+      return;
+    }
+    if (tutorialActive && tutorialController.isActive()) {
+      el.style.display = 'block';
+      el.textContent = 'TUTORIAL';
       return;
     }
     var phaseLabel = currentWavePhase === WAVE_PAUSE ? 'PAUSE'
@@ -922,16 +1204,20 @@ window.onload = function () {
     });
   }
 
-  /* ── show IDLE start screen ── */
-  showOverlay(
-    '<div class="overlay-title">SPIDER WEB</div>'
-    + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
-    + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
-    + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
-    + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px;display:none" id="btn-gameplay-test">Gameplay Test</button>'
-  );
-  document.getElementById('btn-start-game').onclick = startGameFromBeginning;
-  document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
+  /* ── show IDLE start screen (or auto-launch tutorial via ?tutorial=1) ── */
+  if (_urlSearchParams.get('tutorial') === '1') {
+    startTutorial();
+  } else {
+    showOverlay(
+      '<div class="overlay-title">SPIDER WEB</div>'
+      + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
+      + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
+      + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
+      + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px;display:none" id="btn-gameplay-test">Gameplay Test</button>'
+    );
+    document.getElementById('btn-start-game').onclick = startGameFromBeginning;
+    document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
+  }
 
   function pickObjectAt(x, y) {
     for (var i = thrownObjects.length - 1; i >= 0; i--) {
@@ -1131,6 +1417,7 @@ window.onload = function () {
   }
 
   function isTargetObjectChaseable(obj) {
+    if (isTutorialActive() && !isTutorialInsectKind(obj.kind)) return false;
     return !!(
       obj
       && thrownObjects.indexOf(obj) !== -1
@@ -1228,6 +1515,7 @@ window.onload = function () {
   }
 
   function startGame() {
+    resetTutorialState();
     wrappingTarget = null;
     repairQueue = [];
     target = null;
@@ -1262,6 +1550,7 @@ window.onload = function () {
   }
 
   function startLevel(n) {
+    if (!tutorialActive) resetTutorialState();
     wrappingTarget = null;
     repairQueue = [];
     target = null;
@@ -1388,6 +1677,7 @@ window.onload = function () {
   }
 
   function checkLevelComplete() {
+    if (tutorialActive) return;
     var cfg = getLevelCfgAt(currentLevelIndex);
     var done = ['boulder', 'bug'].every(function (k) {
       return levelCollected[k] >= (cfg.targets[k] || 0);
@@ -1499,6 +1789,7 @@ window.onload = function () {
     }
     spiderweb.particles = _newParticles;
     brokenEnds = _newBroken;
+    notifyTutorialStubIfNeeded();
   }
 
   function tickWebRescan() {
@@ -1793,6 +2084,12 @@ window.onload = function () {
     _refreshBrokenEnds();
     webScanPending = 3;
     _webScanIsRepair = true;
+    if (isTutorialActive()) {
+      _tutorialRepairDragDone = true;
+      _tutorialRepairPending = true;
+      tutorialController.handleEvent('repair_drag_completed');
+      processTutorialActions();
+    }
   }
 
   /**
@@ -1810,6 +2107,11 @@ window.onload = function () {
 
   /* 注册修复回调 */
   sim.onRepairDrop = repairWeb;
+  sim.onDragStart = function (entity) {
+    if (!isTutorialActive() || !entity || !entity.__isStub) return;
+    tutorialController.handleEvent('repair_drag_started');
+    processTutorialActions();
+  };
 
   function checkWebIntegrity() {
     if (gameState !== 'LEVEL_ACTIVE') return;
@@ -1856,7 +2158,7 @@ window.onload = function () {
         }
       }
     }
-    if (webLossPct >= 50) showGameOver();
+    if (webLossPct >= 50 && !tutorialActive) showGameOver();
   }
 
   /* ── Timer & spawner ── */
@@ -1893,7 +2195,7 @@ window.onload = function () {
   }
 
   function updateLevelSpawner() {
-    if (gameState !== 'LEVEL_ACTIVE') return;
+    if (gameState !== 'LEVEL_ACTIVE' || tutorialActive) return;
     var levelCfg = getLevelCfgAt(currentLevelIndex);
     var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
     wavePhaseTimer += _currentTimeScale;
@@ -1937,8 +2239,102 @@ window.onload = function () {
 
   /* ── Object management ── */
   function updateBadge(kind, delta) {
-    objCounts[kind] = Math.max(0, objCounts[kind] + delta);
-    document.getElementById('cnt-' + kind).textContent = objCounts[kind];
+    objCounts[kind] = Math.max(0, (objCounts[kind] || 0) + delta);
+    var badgeEl = document.getElementById('cnt-' + kind);
+    if (badgeEl) badgeEl.textContent = objCounts[kind];
+  }
+
+  function directWebBreakAt(x, y, breakR) {
+    if (!spiderweb || !(breakR > 0)) return 0;
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    var breakFlashes = tutorialActive ? [] : webBreakFlashes;
+    var broke = breakWebInRadius(
+      x, y, breakR,
+      spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), true, tutorialActive ? 1 : undefined
+    );
+    if (broke === 0 && tutorialActive) {
+      broke = breakWebInRadius(
+        x, y, breakR * 1.45,
+        spiderweb, breakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts(), false, 1
+      );
+    }
+    if (broke > 0) {
+      if (tutorialActive) {
+        applyWebImpactKick(spiderweb.particles, x, y, breakR * 1.18, Math.max(2.4, breakR * 0.08));
+      }
+      spiderweb._topologyVersion = (spiderweb._topologyVersion || 0) + 1;
+      webScanPending = Math.max(webScanPending, 12);
+      _webScanIsRepair = false;
+      if (_webDrawApi && !tutorialActive) {
+        for (var fi = 0; fi < webBreakFlashes.length; fi++) {
+          if (!webBreakFlashes[fi].affectedCI) _webDrawApi.annotateFlash(webBreakFlashes[fi]);
+        }
+      }
+      _refreshBrokenEnds();
+      notifyTutorialStubIfNeeded();
+    }
+    return broke;
+  }
+
+  function beginTutorialStoneImpact(obj, x, y, stoneR) {
+    tutorialStoneImpact = createTutorialStoneImpact(x, y, stoneR);
+    tutorialStoneImpact.stoneObj = obj;
+    tutorialStoneImpact.breakScale = obj._tutorialBreakScale || 1.18;
+    obj._tutorialPullTension = 0.01;
+  }
+
+  function updateTutorialStoneImpactFollow(dt) {
+    if (!tutorialStoneImpact || tutorialStoneImpact.phase !== 'pull') return;
+    var stone = tutorialStoneImpact.stoneObj;
+    if (!stone || !stone.particle) return;
+    tutorialStoneImpact.x = tutorialStoneImpact.anchorX;
+    tutorialStoneImpact.y = tutorialStoneImpact.anchorY;
+    var progress = tutorialStoneImpact.timer / TUTORIAL_STONE_PULL_FRAMES;
+    stone._tutorialPullTension = Math.min(1, 0.15 + progress * 0.95);
+    applyWebPullTowardPoint(
+      spiderweb.particles,
+      tutorialStoneImpact.x,
+      tutorialStoneImpact.y,
+      tutorialStoneImpact.r * (tutorialStoneImpact.breakScale || 1.18),
+      progress,
+      dt || 1
+    );
+    var tick = tickTutorialStoneImpact(tutorialStoneImpact, dt || 1);
+    tutorialStoneImpact = tick.impact;
+    if (tick.shouldBreak) {
+      directWebBreakAt(
+        tutorialStoneImpact.x,
+        tutorialStoneImpact.y,
+        tutorialStoneImpact.r * (tutorialStoneImpact.breakScale || 1.18),
+        tutorialStoneImpact.forcedStubCount
+      );
+      if (stone) {
+        stone._holePunched = true;
+        stone._tutorialPullTension = 0;
+        stone.state = 'falling2';
+        stone.alpha = 1;
+        stone.grav = Math.max(stone.grav || 0, 5.6);
+        stone.spawnVx = 0;
+        stone.spawnVy = 14.5;
+        stone.particle.lastPos.x = stone.particle.pos.x;
+        stone.particle.lastPos.y = stone.particle.pos.y - stone.spawnVy;
+      }
+      tutorialStoneImpact = null;
+    }
+  }
+
+  /**
+   * 教学关：石头进入网区后先拉扯网线，再在石头半径内真实破网。
+   */
+  function tryBeginTutorialStoneImpact(obj, prevX, prevY, nextX, nextY) {
+    if (!tutorialActive || !obj || obj.kind !== 'stone' || obj._tutorialTag !== 'breaker') return;
+    if (obj.state !== 'falling' || obj._holePunched || (tutorialStoneImpact && tutorialStoneImpact.phase !== 'done') || !spiderweb) return;
+    var stoneR = obj.def && obj.def.r > 0 ? obj.def.r : 80;
+    var reachedWebBand = nextY >= (webCy - webRad * 0.06);
+    var withinWebWidth = Math.abs(nextX - webCx) <= (webRad * 0.78 + stoneR * 0.2);
+    if (!(reachedWebBand && withinWebWidth)) return;
+    var impactPoint = resolveTutorialStoneImpactPoint((prevX + nextX) * 0.5, (prevY + nextY) * 0.5, webCx, webCy, webRad);
+    beginTutorialStoneImpact(obj, impactPoint.x, impactPoint.y, stoneR);
   }
 
   function launchObject(kind) {
@@ -1973,6 +2369,10 @@ window.onload = function () {
       silkCount += (typeof SCORE_MULT[kind] === 'number' ? SCORE_MULT[kind] : 1) * delta;
       refreshSilkHUD();
       refreshWaveHUD(kind, gameState, getLevelCfgAt, currentLevelIndex, levelCollected);
+      if (isTutorialActive() && kind === 'boulder') {
+        tutorialController.handleEvent('object_collected', { kind: kind });
+        processTutorialActions();
+      }
       pendingLevelCheck = true;
     } else {
       var el = document.getElementById('inv-' + kind + '-count');
@@ -2157,6 +2557,7 @@ window.onload = function () {
     for (var oi = 0; oi < thrownObjects.length; oi++) {
       var obj = thrownObjects[oi];
       if (priorityObj && obj !== priorityObj) continue;
+      if (isTutorialActive() && !isTutorialInsectKind(obj.kind)) continue;
       if (obj.playerDragging) continue;
       if (obj.state !== 'stuck') continue;
       var p = obj.particle.pos;
@@ -2191,7 +2592,9 @@ window.onload = function () {
       var def = obj.def, p = obj.particle;
 
       if (obj.state === 'falling') {
-        if (obj.kind === 'boulder' || obj.kind === 'poop') {
+        if (obj.kind === 'boulder' || obj.kind === 'poop' || obj.kind === 'stone') {
+          var stonePrevX = p.pos.x;
+          var stonePrevY = p.pos.y;
           obj.segT += 0.22 * _currentTimeScale;
           var bGrav = obj.grav * 2.6 * _currentTimeScale;
           var driftX = (obj.spawnVx || 0) * _currentTimeScale;
@@ -2202,6 +2605,9 @@ window.onload = function () {
           p.lastPos.y = p.pos.y - (driftY + bGrav);
           obj.spawnVx = (obj.spawnVx || 0) * 0.985;
           obj.spawnVy = (obj.spawnVy || 0) * 0.985;
+          if (obj.kind === 'stone' && !obj._holePunched && obj._tutorialTag === 'breaker' && tutorialActive) {
+            tryBeginTutorialStoneImpact(obj, stonePrevX, stonePrevY, p.pos.x, p.pos.y);
+          }
         } else if (obj.kind === 'bug') {
           var bx = obj.baseVx + Math.sin(obj.animT * obj.buzzFreqX + obj.buzzPhaseX) * obj.buzzAmp * 0.08
             + Math.cos(obj.animT * obj.buzzFreqX * 1.7 + obj.buzzPhaseX) * obj.buzzAmp * 0.04
@@ -2475,11 +2881,18 @@ window.onload = function () {
           obj.vy += obj.grav * 0.08;
           p.pos.x += obj.vx;
           p.pos.y += obj.vy;
+        } else if (obj.kind === 'stone') {
+          p.pos.y += (obj.spawnVy || obj.grav || 0) * _currentTimeScale;
+          obj.spawnVy = (obj.spawnVy || obj.grav || 0) + 0.24 * _currentTimeScale;
         } else {
           p.pos.y += obj.grav * _currentTimeScale;
         }
         if (obj.kind === 'poop') {
           if (p.pos.y > H + 80 || p.pos.x < -90 || p.pos.x > W + 90) {
+            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
+          }
+        } else if (obj.kind === 'stone') {
+          if (p.pos.y > H + 520 || p.pos.x < -220 || p.pos.x > W + 220) {
             obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
           }
         } else {
@@ -2508,6 +2921,10 @@ window.onload = function () {
           audioEngine.playCollectSound(obj.kind);
           var packedFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
           playFloatingText(packedFxPos.x, packedFxPos.y, collectLayer, 'Packed');
+          if (isTutorialActive() && isTutorialInsectKind(obj.kind)) {
+            tutorialController.handleEvent('object_wrapped', { kind: obj.kind });
+            processTutorialActions();
+          }
         }
 
       } else if (obj.state === 'wrapped') {
@@ -2831,7 +3248,8 @@ window.onload = function () {
       if (levelIndex !== currentLevelIndex || waveIndex !== currentWaveIndex) return;
       if (path === 'label' || path === 'question' || path === 'notes') return;
       restartCurrentWaveFromEditor();
-    }
+    },
+    startTutorial: startTutorial
   });
 
   /* ── 调试：手动触发 collapseChain ── */
@@ -3463,6 +3881,9 @@ window.onload = function () {
 
     if (!_isBulletTime) {
       integrateThrownObjects();
+      if (tutorialStoneImpact && tutorialStoneImpact.phase === 'pull') {
+        updateTutorialStoneImpactFollow(timeScale);
+      }
       if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
       queryThrownStick();
     }
@@ -3509,6 +3930,13 @@ window.onload = function () {
 
     /* wave system + 投掷物更新：子弹时间时全部冻结 */
     if (!_isBulletTime) {
+      if (isTutorialActive()) {
+        tutorialController.tick(timeScale);
+        processTutorialActions();
+        tickTutorialSpawnQueue(timeScale);
+        updateTutorialFocusPrompt();
+        notifyTutorialRepairFinishedIfNeeded();
+      }
       updateLevelTimer();
       updateLevelSpawner();
       checkWebIntegrity();

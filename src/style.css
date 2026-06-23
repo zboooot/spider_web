@@ -428,6 +428,51 @@ canvas{
 .panel-level-conditions{
   width:180px;
 }
+.tutorial-hint{
+  position:absolute;
+  left:50%;
+  bottom:18px;
+  transform:translateX(-50%);
+  max-width:92%;
+  padding:10px 16px;
+  border-radius:10px;
+  background:rgba(18,28,22,0.82);
+  border:1px solid rgba(120,200,150,0.35);
+  color:#e8f5ec;
+  font-size:0.82em;
+  line-height:1.45;
+  text-align:center;
+  pointer-events:none;
+  z-index:12;
+  box-shadow:0 6px 18px rgba(0,0,0,0.28);
+}
+.tutorial-focus-overlay{
+  position:absolute;
+  inset:0;
+  z-index:11;
+  pointer-events:none;
+  background:radial-gradient(circle at var(--focus-x, 50%) var(--focus-y, 50%), rgba(0,0,0,0) 0 calc(var(--focus-r, 72px) - 10px), rgba(0,0,0,0.82) calc(var(--focus-r, 72px) + 6px));
+}
+.tutorial-focus-icon{
+  position:absolute;
+  left:var(--focus-x, 50%);
+  top:calc(var(--focus-y, 50%) - var(--focus-r, 72px) - 18px);
+  width:34px;
+  height:34px;
+  margin-left:-17px;
+  margin-top:-17px;
+  border-radius:50%;
+  background:rgba(255,255,255,0.92);
+  color:#223126;
+  font-size:18px;
+  font-weight:700;
+  line-height:34px;
+  text-align:center;
+  box-shadow:0 6px 18px rgba(0,0,0,0.28);
+}
+.tutorial-focus-icon::before{
+  content:'↕';
+}
 .panel-title{
   font-size:0.68em;
   text-transform:uppercase;
