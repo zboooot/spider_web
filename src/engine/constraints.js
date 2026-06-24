@@ -20,6 +20,19 @@ DistanceConstraint.prototype.relax = function (sc) {
   var s = ((this.distance * this.distance - m) / m) * this.stiffness * sc;
   _dcScratch.x *= s;
   _dcScratch.y *= s;
+  var aPinned = !!this.a.pinned;
+  var bPinned = !!this.b.pinned;
+  if (aPinned && bPinned) return;
+  if (aPinned) {
+    this.b.pos.x -= _dcScratch.x * 2;
+    this.b.pos.y -= _dcScratch.y * 2;
+    return;
+  }
+  if (bPinned) {
+    this.a.pos.x += _dcScratch.x * 2;
+    this.a.pos.y += _dcScratch.y * 2;
+    return;
+  }
   this.a.pos.x += _dcScratch.x;
   this.a.pos.y += _dcScratch.y;
   this.b.pos.x -= _dcScratch.x;
@@ -44,6 +57,7 @@ export function PinConstraint(a, pos) {
 
 PinConstraint.prototype.relax = function () {
   this.a.pos.mutableSet(this.pos);
+  this.a.lastPos.mutableSet(this.pos);
 };
 
 PinConstraint.prototype.draw = function (ctx) {

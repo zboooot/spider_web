@@ -740,6 +740,16 @@ window.onload = function () {
   /* ── web override ── */
   var webOverride = null;
   var webCx = 0, webCy = 0, webRad = 1;
+  var WEB_VIEWPORT_PAD = 10;
+
+  function _webViewportBounds() {
+    return {
+      left: WEB_VIEWPORT_PAD,
+      top: WEB_VIEWPORT_PAD,
+      right: W - WEB_VIEWPORT_PAD,
+      bottom: H - WEB_VIEWPORT_PAD
+    };
+  }
 
   function buildWeb() {
     if (spiderweb) {
@@ -759,7 +769,8 @@ window.onload = function () {
       spiralStiffnessMul: 0.85,
       radialTensorMul: 0.85,
       spiralTensorMul: 1.0,
-      centerTensionBoost: 0.08
+      centerTensionBoost: 0.08,
+      viewportBounds: _webViewportBounds()
     });
     sim.gravityComposite = spiderweb;
     webCx = ocx; webCy = ocy; webRad = rad;
