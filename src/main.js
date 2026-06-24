@@ -357,8 +357,14 @@ window.onload = function () {
   sim.hasObjectAt = function (x, y) {
     for (var i = thrownObjects.length - 1; i >= 0; i--) {
       var obj = thrownObjects[i];
-      if (!obj || obj.state !== 'stuck') continue;
-      var r = obj.def ? obj.def.r * 2.2 : 16;
+      if (!obj) continue;
+      /* wrapped 物体和 stuck poop 优先于 stub（能真正拽走的） */
+      var isHighPriority = obj.state === 'wrapped'
+        || (obj.state === 'stuck' && obj.kind === 'poop');
+      if (!isHighPriority) continue;
+      var r = obj.state === 'wrapped'
+        ? _getWrappedPickupRadius(obj)
+        : (obj.def ? obj.def.r * 2.2 : 16);
       var dx = obj.particle.pos.x - x;
       var dy = obj.particle.pos.y - y;
       if (dx * dx + dy * dy <= r * r) return true;
@@ -440,7 +446,7 @@ window.onload = function () {
         bestOtherD2 = d2;
       }
     }
-    return bestWebDrag || bestOther;
+    return bestOther || bestWebDrag;
   }
 
   function _findWrappedPreyAt(clientX, clientY) {
@@ -454,9 +460,14 @@ window.onload = function () {
   };
 
   function _beginWrappedPickup(clientX, clientY) {
-    if (sim.draggedEntity && sim.draggedEntity.__isStub) return false;
     var hit = _findWrappedPreyAt(clientX, clientY);
     if (!hit) return false;
+    /* wrapped 和 stuck poop 优先于 stub；stuck web-drag 类（boulder/bug/drop）不覆盖 stub */
+    if (sim.draggedEntity && sim.draggedEntity.__isStub) {
+      var isHighPriority = hit.obj.state === 'wrapped'
+        || (hit.obj.state === 'stuck' && hit.obj.kind === 'poop');
+      if (!isHighPriority) return false;
+    }
     sim.draggedEntity = null;
     sim.snapTarget = null;
     if (
