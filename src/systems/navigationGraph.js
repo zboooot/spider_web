@@ -504,7 +504,71 @@ export function pickReachableNavNode(fromX, fromY, spiderweb, spatialOpts, maxHo
 }
 
 export function getFootSearchRadiusForTier(tier) {
+  if (tier >= 3) return 88;
   if (tier >= 2) return 72;
   if (tier >= 1) return 56;
   return 42;
+}
+
+/**
+ * 从简化路径中提取下一个「拐点」提示，供躯干轻微转向（头仍朝最终目标）。
+ */
+export function getNavSteerHint(spiderX, spiderY, goalX, goalY, path) {
+  if (!path || path.length < 2) return null;
+
+  var anchorIdx = 0;
+  var anchorD2 = Infinity;
+  for (var i = 0; i < path.length; i++) {
+    var d2 = _dist2(spiderX, spiderY, path[i].x, path[i].y);
+    if (d2 < anchorD2) {
+      anchorD2 = d2;
+      anchorIdx = i;
+    }
+  }
+
+  while (anchorIdx < path.length - 2) {
+    var wp = path[anchorIdx];
+    var next = path[anchorIdx + 1];
+    var sx = next.x - wp.x;
+    var sy = next.y - wp.y;
+    var sl2 = sx * sx + sy * sy;
+    if (sl2 < 1) {
+      anchorIdx++;
+      continue;
+    }
+    var t = ((spiderX - wp.x) * sx + (spiderY - wp.y) * sy) / sl2;
+    if (t > 1.02) anchorIdx++;
+    else break;
+  }
+
+  for (var j = Math.max(anchorIdx + 1, 1); j < path.length; j++) {
+    if (j >= path.length - 1) return { x: goalX, y: goalY };
+    var prev = path[j - 1];
+    var cur = path[j];
+    var nxt = path[j + 1];
+    var a1x = cur.x - prev.x;
+    var a1y = cur.y - prev.y;
+    var a2x = nxt.x - cur.x;
+    var a2y = nxt.y - cur.y;
+    var l1 = Math.sqrt(a1x * a1x + a1y * a1y) || 1;
+    var l2 = Math.sqrt(a2x * a2x + a2y * a2y) || 1;
+    var dot = (a1x / l1) * (a2x / l2) + (a1y / l1) * (a2y / l2);
+    if (dot < 0.9) return { x: cur.x, y: cur.y };
+  }
+
+  return { x: goalX, y: goalY };
+}
+
+/**
+ * 是否已到达导航目标（躯干距目标 + 当前位置在网线上贴近目标）
+ */
+export function hasReachedNavGoal(spiderX, spiderY, goalX, goalY, spiderweb, spatialOpts, arriveR) {
+  arriveR = arriveR != null ? arriveR : 16;
+  if (_dist2(spiderX, spiderY, goalX, goalY) <= arriveR * arriveR) return true;
+  var onWeb = findNearestNavPoint(spiderX, spiderY, spiderweb, spatialOpts);
+  if (!onWeb) return false;
+  var goalNearWeb = _dist2(onWeb.x, onWeb.y, goalX, goalY);
+  var spiderNearWeb = _dist2(spiderX, spiderY, onWeb.x, onWeb.y);
+  var tol = arriveR + 5;
+  return goalNearWeb <= tol * tol && spiderNearWeb <= tol * tol;
 }

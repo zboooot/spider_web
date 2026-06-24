@@ -8,7 +8,9 @@ import {
   findNearestNavPoint,
   findNavPath,
   resolveActiveWaypointIndex,
-  invalidateNavCache
+  invalidateNavCache,
+  getNavSteerHint,
+  hasReachedNavGoal
 } from '../src/systems/navigationGraph.js';
 
 function makeParticle(x, y) {
@@ -83,6 +85,29 @@ test('resolveActiveWaypointIndex can lookahead to a farther corner', function ()
   ];
   var idx = resolveActiveWaypointIndex(path, 0, 18, 2, 8);
   assert.ok(idx >= 1);
+});
+
+test('getNavSteerHint returns next corner on an L-shaped path', function () {
+  var path = [
+    { x: 0, y: 0 },
+    { x: 40, y: 0 },
+    { x: 40, y: 40 }
+  ];
+  var hint = getNavSteerHint(10, 0, 40, 40, path);
+  assert.ok(hint);
+  assert.equal(hint.x, 40);
+  assert.equal(hint.y, 0);
+});
+
+test('hasReachedNavGoal accepts close thorax or on-web proximity', function () {
+  invalidateNavCache();
+  var a = makeParticle(0, 0);
+  var b = makeParticle(20, 0);
+  var edge = new DistanceConstraint(a, b, 1, 20);
+  var spiderweb = { constraints: [{ a: a }, edge], _topologyVersion: 6 };
+
+  assert.equal(hasReachedNavGoal(18, 1, 19, 0, spiderweb, null, 16), true);
+  assert.equal(hasReachedNavGoal(0, 0, 80, 0, spiderweb, null, 16), false);
 });
 
 test('resolveNavigation falls back to nearest reachable point', function () {
