@@ -86,6 +86,8 @@ var _recordingStartedAt = null;
 var _diagModeAtStart = false;
 var _contextGetter = null;
 var _longTaskTotal = 0;
+var _longTaskMsTotal = 0;
+var _heapSupported = false;
 
 var _live = {
   frameMs: [],
@@ -96,6 +98,7 @@ var _live = {
   logicStepsMax: 0,
   backlogMax: 0,
   droppedCatchup: 0,
+  betweenFramePauses: 0,
   p95Ms: 0,
   maxMs: 0
 };
@@ -132,6 +135,12 @@ function _newSecondBucket(secIndex) {
     spikesGt50: 0,
     droppedCatchup: 0,
     longTasks: 0,
+    longTaskMs: 0,
+    betweenFramePauses: 0,
+    betweenFramePauseMs: 0,
+    inFrameUntaggedMs: [],
+    heapStartMb: null,
+    heapEndMb: null,
     drawCalls: [],
     lines: [],
     faces: [],
@@ -173,6 +182,21 @@ function _profileFromSums(profileSums, frameCount) {
   }
   out.jsMeasuredMs = Math.round(total * 10) / 10;
   return out;
+}
+
+function _heapMb() {
+  try {
+    if (performance.memory && performance.memory.usedJSHeapSize) {
+      return Math.round(performance.memory.usedJSHeapSize / 104857.6) / 10;
+    }
+  } catch (e) { /* unavailable on iOS Safari */ }
+  return null;
+}
+
+function _taggedFrameMs() {
+  var sum = 0;
+  for (var i = 0; i < _PROF_ORDER.length; i++) sum += _prof.frame[_PROF_ORDER[i]] || 0;
+  return sum;
 }
 
 function _gameContext() {
@@ -228,7 +252,17 @@ function _compactSecond(bucket) {
       untaggedMs: Math.round(Math.max(0, avgWork - taggedMs) * 10) / 10,
       profile: profile
     },
-    longTasks: bucket.longTasks,
+    runtime: {
+      longTasks: bucket.longTasks,
+      longTaskMs: Math.round((bucket.longTaskMs || 0) * 10) / 10,
+      betweenFramePauses: bucket.betweenFramePauses,
+      betweenFramePauseMs: Math.round((bucket.betweenFramePauseMs || 0) * 10) / 10,
+      inFrameUntaggedMs: Math.round(_avg(bucket.inFrameUntaggedMs) * 10) / 10,
+      heapMb: bucket.heapEndMb,
+      heapDeltaMb: bucket.heapStartMb != null && bucket.heapEndMb != null
+        ? Math.round((bucket.heapEndMb - bucket.heapStartMb) * 10) / 10
+        : null
+    },
     game: _gameContext()
   };
 }
@@ -269,18 +303,27 @@ function _resetLiveWindow() {
   _live.logicStepsMax = 0;
   _live.backlogMax = 0;
   _live.droppedCatchup = 0;
+  _live.betweenFramePauses = 0;
   _live.p95Ms = 0;
   _live.maxMs = 0;
   _live.windowStartPerf = _nowPerf();
 }
 
 function _initLongTaskObserver() {
+  _heapSupported = _heapMb() != null;
   if (typeof PerformanceObserver === 'undefined') return;
   try {
     var obs = new PerformanceObserver(function (list) {
       var entries = list.getEntries();
-      _longTaskTotal += entries.length;
-      if (_sec) _sec.longTasks += entries.length;
+      for (var ei = 0; ei < entries.length; ei++) {
+        var dur = entries[ei].duration || 0;
+        _longTaskTotal++;
+        _longTaskMsTotal += dur;
+        if (_sec) {
+          _sec.longTasks++;
+          _sec.longTaskMs += dur;
+        }
+      }
     });
     obs.observe({ entryTypes: ['longtask'] });
   } catch (e) { /* Safari may not support longtask */ }
@@ -475,6 +518,8 @@ function _buildSummary(seconds) {
   var spike50 = 0;
   var frameMax = 0;
   var workMax = 0;
+  var longTaskMs = 0;
+  var betweenFramePauses = 0;
   var worstSec = null;
   var statesSeen = {};
   var levelLabels = {};
@@ -485,6 +530,10 @@ function _buildSummary(seconds) {
       workVals.push(row.timing.workMs.avg || 0);
       utilVals.push(row.timing.utilPct || 0);
       if ((row.timing.workMs.max || 0) > workMax) workMax = row.timing.workMs.max;
+    }
+    if (row.runtime) {
+      longTaskMs += row.runtime.longTaskMs || 0;
+      betweenFramePauses += row.runtime.betweenFramePauses || 0;
     }
     spike33 += row.spikes.gt33 || 0;
     spike50 += row.spikes.gt50 || 0;
@@ -507,6 +556,8 @@ function _buildSummary(seconds) {
     workMsMax: workMax,
     workMsAvg: workVals.length ? Math.round(_avg(workVals) * 10) / 10 : 0,
     utilAvgPct: utilVals.length ? Math.round(_avg(utilVals) * 10) / 10 : 0,
+    longTaskMsTotal: Math.round(longTaskMs * 10) / 10,
+    betweenFramePausesTotal: betweenFramePauses,
     worstSec: worstSec,
     statesSeen: stateList,
     levelsSeen: levelList
@@ -527,6 +578,7 @@ export function statsBuildExportPackage() {
       waitMs: 'frameIntervalMs - workMs; idle until next frame, not render cost.',
       utilPct: 'workMs / frameIntervalMs; low util at 60fps is normal.',
       profile: 'Per-second average of instrumented sections; sums to taggedMs.',
+      runtime: 'GC is not exposed in browsers. longTask/betweenFramePause/heap are indirect proxies.',
       game: 'Snapshot at end of each second: level, wave phase, prey breakdown, flags.'
     },
     device: _deviceInfo(),
@@ -534,7 +586,9 @@ export function statsBuildExportPackage() {
       startedAt: _recordingStartedAt,
       diagnosticModeAtStart: _diagModeAtStart,
       diagnosticModeAtExport: _diagMode,
-      longTasksTotal: _longTaskTotal
+      longTasksTotal: _longTaskTotal,
+      longTaskMsTotal: Math.round(_longTaskMsTotal * 10) / 10,
+      heapSupported: _heapSupported
     },
     summary: _buildSummary(seconds),
     seconds: seconds
@@ -590,6 +644,19 @@ export function statsEndFrame(timestamp, workMs) {
     _trackFrameHitch(dt);
     _ensureSecondBucket();
     if (_sec._startedAt == null) _sec._startedAt = _nowPerf();
+    if (_sec.heapStartMb == null) _sec.heapStartMb = _heapMb();
+    _sec.heapEndMb = _heapMb();
+
+    var inFrameUntagged = Math.max(0, work - _taggedFrameMs());
+    if (inFrameUntagged > 0.5) _sec.inFrameUntaggedMs.push(inFrameUntagged);
+
+    var extraBetween = dt - work;
+    if (dt > 25 && extraBetween > 8) {
+      _sec.betweenFramePauses++;
+      _sec.betweenFramePauseMs += extraBetween;
+      _live.betweenFramePauses++;
+    }
+
     _sec.frameMs.push(dt);
     _sec.workMs.push(work);
     _sec.drawCalls.push(_frame.drawCalls);
@@ -662,8 +729,10 @@ function _diagHeaderLines() {
       + (dev.cores ? (' c' + dev.cores) : ''),
     lvl + ' ' + wave + ' ' + phase + ' ' + (game.state || '—') + prey,
     (flagTxt || '—') + '  ' + rec
-      + (_live.droppedCatchup ? (' drop' + _live.droppedCatchup) : '')
-      + '  LT' + _longTaskTotal
+      + (_live.droppedCatchup ? (' drop' + _live.droppedCatchup) : ''),
+    'LT ' + _longTaskTotal + '/' + Math.round(_longTaskMsTotal) + 'ms'
+      + '  extPaus ' + _live.betweenFramePauses
+      + (_heapSupported ? ('  heap' + _heapMb() + 'MB') : '  heap N/A')
   ];
 }
 
