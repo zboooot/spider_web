@@ -149,7 +149,7 @@ test('tutorial flow reaches handoff after two collections', function () {
   ctrl.start();
 
   var types = drainTypes(ctrl);
-  assert.ok(types.includes('show_message'));
+  assert.equal(types.length, 0);
 
   for (var i = 0; i < 180; i++) ctrl.tick(1);
   types = drainTypes(ctrl);

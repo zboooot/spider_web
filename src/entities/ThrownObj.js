@@ -767,35 +767,37 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
   var W = this._W, H = this._H; // set by main when creating
 
   if (this.kind === 'bug') {
-    this.state = 'falling';
-    this.grav = 0;
-    this.enteredWebZone = false;
-    this.hitHistory = [];
-    this._hitHistoryCount = 0;
-    this.penetrationDist = 0;
-    this.released = true;
+    this.state = 'falling2';
+    this.grav = 0.08;
+    this._disableRestick = true;
+    this.released = false;
     this._releaseFrame = this.animT;
-    this._escapeCount = (this._escapeCount || 0) + 1; /* 挣脱次数累计 */
-    this._reStickDelay = 160 + Math.floor(Math.random() * 120); /* 乱飞多少帧后重新找网 */
-    this._reStickTimer = 0;
+    this._escapeCount = (this._escapeCount || 0) + 1;
     var escapeAngle = Math.atan2(p.pos.y - H / 2, p.pos.x - W / 2) + (Math.random() - 0.5) * 1.2;
-    var escapeSpeed = 4 + Math.random() * 2.5;
-    this.baseVx = Math.cos(escapeAngle) * escapeSpeed;
-    this.baseVy = Math.sin(escapeAngle) * escapeSpeed;
+    var escapeSpeed = 4.8 + Math.random() * 2.8;
+    this.vx = Math.cos(escapeAngle) * escapeSpeed;
+    this.vy = Math.sin(escapeAngle) * escapeSpeed;
     this.buzzFreqX = 0.08 + Math.random() * 0.06;
     this.buzzFreqY = 0.07 + Math.random() * 0.05;
     this.buzzAmp = 10 + Math.random() * 8;
     this.buzzPhaseX = Math.random() * Math.PI * 2;
     this.buzzPhaseY = Math.random() * Math.PI * 2;
-    p.lastPos.x = p.pos.x - this.baseVx;
-    p.lastPos.y = p.pos.y - this.baseVy;
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
   } else {
     this.state = 'falling2';
-    p.lastPos.x = p.pos.x - currentVx;
+    this._disableRestick = true;
     var releaseKick = this.kind === 'boulder'
       ? this.def.weight * 0.405
       : this.def.weight * 0.45;
-    p.lastPos.y = p.pos.y - (currentVy + releaseKick);
+    var outwardX = p.pos.x - W * 0.5;
+    var outwardY = p.pos.y - H * 0.5;
+    var outwardLen = Math.sqrt(outwardX * outwardX + outwardY * outwardY) || 1;
+    var outwardKick = this.kind === 'boulder' ? 3.8 : 3.2;
+    this.vx = (outwardX / outwardLen) * outwardKick + currentVx * 0.55;
+    this.vy = (outwardY / outwardLen) * outwardKick + currentVy * 0.55 + releaseKick;
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
   }
 };
 
@@ -805,13 +807,14 @@ ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
   this.stuckOnConstraint = null;
   this.playerDragging = false;
   this.dragStrain = 0;
+  this._disableRestick = true;
   this.state = 'falling2';
   this.alpha = 1;
   var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
   var dirX = dragDx / len;
   var dirY = dragDy / len;
-  this.peelVx = dirX * 2.1;
-  this.peelVy = Math.min(0.5, dirY * 0.9) - 0.75;
+  this.peelVx = dirX * 3.4;
+  this.peelVy = Math.max(2.4, dirY * 1.15 + 2.0);
   this.vx = this.peelVx;
   this.vy = this.peelVy;
   p.lastPos.x = p.pos.x - this.peelVx;

@@ -297,7 +297,6 @@ export function createTutorialController(W, H, cx, cy) {
       insectTarget = TUTORIAL_TARGETS.boulder;
       resetWaveReadiness();
       actions = [];
-      showMessage('教学关：观察蛛网，稍后会有石头砸破网线并穿过去。');
     },
 
     tick: function (dt) {
@@ -306,7 +305,6 @@ export function createTutorialController(W, H, cx, cy) {
       if (phase === PHASE.INTRO_WAIT && frame >= INTRO_DELAY_FRAMES) {
         phase = PHASE.BREAKERS;
         pushAction('spawn_batch', { batch: buildBreakersBatch(W, H, cx, cy), label: 'breakers' });
-        showMessage('石头正在砸向蛛网。');
         return;
       }
       if (phase === PHASE.WAIT_REPAIR_SHOCK && frame >= REPAIR_SHOCK_FRAMES) {

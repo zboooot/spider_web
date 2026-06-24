@@ -6,13 +6,18 @@ export var SHARED_GAME_DEFAULTS = {
     "webStiff": 0.7,
     "radialWobbleScale": 0.55,
     "spiralWobbleScale": 1,
-    "moveSpeed": 8,
-    "stepSpeed": 0.18,
-    "wrapSpeed": 1,
-    "stepThresh": 10,
+    "moveSpeed": 3.5,
+    "idleMoveRatio": 0.06,
+    "idleStepThresh": 20,
+    "idleStepSpeed": 0.09,
+    "idleStepCooldown": 11,
+    "idleStepReach": 34,
+    "stepSpeed": 0.35,
+    "wrapSpeed": 2,
+    "stepThresh": 20,
     "restThresh": 66,
     "legStiff": 0.9,
-    "jointStiff": 0.65,
+    "jointStiff": 0.8,
     "stickDelayMin": 0.11,
     "stickDelayMax": 0.72,
     "stickCatchRadius": 11,
@@ -36,7 +41,7 @@ export var SHARED_GAME_DEFAULTS = {
     "bgPurity": 130,
     "bgYOffset": 13,
     "bgPart": 24,
-    "bgVol": 20,
+    "bgVol": 40,
     "bgMusicOn": 1,
     "bgLayoutVersion": 3,
     "stubReachRadius": 200,
@@ -58,8 +63,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.8,
             "poop": 0
           },
-          "catR": 4,
-          "flyR": 3,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 4,
@@ -67,7 +70,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 180,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -83,8 +86,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.4,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 5,
@@ -92,7 +93,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -108,8 +109,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.3,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 6,
@@ -117,7 +116,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         }
@@ -126,8 +125,6 @@ export var SHARED_GAME_DEFAULTS = {
     {
       "waves": [
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 4,
@@ -135,7 +132,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 180,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "label": "2-1 ",
           "question": "",
           "primaryPressure": "collection",
@@ -151,8 +148,6 @@ export var SHARED_GAME_DEFAULTS = {
           "fallingDuration": 1200
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 6,
           "burstMax": 7,
           "burstCount": 2,
@@ -160,7 +155,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 240,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "label": "2-2 ",
           "question": "",
           "primaryPressure": "collection",
@@ -176,8 +171,6 @@ export var SHARED_GAME_DEFAULTS = {
           "fallingDuration": 1200
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 6,
           "burstMax": 7,
           "burstCount": 3,
@@ -185,7 +178,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "label": "2-3",
           "question": "",
           "primaryPressure": "collection",
@@ -201,8 +194,6 @@ export var SHARED_GAME_DEFAULTS = {
           "fallingDuration": 1200
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 5,
@@ -210,7 +201,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "label": "2-4",
           "question": "",
           "primaryPressure": "collection",
@@ -226,8 +217,6 @@ export var SHARED_GAME_DEFAULTS = {
           "fallingDuration": 1200
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 5,
@@ -235,7 +224,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "label": "L2-5 Custom",
           "question": "",
           "primaryPressure": "collection",
@@ -255,8 +244,6 @@ export var SHARED_GAME_DEFAULTS = {
     {
       "waves": [
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstIntervalMin": 0,
@@ -264,7 +251,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 180,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 4,
           "label": "1-1 ",
           "question": "",
@@ -280,8 +267,6 @@ export var SHARED_GAME_DEFAULTS = {
           "burstInterval": 6
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstIntervalMin": 0,
@@ -289,7 +274,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 0,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 6,
           "label": "1-1 ",
           "question": "",
@@ -305,8 +290,6 @@ export var SHARED_GAME_DEFAULTS = {
           "burstInterval": 6
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstIntervalMin": 0,
@@ -314,7 +297,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 0,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 5,
           "label": "1-1 ",
           "question": "",
@@ -330,8 +313,6 @@ export var SHARED_GAME_DEFAULTS = {
           "burstInterval": 6
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 5,
           "burstMax": 7,
           "burstIntervalMin": 0,
@@ -339,7 +320,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 0,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 5,
           "label": "1-1 ",
           "question": "",
@@ -355,8 +336,6 @@ export var SHARED_GAME_DEFAULTS = {
           "burstInterval": 6
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstIntervalMin": 0,
@@ -364,7 +343,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 0,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 5,
           "label": "1-1 ",
           "question": "",
@@ -380,8 +359,6 @@ export var SHARED_GAME_DEFAULTS = {
           "burstInterval": 6
         },
         {
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 5,
           "burstMax": 7,
           "burstIntervalMin": 0,
@@ -389,7 +366,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstGap": 300,
           "firstBurstDelay": 0,
           "fallingDuration": 1200,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstCount": 5,
           "label": "1-1 ",
           "question": "",
@@ -420,8 +397,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.4,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 4,
@@ -429,7 +404,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 180,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -445,8 +420,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.1,
             "poop": 0.2
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 6,
@@ -454,7 +427,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -470,8 +443,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.1,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 5,
@@ -479,7 +450,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -495,8 +466,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.2,
             "poop": 0.05
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 5,
           "burstMax": 7,
           "burstCount": 6,
@@ -504,7 +473,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -520,8 +489,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.3,
             "poop": 0.2
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 6,
@@ -529,7 +496,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         }
@@ -549,8 +516,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.4,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 3,
           "burstMax": 4,
           "burstCount": 4,
@@ -558,7 +523,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 180,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -574,8 +539,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0,
             "poop": 0.2
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 6,
@@ -583,7 +546,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -599,8 +562,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.3,
             "poop": 0.2
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 5,
@@ -608,7 +569,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -624,8 +585,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.4,
             "poop": 0
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 5,
           "burstMax": 7,
           "burstCount": 5,
@@ -633,7 +592,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -649,8 +608,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.3,
             "poop": 0.2
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 4,
           "burstMax": 6,
           "burstCount": 5,
@@ -658,7 +615,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         },
@@ -674,8 +631,6 @@ export var SHARED_GAME_DEFAULTS = {
             "drop": 0.3,
             "poop": 0.1
           },
-          "catR": 6,
-          "flyR": 4,
           "burstMin": 5,
           "burstMax": 7,
           "burstCount": 5,
@@ -683,7 +638,7 @@ export var SHARED_GAME_DEFAULTS = {
           "burstIntervalMax": 60,
           "burstGap": 300,
           "firstBurstDelay": 0,
-          "pauseDuration": 600,
+          "pauseDuration": 360,
           "burstInterval": 6,
           "fallingDuration": 1200
         }

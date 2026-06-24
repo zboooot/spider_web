@@ -651,12 +651,39 @@ window.onload = function () {
   var _autoTarget = new Vec2(0, 0); /* 复用对象，避免每帧 GC */
   var spiderAI = createSpiderAI();
   var idleWanderActive = false;
+  var idleWanderSession = false;
+  var _idlePauseFootCooldown = 0;
+  var _idleBoredPhase = 'wander';
+  var _idleBoredTimer = 0;
+  var _idleBoredLimit = 0;
   var isGameplayTestMode = false;
+
+  function randomIdleBoredCycleFrames() {
+    return 180 + Math.floor(Math.random() * 121);
+  }
+
+  function resetIdleBoredCycle() {
+    _idleBoredPhase = 'wander';
+    _idleBoredTimer = 0;
+    _idleBoredLimit = randomIdleBoredCycleFrames();
+  }
+
+  function tickIdleBoredCycle(dt) {
+    _idleBoredTimer += dt || 1;
+    if (_idleBoredTimer < _idleBoredLimit) return _idleBoredPhase === 'bored';
+    _idleBoredTimer = 0;
+    _idleBoredLimit = randomIdleBoredCycleFrames();
+    _idleBoredPhase = _idleBoredPhase === 'bored' ? 'wander' : 'bored';
+    return _idleBoredPhase === 'bored';
+  }
+
+  resetIdleBoredCycle();
 
   function updateBlink() {
     var blinkInterval = blinkState.mood === 'crying'   ? 18 + Math.floor(Math.random() * 26)
                       : blinkState.mood === 'startled' ? 40 + Math.floor(Math.random() * 60)
                       : blinkState.mood === 'curious'  ? 120 + Math.floor(Math.random() * 180)
+                      : blinkState.mood === 'bored'    ? 150 + Math.floor(Math.random() * 210)
                       : 180 + Math.floor(Math.random() * 300);
     if (blinkState.blinking) {
       blinkState.t += 0.18;
@@ -679,7 +706,7 @@ window.onload = function () {
 
     if (blinkState.headShake > 0) {
       blinkState.headShake--;
-      blinkState.headShakeAmp *= 0.88;
+      blinkState.headShakeAmp *= 0.77;
     }
   }
 
@@ -904,6 +931,7 @@ window.onload = function () {
   var REPAIR_WORK_DUR = 50; /* 修复工作时长（帧），与树叶采集相同 */
   var autoPlay = true;      /* 自动寻路打包开关，默认开启 */
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
+  var POOP_STUN_FRAMES = 180;
   var poopStunTimer = 0;
   var _draggingPoop = null;
   var _poopPointerDown = null;
@@ -1117,6 +1145,11 @@ window.onload = function () {
     tutorialBlackoutEl.style.display = 'none';
   }
 
+  function clearPoopStun() {
+    poopStunTimer = 0;
+    if (!isTutorialActive() && blinkState.mood === 'shock') setSpiderMood('calm');
+  }
+
   function setSpiderMood(mood) {
     blinkState.mood = mood || 'calm';
     if (mood === 'crying') {
@@ -1277,7 +1310,7 @@ window.onload = function () {
     silkCount = 0;
     refreshSilkHUD();
     totalSilkCount = 0;
-    poopStunTimer = 0;
+    clearPoopStun();
     currentLevelIndex = 0;
     currentWaveIndex = 0;
     gameFrames = 0;
@@ -1527,12 +1560,20 @@ window.onload = function () {
       obj.dragStrain = 0;
     }
 
+    obj._disableRestick = true;
     if (obj.kind === 'drop' || obj.kind === 'poop') {
       obj.vx = currentVx;
       obj.vy = currentVy + detachKick;
+    } else if (obj.kind === 'boulder' || obj.kind === 'bug') {
+      var outwardX = p.pos.x - W * 0.5;
+      var outwardY = p.pos.y - H * 0.5;
+      var outwardLen = Math.sqrt(outwardX * outwardX + outwardY * outwardY) || 1;
+      var outwardKick = obj.kind === 'bug' ? 3.4 : 4.0;
+      obj.vx = (outwardX / outwardLen) * outwardKick + currentVx * 0.45;
+      obj.vy = (outwardY / outwardLen) * outwardKick + currentVy * 0.45 + detachKick;
     }
-    p.lastPos.x = p.pos.x - currentVx;
-    p.lastPos.y = p.pos.y - (currentVy + detachKick);
+    p.lastPos.x = p.pos.x - (obj.vx != null ? obj.vx : currentVx);
+    p.lastPos.y = p.pos.y - (obj.vy != null ? obj.vy : (currentVy + detachKick));
     return true;
   }
 
@@ -1689,7 +1730,8 @@ window.onload = function () {
     thrownObjects.splice(idx, 1);
     updateBadge(obj.kind, -1);
     target = null;
-    poopStunTimer = 180;
+    poopStunTimer = POOP_STUN_FRAMES;
+    setSpiderMood('shock');
     pauseAndClearCurrentTarget();
   }
 
@@ -1820,7 +1862,7 @@ window.onload = function () {
     silkCount = 0;
     refreshSilkHUD();
     totalSilkCount = 0;
-    poopStunTimer = 0;
+    clearPoopStun();
     currentLevelIndex = 0;
     currentWaveIndex = 0;
     gameFrames = 0;
@@ -1861,7 +1903,7 @@ window.onload = function () {
     levelTimer = 0;
     levelScored = false;
     pendingLevelCheck = false;
-    poopStunTimer = 0;
+    clearPoopStun();
     levelCollected = { boulder: 0, bug: 0, drop: 0 };
     inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
     clearAllObjects();
@@ -1935,7 +1977,7 @@ window.onload = function () {
     gameFrames = 0;
     silkCount = 0;
     refreshSilkHUD();
-    poopStunTimer = 0;
+    clearPoopStun();
     webOverride = createWebOverrideForLevel(currentLevelIndex);
     buildWeb(); buildSpider();
     startLevel(currentLevelIndex);
@@ -2861,6 +2903,10 @@ window.onload = function () {
   }
 
   function beginWrapping(obj) {
+    if (obj.kind === 'poop') {
+      handlePoopCapture(obj);
+      return;
+    }
     obj.state = 'wrapping';
     obj.wrapT = 0;
     obj.wrapDur = obj.def.wrapDur;
@@ -2945,13 +2991,30 @@ window.onload = function () {
       if (!circlesOverlap(thorax.x, thorax.y, 11, p.x, p.y, obj.def.collectRadius)
         && !circlesOverlap(abdomen.x, abdomen.y, 19, p.x, p.y, obj.def.collectRadius)) continue;
       if (obj.state === 'stuck') {
-        beginWrapping(obj);
+        if (obj.kind === 'poop') {
+          handlePoopCapture(obj);
+        } else {
+          beginWrapping(obj);
+        }
         return;
       }
     }
   }
 
   /* ── Stick system helper closures ── */
+  function _isThrownObjectOffScreen(x, y, kind) {
+    if (kind === 'stone') return y > H + 520 || x < -220 || x > W + 220;
+    if (kind === 'poop') return y > H + 80 || y < -80 || x < -90 || x > W + 90;
+    return y > H + 90 || y < -90 || x < -110 || x > W + 110;
+  }
+
+  function _removeThrownObjectAt(oi, obj) {
+    if (obj.kind === 'bug') audioEngine.stopBugBuzz(oi);
+    obj.destroy(sim);
+    thrownObjects.splice(oi, 1);
+    updateBadge(obj.kind, -1);
+  }
+
   function _radialRatioAt(x, y) { return radialRatioAt(x, y, W, H, P.webRadius * WEB_SCALE); }
   function _inWebZone(x, y) { return inWebZone(x, y, W, H, P.webRadius * WEB_SCALE); }
   function _getWebOuterR() { return getWebOuterR(W, H, P.webRadius * WEB_SCALE); }
@@ -3015,30 +3078,6 @@ window.onload = function () {
           if (p.pos.x > W + _wrap) { p.pos.x -= W + _wrap * 2; p.lastPos.x = p.pos.x - bx; }
           if (p.pos.y < -_wrap)   { p.pos.y += H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
           if (p.pos.y > H + _wrap) { p.pos.y -= H + _wrap * 2; p.lastPos.y = p.pos.y - by; }
-          /* 挣脱后乱飞一段再重新粘网（无限循环，飞出屏幕才消失） */
-          if (obj.released) {
-            obj._reStickTimer = (obj._reStickTimer || 0) + _currentTimeScale;
-            if (obj._reStickTimer >= (obj._reStickDelay || 80)) {
-              /* 完全重置粘网状态，允许再次被网捕获 */
-              obj.released = false;
-              obj._reStickTimer = 0;
-              obj.enteredWebZone = false;
-              obj.hitHistory = [];
-              obj.penetrationDist = 0;
-              obj.stickDelay = 0;
-              /* 重置 stayFrames，下次粘住后有正常停留时间 */
-              obj.stayFrames = obj.def.stayFrames;
-              /* 保留原本随机飞行行为，只给 baseVx/baseVy 加一个微弱的网中心偏移
-                 让苍蝇自然地偏向网而不是直线冲过去 */
-              var _tcx = W * 0.3 + Math.random() * W * 0.4;
-              var _tcy = H * 0.3 + Math.random() * H * 0.4;
-              var _ddx = _tcx - p.pos.x, _ddy = _tcy - p.pos.y;
-              var _dd = Math.sqrt(_ddx * _ddx + _ddy * _ddy) || 1;
-              var _bias = 0.6 + Math.random() * 0.4; /* 微弱偏移，不覆盖随机性 */
-              obj.baseVx = (_ddx / _dd) * _bias + (Math.random() - 0.5) * 2.0;
-              obj.baseVy = (_ddy / _dd) * _bias + (Math.random() - 0.5) * 2.0;
-            }
-          }
         } else {
           obj.angleVel += (Math.random() - 0.5) * obj.angleTurb;
           obj.angleVel *= obj.angleDrag;
@@ -3272,26 +3311,30 @@ window.onload = function () {
           var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
           obj.vx *= peelDragScale;
           obj.vy *= peelDragScale;
-          obj.vy += obj.grav * 0.34 * _currentTimeScale;
+          obj.vy += obj.grav * 0.55 * _currentTimeScale;
           p.pos.x += obj.vx * _currentTimeScale;
           p.pos.y += obj.vy * _currentTimeScale;
         } else if (obj.kind === 'stone') {
           p.pos.y += (obj.spawnVy || obj.grav || 0) * _currentTimeScale;
           obj.spawnVy = (obj.spawnVy || obj.grav || 0) + 0.24 * _currentTimeScale;
+        } else if (obj.kind === 'bug' || obj.kind === 'boulder') {
+          obj.vy += (obj.grav != null ? obj.grav : 0.22) * _currentTimeScale;
+          var fallVx = obj.vx || 0;
+          var fallVy = obj.vy || 0;
+          p.pos.x += fallVx * _currentTimeScale;
+          p.pos.y += fallVy * _currentTimeScale;
+          var fallDrag = Math.pow(obj.kind === 'bug' ? 0.994 : 0.99, _currentTimeScale);
+          obj.vx = fallVx * fallDrag;
+          obj.vy = fallVy * fallDrag;
+          if (obj.kind === 'bug') obj.wingT += 0.55 * _currentTimeScale;
         } else {
-          p.pos.y += obj.grav * _currentTimeScale;
+          obj.vy = (obj.vy || 0) + obj.grav * _currentTimeScale;
+          p.pos.x += (obj.vx || 0) * _currentTimeScale;
+          p.pos.y += obj.vy * _currentTimeScale;
         }
-        if (obj.kind === 'poop') {
-          if (p.pos.y > H + 80 || p.pos.x < -90 || p.pos.x > W + 90) {
-            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
-          }
-        } else if (obj.kind === 'stone') {
-          if (p.pos.y > H + 520 || p.pos.x < -220 || p.pos.x > W + 220) {
-            obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
-          }
-        } else {
-          obj.alpha = Math.max(0, obj.alpha - 0.016 * _currentTimeScale);
-          if (obj.alpha <= 0) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); }
+        if (_isThrownObjectOffScreen(p.pos.x, p.pos.y, obj.kind)) {
+          _removeThrownObjectAt(oi, obj);
+          continue;
         }
 
       } else if (obj.state === 'wrapping') {
@@ -3301,12 +3344,6 @@ window.onload = function () {
         if (obj.wrapT >= 1) {
           if (obj.kind === 'drop') {
             finishLeafWrap(obj);
-            continue;
-          }
-          if (obj.kind === 'poop') {
-            wrappingTarget = null;
-            if (autoPlay) _autoPlayPause = 24;
-            handlePoopCapture(obj);
             continue;
           }
           wrappingTarget = null;
@@ -3537,8 +3574,36 @@ window.onload = function () {
     }
   }
 
+  function updateIdlePauseFootTwitch() {
+    if (!idleWanderSession || !spiderAI.isIdlePaused()) {
+      _idlePauseFootCooldown = 0;
+      return;
+    }
+    if (_idlePauseFootCooldown > 0) {
+      _idlePauseFootCooldown--;
+      return;
+    }
+    _idlePauseFootCooldown = 18 + Math.floor(Math.random() * 34);
+    if (Math.random() > 0.42) return;
+    var twitchLegs = [];
+    for (var ti = 0; ti < footState.length; ti++) {
+      var tfs = footState[ti];
+      if (!tfs.stepping && tfs.cooldown <= 0) twitchLegs.push(ti);
+    }
+    if (!twitchLegs.length) return;
+    var twitchLeg = twitchLegs[Math.floor(Math.random() * twitchLegs.length)];
+    var twitchCooldown = P.idleStepCooldown != null ? P.idleStepCooldown : 11;
+    var twitchReach = P.idleStepReach != null ? P.idleStepReach : 34;
+    triggerStep(
+      twitchLeg, null, footState, spiderweb, spider, samplePoints, null,
+      twitchCooldown, twitchReach, true, _spatialOpts()
+    );
+    _idlePauseFootCooldown = 42 + Math.floor(Math.random() * 72);
+  }
+
   function updateFootTriggers() {
     if (poopStunTimer > 0) return;
+    updateIdlePauseFootTwitch();
     var spatialOpts = _spatialOpts();
     var gaitTarget = target || idleTarget;
     var isIdleGait = !target && !!idleTarget;
@@ -4253,12 +4318,14 @@ window.onload = function () {
       }
     }
 
-    /* ── idle wander：无任务目标时在网上随机走动（独立导航，不占用 task target） ── */
+    /* ── idle wander：无任务目标时走一段、停一下，再换方向（独立导航，不占用 task target） ── */
     idleTarget = null;
     idleWanderActive = false;
-    if (!isPoopStunned && !wrappingTarget && !isRepairing && !userPriorityTarget
+    idleWanderSession = false;
+    if (!isTutorialActive() && !isPoopStunned && !wrappingTarget && !isRepairing && !userPriorityTarget
         && gameState === 'LEVEL_ACTIVE' && !target && !_isBulletTime
         && _autoPlayPause <= 0 && !_spawnAnim.active) {
+      idleWanderSession = true;
       var _idleAiTarget = spiderAI.update(spider, spiderweb, thrownObjects, false, { idleMode: true });
       if (_idleAiTarget) {
         _autoTarget.x = _idleAiTarget.x;
@@ -4266,7 +4333,10 @@ window.onload = function () {
         idleTarget = _autoTarget;
         idleWanderActive = true;
       }
-      blinkState.mood = spiderAI.mood;
+      blinkState.mood = tickIdleBoredCycle(timeScale) ? 'bored' : spiderAI.mood;
+    } else {
+      resetIdleBoredCycle();
+      if (blinkState.mood === 'bored') blinkState.mood = 'calm';
     }
 
     /* body movement */
@@ -4434,7 +4504,11 @@ window.onload = function () {
       updateLevelTimer();
       updateLevelSpawner();
       checkWebIntegrity();
-      if (poopStunTimer > 0) poopStunTimer = Math.max(0, poopStunTimer - timeScale);
+      if (poopStunTimer > 0) {
+        poopStunTimer = Math.max(0, poopStunTimer - timeScale);
+        if (poopStunTimer > 0) blinkState.mood = 'shock';
+        else clearPoopStun();
+      }
       tryCollectObjects();
       if (pendingLevelCheck) { pendingLevelCheck = false; checkLevelComplete(); }
     }

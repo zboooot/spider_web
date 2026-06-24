@@ -24,6 +24,9 @@ worm02Img.src = '/src/assets/worm02.png';
 var leafImg = new Image();
 leafImg.src = '/src/assets/leaf.png';
 
+var poopImg = new Image();
+poopImg.src = '/src/assets/poop.png';
+
 var _priorityFlashCanvas = document.createElement('canvas');
 var _priorityFlashCtx = _priorityFlashCanvas.getContext('2d');
 
@@ -157,23 +160,15 @@ export function buildSilkSpiral(obj) {
       ? drawW * (wormImg.naturalHeight / wormImg.naturalWidth)
       : drawW * 1.509;
   } else {
-    drawW = r * 2.6;
-    drawH = r * 3.0;
-    img = document.createElement('canvas');
-    img.width = Math.ceil(drawW);
-    img.height = Math.ceil(drawH);
-    var pc = img.getContext('2d');
-    pc.translate(img.width * 0.5, img.height * 0.5);
-    pc.beginPath();
-    pc.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
-    pc.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
-    pc.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
-    pc.fillStyle = '#000';
-    pc.fill();
+    img = poopImg;
+    drawH = r * 3.2;
+    drawW = poopImg.complete && poopImg.naturalWidth > 0
+      ? drawH * (poopImg.naturalWidth / poopImg.naturalHeight)
+      : r * 2.6;
   }
   var cacheKey = obj.kind + '_' + Math.round(r * 10);
   if (!_silkSpiralCache[cacheKey]) {
-    if (obj.kind !== 'poop' && (!img.complete || img.naturalWidth === 0)) return null;
+    if (!img.complete || img.naturalWidth === 0) return null;
     var contour = _smoothContour(_extractContour(img, drawW, drawH, 180));
     _silkSpiralCache[cacheKey] = contour;
   }
@@ -209,6 +204,13 @@ function getRenderedObjectBounds(obj) {
       ? wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth)
       : def.r * 9.2;
     return { width: wormW, height: wormH };
+  }
+  if (obj.kind === 'poop') {
+    var poopH = def.r * 3.2;
+    var poopW = poopImg.complete && poopImg.naturalWidth > 0
+      ? poopH * (poopImg.naturalWidth / poopImg.naturalHeight)
+      : def.r * 2.6;
+    return { width: poopW, height: poopH };
   }
   return { width: def.r * 2, height: def.r * 2 };
 }
@@ -258,6 +260,12 @@ function drawObjectSpriteLocal(ctx, obj) {
       var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
       ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
     }
+    return;
+  }
+  if (obj.kind === 'poop' && poopImg.complete && poopImg.naturalWidth > 0) {
+    var poopH = def.r * 3.2;
+    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
+    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
   }
 }
 
@@ -279,10 +287,7 @@ export function buildCollectSnapshot(obj) {
   return { canvas: canvas, size: size };
 }
 
-function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
-  var pulse = obj.state === 'stuck'
-    ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
-    : 0.22;
+function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashImage) {
   var r = def.r;
   var charge = obj._pickupCharge || 0;
   if (obj.cA && obj.cB && obj.state === 'stuck') {
@@ -306,6 +311,17 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
     }
     ctx.restore();
   }
+  if (poopImg.complete && poopImg.naturalWidth > 0) {
+    var poopH = r * 3.2;
+    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
+    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    if (applyPriorityFlashImage) applyPriorityFlashImage(ctx, poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    statsDc('image');
+    return;
+  }
+  var pulse = obj.state === 'stuck'
+    ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
+    : 0.22;
   ctx.beginPath();
   ctx.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
   ctx.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
@@ -589,7 +605,9 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
       if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
       ctx.rotate(obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6);
       if (_isWrapping) { ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(30,20,18,0.9)'; }
-      drawPoopBlob(ctx, obj, def, applyPriorityFlashRect);
+      drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, function (localCtx, img, x, y, w, h) {
+        if (_isPriorityTarget) drawPriorityImage(localCtx, img, x, y, w, h, _priorityPulse);
+      });
       if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       ctx.restore();
     }
