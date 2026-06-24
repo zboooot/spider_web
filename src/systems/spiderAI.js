@@ -1,4 +1,5 @@
 import { Vec2 } from '../engine/Vec2.js';
+import { pickReachableNavNode } from './navigationGraph.js';
 
 /**
  * Spider AI — autonomous locomotion state machine
@@ -48,10 +49,15 @@ export function createSpiderAI() {
   /* ── helpers ── */
   function rnd(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
 
-  function pickRandomNode(spiderweb) {
+  function pickRandomNode(spiderweb, spider, spatialOpts) {
+    if (spider && spider.thorax && spatialOpts) {
+      var reachable = pickReachableNavNode(
+        spider.thorax.pos.x, spider.thorax.pos.y, spiderweb, spatialOpts, 4
+      );
+      if (reachable) return new Vec2(reachable.x, reachable.y);
+    }
     var pts = spiderweb.particles;
     if (!pts || pts.length === 0) return null;
-    /* prefer mid-ring particles (not the very outer edge pinned ones) */
     var tries = 0, p;
     do {
       p = pts[Math.floor(Math.random() * pts.length)];
@@ -60,7 +66,7 @@ export function createSpiderAI() {
     return new Vec2(p.pos.x, p.pos.y);
   }
 
-  function pickEdgeOrCenterNode(spiderweb, towardCenter) {
+  function pickEdgeOrCenterNode(spiderweb, towardCenter, spider, spatialOpts) {
     var pts = spiderweb.particles;
     if (!pts || pts.length === 0) return null;
     /* find centroid */
@@ -78,14 +84,25 @@ export function createSpiderAI() {
       score += (Math.random() - 0.5) * 40; // jitter
       if (score > bestScore) { bestScore = score; best = p; }
     }
-    return best ? new Vec2(best.pos.x, best.pos.y) : pickRandomNode(spiderweb);
+    return best ? new Vec2(best.pos.x, best.pos.y) : pickRandomNode(spiderweb, spider, spatialOpts);
   }
 
-  function pickIdleWalkTarget(spiderweb, spider) {
-    if (!spider || !spider.thorax) return pickRandomNode(spiderweb);
+  function pickIdleWalkTarget(spiderweb, spider, spatialOpts) {
+    if (!spider || !spider.thorax) return pickRandomNode(spiderweb, spider, spatialOpts);
+    if (spatialOpts) {
+      var nearReach = pickReachableNavNode(
+        spider.thorax.pos.x, spider.thorax.pos.y, spiderweb, spatialOpts, 2
+      );
+      if (nearReach) {
+        var ndx = nearReach.x - spider.thorax.pos.x;
+        var ndy = nearReach.y - spider.thorax.pos.y;
+        var nd2 = ndx * ndx + ndy * ndy;
+        if (nd2 >= 28 * 28 && nd2 <= 150 * 150) return new Vec2(nearReach.x, nearReach.y);
+      }
+    }
     var tx = spider.thorax.pos.x, ty = spider.thorax.pos.y;
     var pts = spiderweb.particles;
-    if (!pts || !pts.length) return pickRandomNode(spiderweb);
+    if (!pts || !pts.length) return pickRandomNode(spiderweb, spider, spatialOpts);
     var pool = [];
     for (var i = 0; i < pts.length; i++) {
       var p = pts[i];
@@ -95,15 +112,15 @@ export function createSpiderAI() {
       if (d2 < 28 * 28 || d2 > 150 * 150) continue;
       pool.push(p);
     }
-    if (!pool.length) return pickRandomNode(spiderweb);
+    if (!pool.length) return pickRandomNode(spiderweb, spider, spatialOpts);
     var pick = pool[Math.floor(Math.random() * pool.length)];
     return new Vec2(pick.pos.x, pick.pos.y);
   }
 
-  function enterIdleWalk(spiderweb, spider) {
+  function enterIdleWalk(spiderweb, spider, spatialOpts) {
     _state = 'WANDER';
     _stateTimer = rnd(IDLE_WALK_MIN, IDLE_WALK_MAX);
-    _aiTarget = pickIdleWalkTarget(spiderweb, spider);
+    _aiTarget = pickIdleWalkTarget(spiderweb, spider, spatialOpts);
     mood = Math.random() < 0.22 ? 'curious' : 'calm';
   }
 
@@ -129,11 +146,11 @@ export function createSpiderAI() {
     return best ? new Vec2(best.pos.x, best.pos.y) : null;
   }
 
-  function enterState(newState, spiderweb) {
+  function enterState(newState, spiderweb, spider, spatialOpts) {
     _state = newState;
     if (newState === 'WANDER') {
       _stateTimer = rnd(WANDER_DUR_MIN, WANDER_DUR_MAX);
-      _aiTarget   = pickRandomNode(spiderweb);
+      _aiTarget   = pickRandomNode(spiderweb, spider, spatialOpts);
       mood = Math.random() < 0.3 ? 'curious' : 'calm';
     } else if (newState === 'PAUSE') {
       _stateTimer = rnd(PAUSE_DUR_MIN, PAUSE_DUR_MAX);
@@ -142,7 +159,7 @@ export function createSpiderAI() {
     } else if (newState === 'EXPLORE') {
       _stateTimer = rnd(EXPLORE_DUR_MIN, EXPLORE_DUR_MAX);
       var toCenter = Math.random() < 0.5;
-      _aiTarget   = pickEdgeOrCenterNode(spiderweb, toCenter);
+      _aiTarget   = pickEdgeOrCenterNode(spiderweb, toCenter, spider, spatialOpts);
       mood = 'curious';
     } else if (newState === 'STARTLED') {
       _stateTimer = STARTLED_DUR;
@@ -152,16 +169,16 @@ export function createSpiderAI() {
     }
   }
 
-  function nextRandomState(spiderweb, idleMode, spider) {
+  function nextRandomState(spiderweb, idleMode, spider, spatialOpts) {
     var r = Math.random();
     if (idleMode) {
-      if (_state === 'PAUSE') enterIdleWalk(spiderweb, spider);
+      if (_state === 'PAUSE') enterIdleWalk(spiderweb, spider, spatialOpts);
       else enterIdlePause();
       return;
     }
-    if      (r < 0.55) enterState('WANDER',  spiderweb);
-    else if (r < 0.72) enterState('PAUSE',   spiderweb);
-    else               enterState('EXPLORE', spiderweb);
+    if      (r < 0.55) enterState('WANDER',  spiderweb, spider, spatialOpts);
+    else if (r < 0.72) enterState('PAUSE',   spiderweb, spider, spatialOpts);
+    else               enterState('EXPLORE', spiderweb, spider, spatialOpts);
   }
 
   /* ── public API ── */
@@ -177,11 +194,13 @@ export function createSpiderAI() {
      * @param {boolean} playerHasInput — true if player just clicked this frame
      * @param {object} [opts]
      * @param {boolean} [opts.idleMode] — game idle wander: skip input gate, activate immediately
+     * @param {object}  [opts.spatialOpts] — spatial index opts for reachable-node picking
      * @returns {Vec2|null}  target position, or null to stay still
      */
     update: function (spider, spiderweb, thrownObjects, playerHasInput, opts) {
       opts = opts || {};
       var idleMode = !!opts.idleMode;
+      var spatialOpts = opts.spatialOpts || null;
 
       /* ── track player input ── */
       if (playerHasInput && !idleMode) {
@@ -215,7 +234,7 @@ export function createSpiderAI() {
             var oy = obj.particle ? obj.particle.pos.y : 0;
             var ddx = ox - tx, ddy = oy - ty;
             if (ddx * ddx + ddy * ddy < STARTLED_RANGE * STARTLED_RANGE) {
-              enterState('STARTLED', spiderweb);
+              enterState('STARTLED', spiderweb, spider, spatialOpts);
               break;
             }
           }
@@ -246,7 +265,7 @@ export function createSpiderAI() {
           }
           _state = 'WANDER';
           _stateTimer = rnd(120, 220);
-          _aiTarget   = fleePt || pickRandomNode(spiderweb);
+          _aiTarget   = fleePt || pickRandomNode(spiderweb, spider, spatialOpts);
           mood = 'calm';
         }
         /* during startled freeze, output null (don't move) */
@@ -262,10 +281,10 @@ export function createSpiderAI() {
           var arriveR = idleMode ? IDLE_ARRIVE_R : 30;
           var arrived = (dx2 * dx2 + dy2 * dy2) < arriveR * arriveR;
           if (arrived || _stateTimer <= 0) {
-            nextRandomState(spiderweb, idleMode, spider);
+            nextRandomState(spiderweb, idleMode, spider, spatialOpts);
           }
         } else if (_stateTimer <= 0) {
-          nextRandomState(spiderweb, idleMode, spider);
+          nextRandomState(spiderweb, idleMode, spider, spatialOpts);
         }
       } else if (_state === 'EXPLORE') {
         if (_aiTarget && spider.thorax) {
@@ -273,14 +292,14 @@ export function createSpiderAI() {
           var ey = _aiTarget.y - spider.thorax.pos.y;
           var earrived = (ex * ex + ey * ey) < 40 * 40;
           if (earrived || _stateTimer <= 0) {
-            nextRandomState(spiderweb, idleMode, spider);
+            nextRandomState(spiderweb, idleMode, spider, spatialOpts);
           }
         } else if (_stateTimer <= 0) {
-          nextRandomState(spiderweb, idleMode, spider);
+          nextRandomState(spiderweb, idleMode, spider, spatialOpts);
         }
       } else if (_state === 'PAUSE') {
         if (_stateTimer <= 0) {
-          nextRandomState(spiderweb, idleMode, spider);
+          nextRandomState(spiderweb, idleMode, spider, spatialOpts);
         }
         /* occasional mid-pause curiosity twitch: briefly look at a nearby spot */
         if (!idleMode && _stateTimer > 0 && _stateTimer % rnd(60, 90) === 0) {

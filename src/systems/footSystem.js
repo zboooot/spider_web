@@ -1,6 +1,7 @@
 import { Vec2 } from '../engine/Vec2.js';
 import { DistanceConstraint } from '../engine/constraints.js';
 import { audioEngine } from '../audio/audioEngine.js';
+import { isCandidateOnAnchoredWeb } from './navigationGraph.js';
 
 var DEFAULT_GAIT_TUNE = {
   minStepDistMove: 28,
@@ -247,8 +248,9 @@ function collectCandidatesFullScan(webComp, thorax, samplePoints, minR, stepR, a
  * @param {object}   currentFootPos      当前脚位置（forward progress 参考）
  * @param {Set|null} occupiedFootholds   其他腿占用的 foothold key（硬排除）
  * @param {object}   spatialOpts         { index, queryBuf }，为 null 则全量扫描
+ * @param {boolean}  filterAnchored      仅保留锚定连通子网上的落脚点（默认 true）
  */
-export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds, spatialOpts) {
+export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds, spatialOpts, filterAnchored) {
   if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.findStepTargetCalls = (window._spiderStats.findStepTargetCalls || 0) + 1;
   var tune = _getGaitTune();
   var stepR = maxStepR || 42, minR = 16;
@@ -293,6 +295,11 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   }
 
   if (!cands.length) return null;
+
+  if (filterAnchored !== false) {
+    cands = cands.filter(function (c) { return isCandidateOnAnchoredWeb(c, webComp, spatialOpts); });
+    if (!cands.length) return null;
+  }
 
   /* ── 硬排除：同 foothold key 已被其他腿占用 ── */
   if (occupiedFootholds && occupiedFootholds.size > 0) {
