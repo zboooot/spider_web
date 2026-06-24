@@ -506,6 +506,27 @@ canvas{
 .tutorial-focus-icon::before{
   content:'👇';
 }
+/* ── 关卡切换黑屏过渡 ── */
+.level-transition-blackout{
+  position:absolute;
+  inset:0;
+  z-index:20;
+  background:#000;
+  pointer-events:none;
+  opacity:0;
+  display:none;
+}
+.level-transition-blackout.active{
+  display:block;
+  animation: levelBlackoutAnim 1.2s ease forwards;
+}
+@keyframes levelBlackoutAnim{
+  0%   { opacity:0; }
+  25%  { opacity:1; }
+  70%  { opacity:1; }
+  100% { opacity:0; }
+}
+
 .tutorial-blackout{
   position:absolute;
   inset:0;

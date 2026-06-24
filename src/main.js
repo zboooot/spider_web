@@ -1037,6 +1037,28 @@ window.onload = function () {
   tutorialBlackoutEl.style.display = 'none';
   screenShellEl.appendChild(tutorialBlackoutEl);
 
+  /* ── 关卡切换黑屏遮罩 ── */
+  var levelTransitionEl = document.createElement('div');
+  levelTransitionEl.className = 'level-transition-blackout';
+  screenShellEl.appendChild(levelTransitionEl);
+
+  function doLevelTransition(callback) {
+    levelTransitionEl.classList.remove('active');
+    /* 强制 reflow 让 animation 重新触发 */
+    void levelTransitionEl.offsetWidth;
+    levelTransitionEl.classList.add('active');
+    /* 关卡实际切换在动画中点（opacity 达到1后约 0.3s）执行 */
+    var SWITCH_DELAY = 300; /* ms，对应动画 25% 处 opacity=1 */
+    setTimeout(function () {
+      callback();
+    }, SWITCH_DELAY);
+    /* 动画结束后移除 active */
+    levelTransitionEl.addEventListener('animationend', function handler() {
+      levelTransitionEl.classList.remove('active');
+      levelTransitionEl.removeEventListener('animationend', handler);
+    });
+  }
+
   function isTutorialActive() {
     return tutorialActive && tutorialController.isActive();
   }
@@ -1370,6 +1392,11 @@ window.onload = function () {
     refreshWavePhaseHUD();
   }
 
+  function restartFromTutorial() {
+    try { localStorage.removeItem('spiderTutorialCompleted'); } catch (e) { }
+    startTutorial();
+  }
+
   if (typeof window !== 'undefined') window.startTutorial = startTutorial;
 
   function completeTutorialAndStartLevelOne() {
@@ -1485,11 +1512,11 @@ window.onload = function () {
       '<div class="overlay-title">SPIDER WEB</div>'
       + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
       + '<div class="overlay-subtitle" style="margin-bottom:22px;opacity:0.6">Keep the web intact. If it breaks, you lose.</div>'
-      + '<button class="overlay-btn" id="btn-start-game">Start Game</button>'
-      + '<br><button class="overlay-btn" style="background:#3b5f8a;margin-top:8px;display:none" id="btn-gameplay-test">Gameplay Test</button>'
+      + '<button class="overlay-btn" id="btn-continue" style="margin-bottom:8px">继续</button>'
+      + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-start">重新开始</button>'
     );
-    document.getElementById('btn-start-game').onclick = startGameFromBeginning;
-    document.getElementById('btn-gameplay-test').onclick = startGameplayTest;
+    document.getElementById('btn-continue').onclick = continueGame;
+    document.getElementById('btn-restart-start').onclick = restartFromTutorial;
   }
 
   function pickObjectAt(x, y) {
@@ -1685,51 +1712,108 @@ window.onload = function () {
       x: x, y: y,
       vx: 0, vy: 0,
       life: 1.0,
-      decay: 0.020,
-      r: 13,
-      grow: 0.156,
+      decay: 0.11,
+      r: 9,
+      grow: 0.42,
+      drag: 1,
+      speedScale: 1.5,
+      flash: true,
+      color: 'rgba(214,228,72,0.92)'
+    });
+
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.052,
+      r: 7,
+      grow: 3.1,
+      drag: 1,
+      speedScale: 1.5,
+      ring: true,
+      lineWidth: 3.2,
+      color: 'rgba(176,196,58,0.78)'
+    });
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.068,
+      r: 4,
+      grow: 4.4,
+      drag: 1,
+      speedScale: 1.5,
+      ring: true,
+      lineWidth: 2.1,
+      color: 'rgba(108,82,34,0.58)'
+    });
+
+    _burstParticles.push({
+      x: x, y: y,
+      vx: 0, vy: 0,
+      life: 1.0,
+      decay: 0.018,
+      r: 14,
+      grow: 0.18,
       drag: 0.904,
       speedScale: 1.5,
       smoke: true,
-      occlude: 0.88,
-      color: '#0a0808'
+      occlude: 0.9,
+      color: '#1a140f'
     });
 
-    for (var i = 0; i < 36; i++) {
-      var ang = (i / 36) * Math.PI * 2 + Math.random() * 0.6;
-      var spd = 2.1 + Math.random() * 3.4;
+    for (var i = 0; i < 40; i++) {
+      var ang = (i / 40) * Math.PI * 2 + Math.random() * 0.7;
+      var spd = 2.4 + Math.random() * 4.0;
       _burstParticles.push({
         x: x, y: y,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd * 0.82,
         life: 1.0,
-        decay: 0.024 + Math.random() * 0.012,
-        r: 6.76 + Math.random() * 7.54,
-        grow: 0.091 + Math.random() * 0.065,
-        drag: 0.856 + Math.random() * 0.032,
+        decay: 0.022 + Math.random() * 0.014,
+        r: 7.2 + Math.random() * 8.4,
+        grow: 0.098 + Math.random() * 0.072,
+        drag: 0.848 + Math.random() * 0.034,
         speedScale: 1.5,
         smoke: true,
-        occlude: 0.78 + Math.random() * 0.08,
-        color: ['#090707', '#151110', '#211917', '#2b221f'][Math.floor(Math.random() * 4)]
+        occlude: 0.76 + Math.random() * 0.1,
+        color: ['#17120e', '#2a2218', '#3a3124', '#4d4328', '#5c5530', '#6a5f2e'][Math.floor(Math.random() * 6)]
       });
     }
 
-    for (var j = 0; j < 12; j++) {
-      var ang2 = (j / 12) * Math.PI * 2 + Math.random() * 0.4;
-      var spd2 = 4.6 + Math.random() * 2.8;
+    for (var j = 0; j < 14; j++) {
+      var ang2 = (j / 14) * Math.PI * 2 + Math.random() * 0.45;
+      var spd2 = 5.2 + Math.random() * 3.4;
       _burstParticles.push({
         x: x, y: y,
         vx: Math.cos(ang2) * spd2,
         vy: Math.sin(ang2) * spd2 * 0.76,
         life: 1.0,
-        decay: 0.040 + Math.random() * 0.016,
-        r: 4.16 + Math.random() * 3.12,
-        grow: 0.052 + Math.random() * 0.039,
-        drag: 0.810 + Math.random() * 0.036,
+        decay: 0.038 + Math.random() * 0.018,
+        r: 4.4 + Math.random() * 3.6,
+        grow: 0.058 + Math.random() * 0.042,
+        drag: 0.804 + Math.random() * 0.038,
         speedScale: 1.5,
         smoke: true,
-        occlude: 0.82,
-        color: '#120d0c'
+        occlude: 0.84,
+        color: '#241a14'
+      });
+    }
+
+    for (var c = 0; c < 10; c++) {
+      var ang3 = Math.random() * Math.PI * 2;
+      var spd3 = 5.6 + Math.random() * 4.8;
+      _burstParticles.push({
+        x: x, y: y,
+        vx: Math.cos(ang3) * spd3,
+        vy: Math.sin(ang3) * spd3 * 0.68,
+        life: 1.0,
+        decay: 0.048 + Math.random() * 0.028,
+        r: 1.8 + Math.random() * 2.8,
+        drag: 0.872 + Math.random() * 0.04,
+        speedScale: 1.5,
+        smoke: false,
+        color: ['#4a3520', '#6b4e28', '#3d2a18', '#7a5a2c'][Math.floor(Math.random() * 4)]
       });
     }
   }
@@ -1740,6 +1824,7 @@ window.onload = function () {
     clearObjectConstraints(obj);
     obj.stuckOnConstraint = null;
     spawnPoopBurst(obj.particle.pos.x, obj.particle.pos.y);
+    audioEngine.playSfxPoopBurst();
     if (userPriorityTarget && userPriorityTarget.type === 'object' && userPriorityTarget.obj === obj) {
       clearPriorityTarget();
     }
@@ -1892,6 +1977,18 @@ window.onload = function () {
     startLevel(0);
   }
 
+  function continueGame() {
+    isGameplayTestMode = false;
+    gameFrames = 0;
+    silkCount = 0;
+    refreshSilkHUD();
+    clearPoopStun();
+    webOverride = createWebOverrideForLevel(currentLevelIndex);
+    buildWeb();
+    buildSpider();
+    startLevel(currentLevelIndex);
+  }
+
   function startGameFromBeginning() {
     isGameplayTestMode = false;
     difficultyLevel = 1;
@@ -1991,10 +2088,12 @@ window.onload = function () {
   }
 
   function resetWebAndStartNextLevel() {
-    gameFrames = 0;
-    webOverride = createWebOverrideForLevel(currentLevelIndex + 1);
-    buildWeb(); buildSpider();
-    startLevel(currentLevelIndex + 1);
+    doLevelTransition(function () {
+      gameFrames = 0;
+      webOverride = createWebOverrideForLevel(currentLevelIndex + 1);
+      buildWeb(); buildSpider();
+      startLevel(currentLevelIndex + 1);
+    });
   }
 
   function retryCurrentLevel() {
@@ -2033,11 +2132,11 @@ window.onload = function () {
     showOverlay(
       '<div class="overlay-title">Web Broken</div>'
       + '<div class="overlay-subtitle">Survived&nbsp;' + timeUsed + '</div>'
-      + '<button class="overlay-btn" id="btn-retry" style="margin-bottom:8px">Try Again</button>'
-      + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-f">Restart</button>'
+      + '<button class="overlay-btn" id="btn-retry" style="margin-bottom:8px">继续</button>'
+      + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-f">重新开始</button>'
     );
     document.getElementById('btn-retry').onclick = retryCurrentLevel;
-    document.getElementById('btn-restart-f').onclick = startGameFromBeginning;
+    document.getElementById('btn-restart-f').onclick = restartFromTutorial;
   }
 
   function checkLevelComplete() {
@@ -2072,6 +2171,13 @@ window.onload = function () {
 
   function _constraintAlive(c) {
     return !c.__webId || spatialIndex.isAliveId(c.__webId);
+  }
+
+  function _isWebIntegrityBaselineReady() {
+    return webWarmupFrames <= 0
+      && webGridList
+      && webGridBuildIdx >= webGridList.length
+      && webInitCells > 0;
   }
 
   function _buildWebGrid() {
@@ -3081,8 +3187,8 @@ window.onload = function () {
   /* ── Stick system helper closures ── */
   function _isThrownObjectOffScreen(x, y, kind) {
     if (kind === 'stone') return y > H + 520 || x < -220 || x > W + 220;
-    if (kind === 'poop') return y > H + 80 || y < -80 || x < -90 || x > W + 90;
-    return y > H + 90 || y < -90 || x < -110 || x > W + 110;
+    if (kind === 'poop') return y > H + 400 || y < -200 || x < -200 || x > W + 200;
+    return y > H + 400 || y < -200 || x < -200 || x > W + 200;
   }
 
   function _removeThrownObjectAt(oi, obj) {
@@ -3161,6 +3267,13 @@ window.onload = function () {
           p.pos.x += _bxs; p.pos.y += _bys;
           p.lastPos.x = p.pos.x - _bxs; p.lastPos.y = p.pos.y - _bys;
           obj.angle = Math.atan2(_bys, _bxs);
+          /* 俯仰角：用 vy 分量限制在 ±15°，向上飞为负，向下飞为正 */
+          var MAX_TILT = 15 * Math.PI / 180;
+          var _spd = Math.sqrt(_bxs * _bxs + _bys * _bys) || 1;
+          var _tiltRaw = Math.asin(Math.max(-1, Math.min(1, _bys / _spd)));
+          obj._tiltAngle = Math.max(-MAX_TILT, Math.min(MAX_TILT, _tiltRaw));
+          /* 向右飞(bxs>0)时镜像，让头始终朝向飞行方向 */
+          if (Math.abs(_bxs) > 0.01) obj._flyMirror = _bxs > 0;
           obj.wingT += 0.55 * _currentTimeScale;
           if (!obj._buzzStarted) { obj._buzzStarted = true; audioEngine.startBugBuzz(oi); }
 
@@ -3188,11 +3301,14 @@ window.onload = function () {
           var _lvx = obj.vx * _currentTimeScale, _lvy = obj.vy * _currentTimeScale;
           p.pos.x += _lvx; p.pos.y += _lvy;
           p.lastPos.x = p.pos.x - _lvx; p.lastPos.y = p.pos.y - _lvy;
-          if (p.pos.y > H + 60) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
+          /* 接近底边时解除边界约束，让树叶能继续下落到离屏销毁 */
+          if (p.pos.y >= H - 2) p.__ignoreBounds = true;
+          if (p.pos.y > H + 400) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
         }
 
-        if (obj.kind !== 'bug' && p.pos.y > H + 60) {
-          obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1);
+        /* ── falling 状态离屏销毁（苍蝇穿越边界不在此处理） ── */
+        if (obj.kind !== 'bug' && _isThrownObjectOffScreen(p.pos.x, p.pos.y, obj.kind)) {
+          _removeThrownObjectAt(oi, obj);
         }
 
       } else if (obj.state === 'sticking') {
@@ -3203,7 +3319,12 @@ window.onload = function () {
         if (obj.stickT >= 1) {
           if (obj.cA) obj.cA.distance = obj.stickyToA;
           if (obj.cB) obj.cB.distance = obj.stickyToB;
-          if (obj.kind === 'bug') audioEngine.stopBugBuzz(thrownObjects.indexOf(obj));
+          if (obj.kind === 'bug') {
+            audioEngine.stopBugBuzz(thrownObjects.indexOf(obj));
+            /* 锁定粘网瞬间的俯仰角和镜像，stuck 状态渲染时继续使用 */
+            if (obj._tiltAngle != null) obj._stuckTiltAngle = obj._tiltAngle;
+            obj._stuckFlyMirror = obj._flyMirror || false;
+          }
           audioEngine.playSfxLand(obj.kind);
           var _ws = obj._stickIsRadial ? P.radialWobbleScale : P.spiralWobbleScale;
           if (obj.kind === 'drop') {
@@ -3364,6 +3485,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'freeing') {
+        p.__ignoreBounds = true;
         obj.freeTimer += _currentTimeScale;
         if (obj.kind === 'bug' && obj.stuckOnConstraint) {
           var nearSeg = findNearestWebSegment(
@@ -3387,6 +3509,7 @@ window.onload = function () {
         }
 
       } else if (obj.state === 'falling2') {
+        p.__ignoreBounds = true; /* 所有 falling2 状态解除边界约束 */
         if (obj.kind === 'drop') {
           obj.angleVel += (Math.random() - 0.5) * obj.angleTurb * _currentTimeScale;
           obj.angleVel *= Math.pow(obj.angleDrag, _currentTimeScale);
@@ -3395,9 +3518,7 @@ window.onload = function () {
           obj.vy += obj.grav * _currentTimeScale;
           var dragScale = Math.pow(obj.drag, _currentTimeScale);
           obj.vx *= dragScale; obj.vy *= dragScale;
-          var maxSpd = def.maxSpeed || 0.8;
-          var spd2 = Math.sqrt(obj.vx * obj.vx + obj.vy * obj.vy);
-          if (spd2 > maxSpd) { obj.vx = obj.vx / spd2 * maxSpd; obj.vy = obj.vy / spd2 * maxSpd; }
+          /* falling2 不限速，让树叶能快速飞出屏幕 */
           p.pos.x += obj.vx * _currentTimeScale; p.pos.y += obj.vy * _currentTimeScale;
         } else if (obj.kind === 'poop') {
           var peelDragScale = Math.pow(obj.def.peelDrag, _currentTimeScale);
@@ -3410,12 +3531,18 @@ window.onload = function () {
           p.pos.y += (obj.spawnVy || obj.grav || 0) * _currentTimeScale;
           obj.spawnVy = (obj.spawnVy || obj.grav || 0) + 0.24 * _currentTimeScale;
         } else if (obj.kind === 'bug' || obj.kind === 'boulder') {
-          obj.vy += (obj.grav != null ? obj.grav : 0.22) * _currentTimeScale;
+          /* 脱网后解除边界约束，让粒子能飞出屏幕范围 */
+          p.__ignoreBounds = true;
+          /* 脱网后统一施加向下重力，确保能飞出屏幕底部，不卡边缘 */
+          var _fallGrav = Math.max(obj.grav != null ? obj.grav : 0, 0.35);
+          obj.vy += _fallGrav * _currentTimeScale;
+          /* 保底向下速度，防止横向速度主导导致卡边缘 */
+          if (obj.vy < 1.5) obj.vy += 0.25 * _currentTimeScale;
           var fallVx = obj.vx || 0;
           var fallVy = obj.vy || 0;
           p.pos.x += fallVx * _currentTimeScale;
           p.pos.y += fallVy * _currentTimeScale;
-          var fallDrag = Math.pow(obj.kind === 'bug' ? 0.994 : 0.99, _currentTimeScale);
+          var fallDrag = Math.pow(obj.kind === 'bug' ? 0.97 : 0.99, _currentTimeScale);
           obj.vx = fallVx * fallDrag;
           obj.vy = fallVy * fallDrag;
           if (obj.kind === 'bug') obj.wingT += 0.55 * _currentTimeScale;
@@ -3572,6 +3699,18 @@ window.onload = function () {
           updateBadge(obj.kind, -1);
         }
       }
+
+      /* ── 兜底离屏销毁：覆盖 stuck/freeing/wrapped 等所有状态，苍蝇除外 ── */
+      if (obj.kind !== 'bug' && thrownObjects[oi] === obj) {
+        var _bp = obj.particle;
+        if (_bp && (_bp.pos.y > H + 500 || _bp.pos.y < -500 || _bp.pos.x < -500 || _bp.pos.x > W + 500)) {
+          if (wrappingTarget === obj) wrappingTarget = null;
+          if (obj.collectEl && obj.collectEl.parentNode) obj.collectEl.parentNode.removeChild(obj.collectEl);
+          obj.destroy(sim);
+          thrownObjects.splice(oi, 1);
+          updateBadge(obj.kind, -1);
+        }
+      }
     }
   }
 
@@ -3642,6 +3781,11 @@ window.onload = function () {
         obj._hitHistoryCount = pick.count;
         if (pick.candidate) {
           obj.stickToPoint(pick.candidate, spiderweb, USE_LEGACY_COLLISION ? null : spatialIndex);
+          /* 苍蝇粘网瞬间锁定俯仰角和镜像，sticking/stuck 渲染时保持 */
+          if (obj.kind === 'bug' && obj._tiltAngle != null) {
+            obj._stuckTiltAngle = obj._tiltAngle;
+            obj._stuckFlyMirror = obj._flyMirror || false;
+          }
         }
       }
       if (!_inWebZone(p.pos.x, p.pos.y) && obj.state === 'falling') {
@@ -4441,8 +4585,8 @@ window.onload = function () {
     if (levelStartLockTimer > 0) levelStartLockTimer -= _currentTimeScale;
     var isLevelStartLocked = levelStartLockTimer > 0;
 
-    /* ── 每关开始石头延迟倒计时 ── */
-    if (_levelStartStonePending) {
+    /* ── 每关开始石头延迟倒计时（须等完整度基准建立后再计时/落石，否则破口会被算进初始 100%） ── */
+    if (_levelStartStonePending && _isWebIntegrityBaselineReady()) {
       _levelStartStoneTimer -= _currentTimeScale;
       if (_levelStartStoneTimer <= 0) {
         _levelStartStonePending = false;
@@ -4684,13 +4828,29 @@ window.onload = function () {
         var _dragScale = Math.pow(_drag, updateScale);
         _bp.vx *= _dragScale;
         _bp.vy *= _dragScale;
-        if (_bp.smoke) {
+        if (_bp.smoke || _bp.ring || _bp.flash) {
           _bp.r += (_bp.grow || 0.1) * _speedScale;
         }
         _bp.life -= _bp.decay * _speedScale;
         if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
         _ctx.save();
-        if (_bp.sparkle) {
+        if (_bp.ring) {
+          _ctx.globalAlpha = _bp.life * 0.82;
+          _ctx.strokeStyle = _bp.color;
+          _ctx.lineWidth = _bp.lineWidth || 2.4;
+          _ctx.beginPath();
+          _ctx.arc(_bp.x, _bp.y, _bp.r, 0, 2 * Math.PI);
+          _ctx.stroke();
+        } else if (_bp.flash) {
+          var flashAlpha = _bp.life * _bp.life;
+          _ctx.globalAlpha = flashAlpha;
+          _ctx.shadowBlur = 18;
+          _ctx.shadowColor = 'rgba(214,228,72,' + (flashAlpha * 0.75).toFixed(2) + ')';
+          _ctx.beginPath();
+          _ctx.arc(_bp.x, _bp.y, _bp.r, 0, 2 * Math.PI);
+          _ctx.fillStyle = _bp.color;
+          _ctx.fill();
+        } else if (_bp.sparkle) {
           var twinkle = 0.25 + 0.75 * Math.abs(Math.sin(timestamp * 0.028 + (_bp.phase || 0)));
           var sparkleAlpha = _bp.life * twinkle;
           var sparkleSize = _bp.r * (0.55 + twinkle * 0.65);

@@ -24,4 +24,5 @@ test('single-file build hides debug panels and non-game side content', function 
 
   assert.match(html, /\.right-side \{ display:none !important; \}/, 'build output still leaves right-side controls visible');
   assert.match(html, /\.stats-panel \{ display:none !important; \}/, 'build output still leaves the stats panel visible');
+  assert.match(html, /\.phase-bar \{ display:none !important; \}/, 'build output still leaves the phase status text visible');
 });

@@ -768,53 +768,52 @@ function playSfxPoopBurst() {
     var ctx = getAC();
     var now = ctx.currentTime;
 
-    var len = Math.floor(ctx.sampleRate * 0.36);
+    var len = Math.floor(ctx.sampleRate * 0.2);
     var buf = ctx.createBuffer(1, len, ctx.sampleRate);
     var d = buf.getChannelData(0);
     for (var i = 0; i < len; i++) {
       var t = i / len;
-      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 1.95) * 0.44;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.6) * 0.3;
     }
     var src = ctx.createBufferSource();
     src.buffer = buf;
     var lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 560;
-    lp.Q.value = 0.9;
+    lp.frequency.value = 260;
+    lp.Q.value = 0.65;
     var hp = ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 65;
+    hp.frequency.value = 42;
     var g = ctx.createGain();
     g.gain.setValueAtTime(0.001, now);
-    g.gain.linearRampToValueAtTime(0.18, now + 0.014);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    g.gain.linearRampToValueAtTime(0.15, now + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
     src.connect(lp); lp.connect(hp); hp.connect(g); g.connect(ctx.destination);
     src.start(now);
 
-    var toot = makeOscGain('triangle', 132, 0.11);
-    toot.osc.frequency.setValueAtTime(132, now);
-    toot.osc.frequency.linearRampToValueAtTime(112, now + 0.05);
-    toot.osc.frequency.linearRampToValueAtTime(118, now + 0.10);
-    toot.osc.frequency.exponentialRampToValueAtTime(72, now + 0.24);
+    var toot = makeOscGain('triangle', 92, 0.085);
+    toot.osc.frequency.setValueAtTime(92, now);
+    toot.osc.frequency.linearRampToValueAtTime(74, now + 0.035);
+    toot.osc.frequency.exponentialRampToValueAtTime(54, now + 0.15);
     toot.gain.gain.setValueAtTime(0.001, now);
-    toot.gain.gain.linearRampToValueAtTime(0.11, now + 0.012);
-    toot.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
-    toot.osc.start(now); toot.osc.stop(now + 0.28);
+    toot.gain.gain.linearRampToValueAtTime(0.095, now + 0.008);
+    toot.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+    toot.osc.start(now); toot.osc.stop(now + 0.19);
 
     var wobble = ctx.createOscillator();
     var wobbleGain = ctx.createGain();
     wobble.type = 'sine';
-    wobble.frequency.value = 16;
-    wobbleGain.gain.value = 12;
+    wobble.frequency.value = 10;
+    wobbleGain.gain.value = 7;
     wobble.connect(wobbleGain); wobbleGain.connect(toot.osc.frequency);
-    wobble.start(now); wobble.stop(now + 0.18);
+    wobble.start(now); wobble.stop(now + 0.14);
 
-    var tail = makeOscGain('sine', 86, 0.045);
-    tail.osc.frequency.exponentialRampToValueAtTime(58, now + 0.18);
-    tail.gain.gain.setValueAtTime(0.001, now + 0.03);
-    tail.gain.gain.linearRampToValueAtTime(0.045, now + 0.06);
-    tail.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
-    tail.osc.start(now + 0.03); tail.osc.stop(now + 0.24);
+    var tail = makeOscGain('sine', 68, 0.038);
+    tail.osc.frequency.exponentialRampToValueAtTime(46, now + 0.14);
+    tail.gain.gain.setValueAtTime(0.001, now + 0.02);
+    tail.gain.gain.linearRampToValueAtTime(0.034, now + 0.045);
+    tail.gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    tail.osc.start(now + 0.02); tail.osc.stop(now + 0.17);
   } catch (e) {}
 }
 
