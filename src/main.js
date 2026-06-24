@@ -1367,6 +1367,15 @@ window.onload = function () {
           thrownObjects.splice(oi, 1);
           updateBadge(breaker.kind, -1);
         }
+      } else if (action.type === 'clear_wave_drops') {
+        for (var di = thrownObjects.length - 1; di >= 0; di--) {
+          var leaf = thrownObjects[di];
+          if (!leaf || leaf._tutorialTag !== 'prey' || leaf.kind !== 'drop') continue;
+          clearSelectedWrappedPrey(leaf);
+          leaf.destroy(sim);
+          thrownObjects.splice(di, 1);
+          updateBadge(leaf.kind, -1);
+        }
       } else if (action.type === 'mark_completed') {
         try { localStorage.setItem('spiderTutorialCompleted', '1'); } catch (e) { }
       } else if (action.type === 'handoff_to_level_1') {
@@ -5040,7 +5049,7 @@ window.onload = function () {
           for (var _oi = 0; _oi < thrownObjects.length; _oi++) {
             var _o = thrownObjects[_oi];
             if (!isTargetObjectChaseable(_o)) continue;
-            if (!isNavReachable(
+            if (!isTutorialActive() && !isNavReachable(
               _tx.x, _tx.y, _o.particle.pos.x, _o.particle.pos.y, spiderweb, _spatialOpts()
             )) continue;
             var _odx = _o.particle.pos.x - _tx.x, _ody = _o.particle.pos.y - _tx.y;

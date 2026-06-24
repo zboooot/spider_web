@@ -178,8 +178,6 @@ test('tutorial flow reaches handoff after two collections', function () {
   assert.ok(types.includes('set_insect_target'));
   assert.equal(ctrl.getInsectTarget(), TUTORIAL_TARGETS.boulder);
 
-  ctrl.handleEvent('object_resolved', { kind: 'drop' });
-  ctrl.handleEvent('object_resolved', { kind: 'drop' });
   ctrl.handleEvent('object_wrapped', { kind: 'boulder' });
   types = drainTypes(ctrl);
   assert.ok(types.includes('show_focus_prompt'));
@@ -191,9 +189,8 @@ test('tutorial flow reaches handoff after two collections', function () {
   ctrl.handleEvent('object_collected', { kind: 'boulder' });
   types = drainTypes(ctrl);
   assert.ok(types.includes('spawn_batch'));
+  assert.ok(types.includes('clear_wave_drops'));
 
-  ctrl.handleEvent('object_resolved', { kind: 'drop' });
-  ctrl.handleEvent('object_resolved', { kind: 'drop' });
   ctrl.handleEvent('object_wrapped', { kind: 'boulder' });
   types = drainTypes(ctrl);
   assert.ok(types.includes('show_focus_prompt'));

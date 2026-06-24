@@ -274,7 +274,8 @@ export function createTutorialController(W, H, cx, cy) {
   }
 
   function maybePromptCollect() {
-    if (waveDropCleared < 2 || !waveWrappedReady) return;
+    /* 毛毛虫打包完成即可进入摘取引导；树叶是否收完不再阻塞（避免寻路误判导致软锁） */
+    if (!waveWrappedReady) return;
     if (phase === PHASE.WAVE_ONE) {
       phase = PHASE.WAIT_COLLECT_ONE;
       pushAction('show_focus_prompt', { text: '拖拽摘走你的猎物', target: 'prey' });
@@ -401,6 +402,7 @@ export function createTutorialController(W, H, cx, cy) {
         if (collected === 1 && (phase === PHASE.WAIT_COLLECT_ONE || phase === PHASE.WAIT_COLLECT_ONE_DRAG)) {
           phase = PHASE.WAVE_TWO;
           resetWaveReadiness();
+          pushAction('clear_wave_drops');
           pushAction('spawn_batch', {
             batch: buildDemoWave(W, H, cx, cy, 2),
             label: 'wave_two'
