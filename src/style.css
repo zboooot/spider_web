@@ -154,6 +154,8 @@ h1{
   line-height:1.4;
   padding:6px 8px;
   max-width:min(100% - 12px, 420px);
+  min-height:18em;
+  min-width:min(52ch, calc(100vw - 12px));
 }
 .stats-panel.perf-recording{
   border-color:rgba(255,120,120,0.55);

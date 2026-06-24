@@ -376,6 +376,34 @@ function _padPct(pct) {
   return (s + '%').length >= 4 ? s + '%' : new Array(4 - (s + '%').length + 1).join(' ') + s + '%';
 }
 
+function _padFixed(text, width) {
+  var s = text == null ? '' : String(text);
+  if (s.length >= width) return s.slice(0, width);
+  return s + new Array(width - s.length + 1).join(' ');
+}
+
+function _formatFlags(flags) {
+  flags = flags || {};
+  return 'flg '
+    + (flags.wrapping ? 'W' : '-')
+    + (flags.poopStun ? 'P' : '-')
+    + (flags.bulletTime ? 'B' : '-')
+    + (flags.spawnAnim ? 'S' : '-');
+}
+
+function _formatPrey(preyByKind) {
+  preyByKind = preyByKind || {};
+  return ' B' + _padInt(preyByKind.boulder || 0, 1)
+    + '/g' + _padInt(preyByKind.bug || 0, 1)
+    + '/d' + _padInt(preyByKind.drop || 0, 1)
+    + '/p' + _padInt(preyByKind.poop || 0, 1);
+}
+
+function _formatRecLabel() {
+  if (_recording) return 'REC ' + _padInt(_recordedSeconds.length, 3) + 's';
+  return 'REC off   ';
+}
+
 function _smoothDisplay(key, value) {
   var v = value == null ? 0 : value;
   _display[key] = _display[key] != null
@@ -714,12 +742,10 @@ function statsFormatProfile() {
     );
   }
   var untagged = Math.max(0, workBase - tagged);
-  if (untagged > 0.05) {
-    lines.push(
-      _padLabel(_prof.labels.unmeasured, 10) + _padMs(untagged)
-        + ' ' + _padPct(workBase > 0.05 ? Math.round((untagged / workBase) * 100) : 0)
-    );
-  }
+  lines.push(
+    _padLabel(_prof.labels.unmeasured, 10) + _padMs(untagged)
+      + ' ' + _padPct(workBase > 0.05 ? Math.round((untagged / workBase) * 100) : 0)
+  );
   lines.push(
     'Wait(vsync)' + _padMs(_display.waitMs || 0)
       + '  util' + _padInt(_display.utilPct || 0, 3) + '%'
@@ -732,33 +758,25 @@ function _diagHeaderLines() {
   var game = _gameContext();
   var lvl = game.levelLabel || (game.level != null ? ('L' + (game.level + 1)) : 'L?');
   var wave = game.waveLabel || (game.wave != null ? ('W' + (game.wave + 1)) : 'W?');
-  var rec = _recording ? ('REC ' + _recordedSeconds.length + 's') : 'REC off';
-  var phase = game.wavePhase ? String(game.wavePhase).replace('WAVE_', '') : '—';
-  var prey = game.preyByKind
-    ? (' B' + (game.preyByKind.boulder || 0) + '/g' + (game.preyByKind.bug || 0)
-      + '/d' + (game.preyByKind.drop || 0) + '/p' + (game.preyByKind.poop || 0))
-    : '';
+  var phase = _padFixed(game.wavePhase ? String(game.wavePhase).replace('WAVE_', '') : '—', 8);
   var flags = game.flags || {};
-  var flagTxt = [
-    flags.wrapping ? 'wrap' : '',
-    flags.poopStun ? 'poop' : '',
-    flags.bulletTime ? 'bullet' : '',
-    flags.spawnAnim ? 'spawn' : ''
-  ].filter(Boolean).join(',');
+  var heapTxt = _heapSupported
+    ? ('heap' + _padFixed((_heapMb() != null ? _heapMb().toFixed(1) : '0.0'), 5) + 'MB')
+    : 'heap  N/A  ';
   return [
     'work' + _padMs(_display.workMs) + ' wait' + _padMs(_display.waitMs)
       + ' util' + _padInt(_display.utilPct, 3) + '%',
     'frame' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
-    'Spk>33 ' + _live.spikesGt33 + '  >50 ' + _live.spikesGt50
-      + '  stepMx ' + _live.logicStepsMax + '  bkMx' + _padMs(_live.backlogMax),
-    dev.platform + ' ' + dev.browser + ' DPR' + dev.dpr + ' ' + dev.viewport
-      + (dev.cores ? (' c' + dev.cores) : ''),
-    lvl + ' ' + wave + ' ' + phase + ' ' + (game.state || '—') + prey,
-    (flagTxt || '—') + '  ' + rec
-      + (_live.droppedCatchup ? (' drop' + _live.droppedCatchup) : ''),
-    'LT ' + _longTaskTotal + '/' + Math.round(_longTaskMsTotal) + 'ms'
-      + '  extPaus ' + _live.betweenFramePauses
-      + (_heapSupported ? ('  heap' + _heapMb() + 'MB') : '  heap N/A')
+    'Spk>33' + _padInt(_live.spikesGt33, 3) + ' >50' + _padInt(_live.spikesGt50, 3)
+      + ' stepMx' + _padInt(_live.logicStepsMax, 1) + ' bkMx' + _padMs(_live.backlogMax),
+    _padFixed(dev.platform, 7) + ' ' + _padFixed(dev.browser, 11)
+      + ' DPR' + _padFixed(String(dev.dpr), 3) + ' c' + _padInt(dev.cores || 0, 2),
+    _padFixed(dev.viewport, 11) + ' ' + _formatRecLabel(),
+    _padFixed(lvl + ' ' + wave, 6) + ' ' + phase + ' ' + _padFixed(game.state || '—', 11)
+      + _formatPrey(game.preyByKind),
+    _formatFlags(flags) + ' drop' + _padInt(_live.droppedCatchup, 2) + '  LT'
+      + _padInt(_longTaskTotal, 2) + '/' + _padInt(Math.round(_longTaskMsTotal), 4) + 'ms',
+    'extPaus' + _padInt(_live.betweenFramePauses, 3) + '  ' + heapTxt
   ];
 }
 
@@ -799,8 +817,11 @@ export function statsFormatPanel() {
       + ' rnd' + _padInt(d.bgRndPct, 3) + '%',
     'DPR ' + sc.dpr
   ];
-  if (_diagMode || _recording) lines = lines.concat(_diagHeaderLines());
-  return lines.concat(statsFormatProfile());
+  if (_diagMode) {
+    lines = lines.concat(_diagHeaderLines());
+    lines = lines.concat(statsFormatProfile());
+  }
+  return lines;
 }
 
 var _panelEl = null;
