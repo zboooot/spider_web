@@ -51,6 +51,7 @@ import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
 import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, getRenderedObjectCenter, spawnLeafShards, updateAndDrawLeafShards, prewarmSilkSpiralCache } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
+import { getRenderBudgetProfile, isMobileDevice } from './render/renderBudgetProfile.js';
 
 import {
   initSylvanBackground,
@@ -100,7 +101,8 @@ var requestAnimFrame = window.requestAnimationFrame
   || function (cb) { window.setTimeout(cb, 1000 / 60); };
 
 /* ── Mobile detection ── */
-var IS_MOBILE = navigator.maxTouchPoints > 1 || /iPhone|iPad|Android/i.test(navigator.userAgent);
+var IS_MOBILE = isMobileDevice(typeof navigator !== 'undefined' ? navigator : null);
+var RENDER_BUDGET = getRenderBudgetProfile(IS_MOBILE, typeof window !== 'undefined' ? window.devicePixelRatio : 1);
 
 /* ================================================================
    MAIN
@@ -353,7 +355,7 @@ window.onload = function () {
   var canvas = document.getElementById('scratch');
   var collectLayer = document.getElementById('collect-layer');
   var W = parseInt(canvas.style.width), H = parseInt(canvas.style.height);
-  var dpr = window.devicePixelRatio || 1;
+  var dpr = RENDER_BUDGET.sceneDpr;
   canvas.width = W * dpr; canvas.height = H * dpr;
   canvas.getContext('2d').scale(dpr, dpr);
   var cx = W / 2, cy = H / 2;
@@ -391,7 +393,7 @@ window.onload = function () {
   var _pointerMoved = false;
   var TAP_MOVE_THRESHOLD = 12;
   var PICKUP_PULL_STRENGTH = 0.26;
-  var PICKUP_TENSION_THRESHOLD = 0.42;
+  var PICKUP_TENSION_THRESHOLD = 0.21;
   var PICKUP_TENSION_RELEASE_RATE = 0.05;
   var STUCK_PLUCK_THRESHOLD = 0.72;
   var STUCK_BREAK_THRESHOLD = 1.1;
@@ -420,9 +422,9 @@ window.onload = function () {
   }
 
   function _getPickupForceThreshold(obj) {
-    if (obj.kind === 'boulder') return 6;
-    if (obj.kind === 'bug') return 3;
-    return 3;
+    if (obj.kind === 'boulder') return 3;
+    if (obj.kind === 'bug') return 1.5;
+    return 1.5;
   }
 
   function _isStuckDragOnly(obj) {
@@ -740,17 +742,6 @@ window.onload = function () {
   /* ── web override ── */
   var webOverride = null;
   var webCx = 0, webCy = 0, webRad = 1;
-  var WEB_VIEWPORT_PAD = 10;
-
-  function _webViewportBounds() {
-    return {
-      left: WEB_VIEWPORT_PAD,
-      top: WEB_VIEWPORT_PAD,
-      right: W - WEB_VIEWPORT_PAD,
-      bottom: H - WEB_VIEWPORT_PAD
-    };
-  }
-
   function buildWeb() {
     if (spiderweb) {
       var idx = sim.composites.indexOf(spiderweb);
@@ -769,8 +760,7 @@ window.onload = function () {
       spiralStiffnessMul: 0.85,
       radialTensorMul: 0.85,
       spiralTensorMul: 1.0,
-      centerTensionBoost: 0.08,
-      viewportBounds: _webViewportBounds()
+      centerTensionBoost: 0.08
     });
     sim.gravityComposite = spiderweb;
     webCx = ocx; webCy = ocy; webRad = rad;
@@ -3627,7 +3617,7 @@ window.onload = function () {
   function _isThrownObjectOffScreen(x, y, kind) {
     if (kind === 'stone') return y > H + 520 || x < -220 || x > W + 220;
     if (kind === 'poop') return y > H + 400 || y < -200 || x < -200 || x > W + 200;
-    return y > H + 400 || y < -200 || x < -200 || x > W + 200;
+    return y > H + 400 || y < -200 || x < -400 || x > W + 400;
   }
 
   function _removeThrownObjectAt(oi, obj) {
@@ -3639,9 +3629,15 @@ window.onload = function () {
     updateBadge(obj.kind, -1);
   }
 
-  function _radialRatioAt(x, y) { return radialRatioAt(x, y, W, H, P.webRadius * WEB_SCALE); }
-  function _inWebZone(x, y) { return inWebZone(x, y, W, H, P.webRadius * WEB_SCALE); }
-  function _getWebOuterR() { return getWebOuterR(W, H, P.webRadius * WEB_SCALE); }
+  function _getWebOuterR() {
+    return webRad > 1 ? webRad : getWebOuterR(W, H, P.webRadius * WEB_SCALE);
+  }
+  function _radialRatioAt(x, y) {
+    return radialRatioAt(x, y, W, H, P.webRadius * WEB_SCALE, webCx || cx, webCy || cy, _getWebOuterR());
+  }
+  function _inWebZone(x, y) {
+    return inWebZone(x, y, W, H, P.webRadius * WEB_SCALE, webCx || cx, webCy || cy, _getWebOuterR());
+  }
 
   function captureThrownStickPrev() {
     for (var oi = 0; oi < thrownObjects.length; oi++) {
@@ -3747,9 +3743,17 @@ window.onload = function () {
           if (p.pos.y > H + 400) { obj.destroy(sim); thrownObjects.splice(oi, 1); updateBadge(obj.kind, -1); continue; }
         }
 
-        /* ── falling 状态离屏销毁（苍蝇穿越边界不在此处理） ── */
-        if (obj.kind !== 'bug' && _isThrownObjectOffScreen(p.pos.x, p.pos.y, obj.kind)) {
-          _removeThrownObjectAt(oi, obj);
+        /* 手动积分后冻结速度，避免 physics 再积分一次导致穿透过快 */
+        p.lastPos.x = p.pos.x;
+        p.lastPos.y = p.pos.y;
+
+        /* ── falling 状态离屏销毁（苍蝇穿越边界不在此处理）──
+           boulder 只判断纵向，横向允许大角度飞出再回来落网 */
+        if (obj.kind !== 'bug') {
+          var _oob = obj.kind === 'boulder'
+            ? (p.pos.y > H + 400 || p.pos.y < -400)          /* 毛虫：只判断上下 */
+            : _isThrownObjectOffScreen(p.pos.x, p.pos.y, obj.kind);
+          if (_oob) _removeThrownObjectAt(oi, obj);
         }
 
       } else if (obj.state === 'sticking') {
@@ -4168,10 +4172,23 @@ window.onload = function () {
       var prevX = obj._stickPrevX, prevY = obj._stickPrevY;
       var stepDx = p.pos.x - prevX, stepDy = p.pos.y - prevY;
       var stepLen = Math.sqrt(stepDx * stepDx + stepDy * stepDy);
+      var newCount = 0;
 
-      if (!_inWebZone(p.pos.x, p.pos.y) && !obj.enteredWebZone) continue;
+      if (USE_LEGACY_COLLISION) {
+        var legacyHits = collectPathHitCandidates(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt
+        );
+        newCount = legacyHits.length;
+      } else {
+        newCount = collectPathHitCandidatesSpatial(
+          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius,
+          spatialIndex, spatialQueryBuf, stickHitScratch, _radialRatioAt
+        );
+      }
 
+      /* 首次碰到蛛丝才开始计穿透；避免在网区空档就把 stickDelay 耗尽 */
       if (!obj.enteredWebZone) {
+        if (newCount === 0) continue;
         obj.enteredWebZone = true;
         obj.penetrationDist = 0;
         obj.hitHistory = [];
@@ -4183,12 +4200,10 @@ window.onload = function () {
         var stickMult = obj.kind === 'bug' ? 2.0 : 1.0;
         obj.stickDelay = (minDelay + Math.random() * (maxDelay - minDelay)) * stickMult;
       }
+
       obj.penetrationDist += stepLen;
 
       if (USE_LEGACY_COLLISION) {
-        var legacyHits = collectPathHitCandidates(
-          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius, spiderweb, _radialRatioAt
-        );
         for (var lhi = 0; lhi < legacyHits.length; lhi++) {
           legacyHits[lhi].penetration = obj.penetrationDist;
           var lastL = obj._hitHistoryCount ? obj.hitHistory[obj._hitHistoryCount - 1] : null;
@@ -4206,10 +4221,6 @@ window.onload = function () {
           obj._hitHistoryCount = P.stickHistory;
         }
       } else {
-        var newCount = collectPathHitCandidatesSpatial(
-          prevX, prevY, p.pos.x, p.pos.y, P.stickCatchRadius,
-          spatialIndex, spatialQueryBuf, stickHitScratch, _radialRatioAt
-        );
         obj._hitHistoryCount = mergeStickHits(
           obj.hitHistory, obj._hitHistoryCount, stickHitScratch, newCount,
           obj.penetrationDist, P.stickHistory
@@ -4217,11 +4228,13 @@ window.onload = function () {
       }
 
       if (obj.penetrationDist >= obj.stickDelay && obj._hitHistoryCount) {
+        var stickMidBias = obj.kind === 'drop' ? 0 : P.stickMidBias;
         var pick = chooseStickCandidate(
           obj.hitHistory, obj._hitHistoryCount,
-          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, P.stickMidBias,
+          USE_LEGACY_COLLISION ? spiderweb : spatialIndex, stickMidBias,
           obj.kind === 'bug' ? p.pos.x : null,
-          obj.kind === 'bug' ? p.pos.y : null
+          obj.kind === 'bug' ? p.pos.y : null,
+          obj.kind === 'bug' ? null : obj.stickDelay
         );
         obj._hitHistoryCount = pick.count;
         if (pick.candidate) {
@@ -4865,7 +4878,7 @@ window.onload = function () {
       statsTimeStart('bgUpd');
       updateSylvanBackground(1.0, sim.mouseDown, _smoothDrag, sim.mouse.x, sim.mouse.y);
       statsTimeEnd();
-      var _bgInterval = IS_MOBILE ? 3 : 2;
+      var _bgInterval = RENDER_BUDGET.backgroundFrameInterval;
       if (_bgFrame % _bgInterval === 0) {
         statsTimeStart('bgRnd');
         renderSylvanBackground();

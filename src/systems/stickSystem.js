@@ -19,19 +19,27 @@ export function getWebOuterR(W, H, webRadius) {
 
 /**
  * 判断是否在网区范围内
+ * @param {number} [webCx] - 网心 X，默认画布中心
+ * @param {number} [webCy] - 网心 Y，默认画布中心
+ * @param {number} [outerR] - 网外圈半径（px），默认由 webRadius 推算
  */
-export function inWebZone(x, y, W, H, webRadius) {
-  var r = getWebOuterR(W, H, webRadius);
-  var dx = x - W / 2, dy = y - H / 2;
+export function inWebZone(x, y, W, H, webRadius, webCx, webCy, outerR) {
+  var cx = webCx != null ? webCx : W / 2;
+  var cy = webCy != null ? webCy : H / 2;
+  var r = outerR != null ? outerR : getWebOuterR(W, H, webRadius);
+  var dx = x - cx, dy = y - cy;
   return dx * dx + dy * dy <= r * r;
 }
 
 /**
  * 计算到网中心的径向比（0=中心, 1=边缘）
  */
-export function radialRatioAt(x, y, W, H, webRadius) {
-  var r = getWebOuterR(W, H, webRadius) || 1;
-  var dx = x - W / 2, dy = y - H / 2;
+export function radialRatioAt(x, y, W, H, webRadius, webCx, webCy, outerR) {
+  var cx = webCx != null ? webCx : W / 2;
+  var cy = webCy != null ? webCy : H / 2;
+  var r = outerR != null ? outerR : getWebOuterR(W, H, webRadius);
+  r = r || 1;
+  var dx = x - cx, dy = y - cy;
   return Math.sqrt(dx * dx + dy * dy) / r;
 }
 
@@ -185,9 +193,10 @@ export function findNearestWebSegment(px, py, spiderweb, spatialOpts, fallback) 
  * preferX/preferY 有值时（虫子）优先选离当前位置最近的候选
  * 兼容两种调用方式：
  *   1) legacy: chooseStickCandidate(history, spiderweb, stickMidBias, occupiedPoints, minSep) -> candidate|null
- *   2) current: chooseStickCandidate(history, historyCount, aliveCheck, stickMidBias, preferX, preferY) -> { candidate, count }
+ *   2) current: chooseStickCandidate(history, historyCount, aliveCheck, stickMidBias, preferX, preferY, targetPenetration) -> { candidate, count }
+ * targetPenetration 有值时按路径深度（stickDelay）加权，在随机深度附近挑候选
  */
-export function chooseStickCandidate(history, historyCountOrSpiderweb, aliveCheckOrStickMidBias, stickMidBiasOrOccupiedPoints, preferXOrMinSep, preferY) {
+export function chooseStickCandidate(history, historyCountOrSpiderweb, aliveCheckOrStickMidBias, stickMidBiasOrOccupiedPoints, preferXOrMinSep, preferY, targetPenetration) {
   if (typeof historyCountOrSpiderweb !== 'number') {
     var spiderweb = historyCountOrSpiderweb;
     var stickMidBias = aliveCheckOrStickMidBias;
@@ -268,7 +277,13 @@ export function chooseStickCandidate(history, historyCountOrSpiderweb, aliveChec
   var total = 0;
   for (var i = 0; i < write; i++) {
     var hit = history[i];
-    var depthWeight = 0.4 + 0.6 * ((i + 1) / write);
+    var depthWeight;
+    if (targetPenetration != null && targetPenetration > 0) {
+      var penDelta = Math.abs((hit.penetration || 0) - targetPenetration);
+      depthWeight = 1 / (1 + penDelta * 0.06);
+    } else {
+      depthWeight = 0.4 + 0.6 * ((i + 1) / write);
+    }
     var midness = 1 - Math.min(1, Math.abs(hit.radial - 0.5) / 0.5);
     hit._w = depthWeight * (1 + stickMidBias * midness);
     total += hit._w;

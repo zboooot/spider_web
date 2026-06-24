@@ -4,6 +4,7 @@
  */
 
 import { statsDc, statsAddBgLeaves, statsSetScene } from '../debug/renderStats.js';
+import { getRenderBudgetProfile, isMobileDevice } from './renderBudgetProfile.js';
 
 /* ── 5套主题配置 ── */
 export var THEMES = [
@@ -661,7 +662,11 @@ export function initSylvanBackground(W, H, screenShellEl) {
 }
 
 function _resizeCanvases() {
-  _dpr = window.devicePixelRatio || 1;
+  var renderBudget = getRenderBudgetProfile(
+    isMobileDevice(typeof navigator !== 'undefined' ? navigator : null),
+    typeof window !== 'undefined' ? window.devicePixelRatio : 1
+  );
+  _dpr = renderBudget.backgroundDpr;
   var keys = ['bg', 'deep', 'mid', 'fg'];
   keys.forEach(function (key) {
     canvases[key].width = Math.round(_W * _dpr);
