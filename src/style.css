@@ -149,6 +149,16 @@ h1{
   white-space:pre;
   max-width:calc(100% - 12px);
 }
+.stats-panel.perf-diag{
+  font-size:11px;
+  line-height:1.4;
+  padding:6px 8px;
+  max-width:min(100% - 12px, 420px);
+}
+.stats-panel.perf-recording{
+  border-color:rgba(255,120,120,0.55);
+  box-shadow:0 0 0 1px rgba(255,80,80,0.2);
+}
 @keyframes webFlashRed{
   0%  { color:#ff3a3a; }
   100%{ color:#efefef; }

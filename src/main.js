@@ -84,7 +84,12 @@ import {
 
 import {
   statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
-  statsTimeStart, statsTimeEnd, statsGetPanelVisible, statsSetPanelVisible
+  statsTimeStart, statsTimeEnd, statsGetPanelVisible, statsSetPanelVisible,
+  statsSetRuntimeContextGetter, statsRecordFrameMeta,
+  statsGetDiagnosticMode, statsSetDiagnosticMode,
+  statsIsRecording, statsStartRecording, statsStopRecording,
+  statsGetRecordedSecondCount, statsClearRecording,
+  statsCopyExportPackage
 } from './debug/renderStats.js';
 import { getBgEntityCounts } from './render/sylvanBackground.js';
 
@@ -879,6 +884,21 @@ window.onload = function () {
   initOverlay();
 
   var updateStatsPanel = statsBindPanel(document.getElementById('stats-panel'));
+  var perfRecordBtnEl = document.getElementById('btn-perf-record');
+  function syncPerfRecordBtnLabel() {
+    if (!perfRecordBtnEl || !statsIsRecording()) return;
+    perfRecordBtnEl.textContent = 'Record Perf: ON (' + statsGetRecordedSecondCount() + 's)';
+  }
+
+  statsSetRuntimeContextGetter(function () {
+    return {
+      state: gameState,
+      level: currentLevelIndex,
+      wave: currentWaveIndex,
+      tutorial: !!tutorialActive,
+      mobile: IS_MOBILE
+    };
+  });
 
   (function initStatsPanelToggle() {
     var btn = document.getElementById('btn-stats-toggle');
@@ -3837,6 +3857,35 @@ window.onload = function () {
       return debugSpawnEnabled;
     },
     debugBugBreakWeb: debugBugBreakWeb,
+    isPerfDiagOn: function () {
+      return statsGetDiagnosticMode();
+    },
+    togglePerfDiag: function () {
+      var on = !statsGetDiagnosticMode();
+      statsSetDiagnosticMode(on);
+      if (on) statsSetPanelVisible(true);
+      return on;
+    },
+    isPerfRecording: function () {
+      return statsIsRecording();
+    },
+    togglePerfRecording: function () {
+      if (statsIsRecording()) {
+        statsStopRecording();
+        return false;
+      }
+      statsStartRecording();
+      return true;
+    },
+    getPerfRecordedSeconds: function () {
+      return statsGetRecordedSecondCount();
+    },
+    clearPerfRecording: function () {
+      statsClearRecording();
+    },
+    exportPerfLog: async function () {
+      return statsCopyExportPackage();
+    },
     getWaveEditorConfigs: function () {
       return LEVEL_CONFIGS;
     },
@@ -4900,9 +4949,17 @@ window.onload = function () {
       _fixedAccumulatorMs -= FIXED_STEP_MS;
       steps++;
     }
+    var droppedCatchup = false;
     if (steps >= MAX_CATCHUP_STEPS && _fixedAccumulatorMs >= FIXED_STEP_MS) {
       _fixedAccumulatorMs = 0;
+      droppedCatchup = true;
     }
+
+    statsRecordFrameMeta({
+      logicSteps: steps,
+      backlogMs: _fixedAccumulatorMs,
+      droppedCatchup: droppedCatchup
+    });
 
     if (gameState !== 'IDLE' && gameState !== 'GAME_OVER') {
       renderFrame(timestamp, updateScale);
@@ -4910,6 +4967,7 @@ window.onload = function () {
 
     statsEndFrame(timestamp);
     updateStatsPanel();
+    syncPerfRecordBtnLabel();
     requestAnimFrame(loop);
   };
   requestAnimFrame(loop);

@@ -101,6 +101,56 @@ export function initPanel(P, DEFAULTS, callbacks) {
 
   document.getElementById('btn-debugBugBreak').onclick = callbacks.debugBugBreakWeb;
 
+  var perfDiagBtn = document.getElementById('btn-perf-diag');
+  function renderPerfDiagBtn(on) {
+    perfDiagBtn.textContent = on ? 'Perf Diag: ON' : 'Perf Diag: OFF';
+    perfDiagBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
+    perfDiagBtn.style.color = on ? '#2a5a2a' : '';
+  }
+  renderPerfDiagBtn(callbacks.isPerfDiagOn());
+  perfDiagBtn.addEventListener('click', function () {
+    renderPerfDiagBtn(callbacks.togglePerfDiag());
+  });
+
+  var perfRecordBtn = document.getElementById('btn-perf-record');
+  function renderPerfRecordBtn(on, seconds) {
+    perfRecordBtn.textContent = on
+      ? ('Record Perf: ON (' + (seconds || 0) + 's)')
+      : ('Record Perf: OFF' + (seconds ? (' (' + seconds + 's)') : ''));
+    perfRecordBtn.style.background = on ? 'rgba(120,60,60,0.45)' : '';
+    perfRecordBtn.style.color = on ? '#8a2a2a' : '';
+  }
+  renderPerfRecordBtn(callbacks.isPerfRecording(), callbacks.getPerfRecordedSeconds());
+  perfRecordBtn.addEventListener('click', function () {
+    renderPerfRecordBtn(callbacks.togglePerfRecording(), callbacks.getPerfRecordedSeconds());
+  });
+
+  var perfExportBtn = document.getElementById('btn-perf-export');
+  perfExportBtn.addEventListener('click', async function () {
+    var h = document.getElementById('save-hint');
+    var seconds = callbacks.getPerfRecordedSeconds();
+    if (!seconds) {
+      h.textContent = 'No perf log yet — record first';
+      setTimeout(function () { h.textContent = ''; }, 2200);
+      return;
+    }
+    h.textContent = 'Exporting perf log...';
+    try {
+      var result = await callbacks.exportPerfLog();
+      if (!result.ok) {
+        h.textContent = 'Export failed';
+      } else if (result.mode === 'clipboard') {
+        h.textContent = '\u2713 Copied ' + seconds + 's perf log';
+      } else {
+        h.textContent = '\u2713 Downloaded ' + seconds + 's perf log';
+      }
+    } catch (e) {
+      h.textContent = 'Export failed';
+    }
+    renderPerfRecordBtn(callbacks.isPerfRecording(), callbacks.getPerfRecordedSeconds());
+    setTimeout(function () { h.textContent = ''; }, 2600);
+  });
+
   document.getElementById('btn-save').onclick = function () {
     localStorage.setItem('spiderPanelParams', JSON.stringify(P));
     var h = document.getElementById('save-hint');
