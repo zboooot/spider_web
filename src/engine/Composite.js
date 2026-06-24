@@ -11,8 +11,12 @@ export function Composite() {
 }
 
 Composite.prototype.pin = function (index, pos) {
-  pos = pos || this.particles[index].pos;
-  var pc = new PinConstraint(this.particles[index], pos);
+  var p = this.particles[index];
+  pos = pos || p.pos;
+  p.pinned = true;
+  p.pos.mutableSet(pos);
+  p.lastPos.mutableSet(pos);
+  var pc = new PinConstraint(p, pos);
   this.constraints.push(pc);
   return pc;
 };

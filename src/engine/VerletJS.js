@@ -60,7 +60,7 @@ export function VerletJS(width, height, canvas) {
   }
 
   this.bounds = function (p) {
-    if (p.__isBug || p.__ignoreBounds) return; /* 特殊对象不受边界约束 */
+    if (p.pinned || p.__isBug || p.__ignoreBounds) return;
     if (p.pos.y < 0) p.pos.y = 0;
     if (p.pos.y > this.height - 1) p.pos.y = this.height - 1;
     if (p.pos.x < 0) p.pos.x = 0;
@@ -276,6 +276,7 @@ VerletJS.prototype._integrateParticles = function (gX, gY) {
     var pts = comp.particles;
     for (i in pts) {
       var p = pts[i];
+      if (p.pinned) continue;
       var velX = (p.pos.x - p.lastPos.x) * friction;
       var velY = (p.pos.y - p.lastPos.y) * friction;
       if (p.pos.y >= h) {
@@ -363,10 +364,17 @@ VerletJS.prototype._relaxConstraints = function (iters, aliveCheck, sc) {
     for (i = 0; i < iters; ++i) {
       for (j in cs) {
         var con = cs[j];
+        if (con instanceof PinConstraint) continue;
         /* 拖拽 stub 时跳过它的锚定边，避免被拉回去 */
         if (_dragging && con.__isStubAnchor && (con.a === _dragging || con.b === _dragging)) continue;
         if (!_constraintAlive(con, aliveCheck)) continue;
         con.relax(sc);
+      }
+      for (j in cs) {
+        var pinCon = cs[j];
+        if (!(pinCon instanceof PinConstraint)) continue;
+        if (!_constraintAlive(pinCon, aliveCheck)) continue;
+        pinCon.relax(sc);
       }
     }
   }
