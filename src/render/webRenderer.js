@@ -103,6 +103,18 @@ function _growLineTo(ctx, c) {
   }
 }
 
+function _drawWebConstraintLine(ctx, c) {
+  ctx.strokeStyle = _DEFAULT_STROKE;
+  ctx.lineWidth = _DEFAULT_WIDTH;
+  var flashed = _applyFlash(ctx, c);
+  ctx.beginPath();
+  _growLineTo(ctx, c);
+  ctx.stroke();
+  if (flashed) _clearGlow(ctx);
+  statsDc('line');
+  return true;
+}
+
 function _applyFlash(ctx, c) {
   var ft = c.__flashT;
   if (ft == null || ft >= 1) return false;
@@ -130,14 +142,7 @@ function _drawCalmSegments(ctx, comp, n) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
-      ctx.strokeStyle = _DEFAULT_STROKE;
-      ctx.lineWidth = _DEFAULT_WIDTH;
-      var flashed = _applyFlash(ctx, c);
-      ctx.beginPath();
-      _growLineTo(ctx, c);
-      ctx.stroke();
-      if (flashed) _clearGlow(ctx);
-      statsDc('line');
+      _drawWebConstraintLine(ctx, c);
     } else {
       c.draw(ctx);
       statsDc('line');

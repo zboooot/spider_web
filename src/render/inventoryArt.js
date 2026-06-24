@@ -1,29 +1,22 @@
-var flyImg = new Image();
-flyImg.src = '/src/assets/fly.png';
-
-var wormImg = new Image();
-wormImg.src = '/src/assets/worm.png';
-
-var leafImg = new Image();
-leafImg.src = '/src/assets/leaf.png';
-
-var poopImg = new Image();
-poopImg.src = '/src/assets/poop.png';
+import { flyImg, wormImg, leafImg, poopImg } from '../assets/imageAssets.js';
 
 /**
  * HUD 物品栏图标绘制
  */
 
+var INVENTORY_ICON_SCALE = 1.3;
+
 export function drawInventoryBoulder(ctx, w, h) {
   ctx.clearRect(0, 0, w, h);
   if (wormImg.complete && wormImg.naturalWidth > 0) {
-    var drawW = 29;  // 42 × 0.7
+    var drawW = 70;
     var drawH = drawW * (wormImg.naturalHeight / wormImg.naturalWidth);
     ctx.drawImage(wormImg, (w - drawW) * 0.5, (h - drawH) * 0.5, drawW, drawH);
     return;
   }
   ctx.save();
   ctx.translate(w * 0.5, h * 0.5 + 1);
+  ctx.scale(INVENTORY_ICON_SCALE, INVENTORY_ICON_SCALE);
   var segR = 5.2, gap = 7.2, segs = 4;
   for (var si = 0; si < segs; si++) {
     var sy = si * gap - (segs - 1) * gap * 0.5 + 1.8;
@@ -45,13 +38,14 @@ export function drawInventoryBoulder(ctx, w, h) {
 export function drawInventoryBug(ctx, w, h) {
   ctx.clearRect(0, 0, w, h);
   if (flyImg.complete && flyImg.naturalWidth > 0) {
-    var drawH = 33.6;
+    var drawH = 70;
     var drawW = drawH * (flyImg.naturalWidth / flyImg.naturalHeight);
     ctx.drawImage(flyImg, (w - drawW) * 0.5, (h - drawH) * 0.5, drawW, drawH);
     return;
   }
   ctx.save();
   ctx.translate(w * 0.5, h * 0.56);
+  ctx.scale(INVENTORY_ICON_SCALE, INVENTORY_ICON_SCALE);
   var r = 5.2;
   ctx.save(); ctx.rotate(-0.28);
   ctx.beginPath(); ctx.ellipse(-r * 1.5, -r * 0.2, r * 1.4, r * 0.48, Math.PI * 0.08, 0, 2 * Math.PI);
@@ -81,13 +75,14 @@ export function drawInventoryBug(ctx, w, h) {
 export function drawInventoryDrop(ctx, w, h) {
   ctx.clearRect(0, 0, w, h);
   if (leafImg.complete && leafImg.naturalWidth > 0) {
-    var drawW = 30;
+    var drawW = 30 * INVENTORY_ICON_SCALE;
     var drawH = drawW * (leafImg.naturalHeight / leafImg.naturalWidth);
     ctx.drawImage(leafImg, (w - drawW) * 0.5, (h - drawH) * 0.5, drawW, drawH);
     return;
   }
   ctx.save();
   ctx.translate(w * 0.5, h * 0.5);
+  ctx.scale(INVENTORY_ICON_SCALE, INVENTORY_ICON_SCALE);
   ctx.rotate(0.22);
   var r = 6.4;
   ctx.beginPath();
@@ -104,13 +99,14 @@ export function drawInventoryDrop(ctx, w, h) {
 export function drawInventoryPoop(ctx, w, h) {
   ctx.clearRect(0, 0, w, h);
   if (poopImg.complete && poopImg.naturalWidth > 0) {
-    var drawH = 34;
+    var drawH = 34 * INVENTORY_ICON_SCALE;
     var drawW = drawH * (poopImg.naturalWidth / poopImg.naturalHeight);
     ctx.drawImage(poopImg, (w - drawW) * 0.5, (h - drawH) * 0.5, drawW, drawH);
     return;
   }
   ctx.save();
   ctx.translate(w * 0.5, h * 0.5 + 2);
+  ctx.scale(INVENTORY_ICON_SCALE, INVENTORY_ICON_SCALE);
   var r = 6.8;
   ctx.beginPath();
   ctx.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);

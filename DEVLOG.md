@@ -117,8 +117,12 @@ vite.config.js     Vite 配置（含 vite-plugin-singlefile 打包插件）
    - 同步更新 `index.html` 里对应 slider 的 `value` 属性
 
 3. **打包时面板隐藏逻辑在 `vite.config.js` 里**，通过 `transformIndexHtml` 钩子注入 CSS，开发版不受影响
+   - 构建版会隐藏 `h1`、左侧参数面板、右侧生成/编辑/帮助区，以及 `.stats-panel` 性能调试面板
+   - 打包目标是只保留游戏舞台和游戏内必要 HUD，不保留非游戏必需说明文字与调试 UI
 
 4. **打包版全屏缩放**通过注入的 `<script>` 里的 `applyScale()` 函数实现，监听 `resize` 和 `load` 事件
+   - 缩放基于固定逻辑尺寸 `450×800`，按 `min(window.innerWidth / 450, window.innerHeight / 800)` 等比缩放
+   - 目标是保证游戏界面始终居中，并可直接适配手机屏幕而不改动游戏内部坐标系
 
 ### 背景系统
 

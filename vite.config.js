@@ -1,9 +1,30 @@
+import fs from 'fs';
+import path from 'path';
 import { defineConfig } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
+
+const inlineImageAssetsPlugin = {
+  name: 'inline-image-assets',
+  enforce: 'pre',
+  apply: 'build',
+  transform(code, id) {
+    if (!id.replace(/\\/g, '/').endsWith('/src/assets/imageAssets.js')) return null;
+    var dir = path.dirname(id);
+    var next = code.replace(/assetPath\('([^']+)'\)/g, function (_match, file) {
+      var buf = fs.readFileSync(path.join(dir, file));
+      return "'data:image/png;base64," + buf.toString('base64') + "'";
+    });
+    next = next.replace(/\nfunction assetPath\([\s\S]*?\n\}\n/, '\n');
+    return { code: next, map: null };
+  }
+};
 
 var HIDE_PANELS_CSS = [
   '/* hide panels */',
   'h1, .layout > .panel { display:none !important; }',
+  '.right-side { display:none !important; }',
+  '.stats-panel { display:none !important; }',
+  '.phase-bar { display:none !important; }',
   '/* full-screen */',
   'html, body {',
   '  width:100vw; height:100vh; margin:0; padding:0 !important;',
@@ -51,7 +72,7 @@ const hidePanelsPlugin = {
 
 export default defineConfig({
   root: '.',
-  plugins: [hidePanelsPlugin, viteSingleFile()],
+  plugins: [hidePanelsPlugin, inlineImageAssetsPlugin, viteSingleFile()],
   build: {
     outDir: 'dist',
     assetsInlineLimit: 100 * 1024 * 1024,

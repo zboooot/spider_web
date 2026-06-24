@@ -13,33 +13,17 @@ import {
   isSilkWrappedKind,
   shouldDrawSilkForObject
 } from './preyWrapProfile.js';
-
-var flyImg = new Image();
-flyImg.src = '/src/assets/fly.png';
-
-var fly01Img = new Image();
-fly01Img.src = '/src/assets/fly01.png';
-
-var fly02Img = new Image();
-fly02Img.src = '/src/assets/fly02.png';
-
-var wormImg = new Image();
-wormImg.src = '/src/assets/worm.png';
-
-var worm00Img = new Image();
-worm00Img.src = '/src/assets/worm00.png';
-
-var worm01Img = new Image();
-worm01Img.src = '/src/assets/worm01.png';
-
-var worm02Img = new Image();
-worm02Img.src = '/src/assets/worm02.png';
-
-var leafImg = new Image();
-leafImg.src = '/src/assets/leaf.png';
-
-var poopImg = new Image();
-poopImg.src = '/src/assets/poop.png';
+import {
+  flyImg,
+  fly01Img,
+  fly02Img,
+  wormImg,
+  worm00Img,
+  worm01Img,
+  worm02Img,
+  leafImg,
+  poopImg,
+} from '../assets/imageAssets.js';
 
 function _invalidateSilkContourCache() {
   _silkSpiralCache = {};
@@ -200,6 +184,34 @@ export function ensureSilkSpiral(obj) {
   if (!obj._silkSpiral) obj._silkSpiral = buildSilkSpiral(obj);
 }
 
+function getRenderedObjectAngle(obj) {
+  if (obj.kind === 'boulder') {
+    var baseAngle = (obj.state === 'falling' || obj.state === 'falling2' || obj.state === 'sticking')
+      ? obj.initAngle : (obj.stuckAngle || 0);
+    return baseAngle + (obj._wrapAngle || 0);
+  }
+  if (obj.kind === 'bug') {
+    if (obj.state === 'falling' && obj._tiltAngle != null) return obj._tiltAngle;
+    if ((obj.state === 'stuck' || obj.state === 'sticking') && obj._stuckTiltAngle != null) {
+      return obj._stuckTiltAngle;
+    }
+    return obj.angle + Math.PI / 2 + (obj._wrapAngle || 0);
+  }
+  if (obj.kind === 'poop') return obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6;
+  return obj.angle + (obj._wrapAngle || 0);
+}
+
+function shouldMirrorObjectX(obj) {
+  if (obj.kind === 'boulder') return !!obj._mirrorX;
+  if (obj.kind === 'bug') {
+    if (obj.state === 'falling' && obj._tiltAngle != null) return !!obj._flyMirror;
+    if ((obj.state === 'stuck' || obj.state === 'sticking') && obj._stuckTiltAngle != null) {
+      return !!obj._stuckFlyMirror;
+    }
+  }
+  return false;
+}
+
 function getRenderedObjectBounds(obj) {
   var def = obj.def;
   if (obj.kind === 'bug') return getWrapDrawSize('bug', def.r, getAnimatedFlyImage(obj));
@@ -325,7 +337,8 @@ export function buildCollectSnapshot(obj) {
   var ctx = canvas.getContext('2d');
   ctx.translate(size * 0.5, size * 0.5);
   applyPreyDeform(ctx, obj, 1);
-  ctx.rotate(getPreyRenderAngle(obj));
+  if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
+  ctx.rotate(getRenderedObjectAngle(obj));
   drawObjectSpriteLocal(ctx, obj);
   drawSilkSpiralLocal(ctx, obj, 1, 0);
   return { canvas: canvas, size: size };
@@ -529,7 +542,8 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
     else if (obj.kind === 'boulder') {
       ctx.save(); ctx.translate(px, py);
       applyPreyDeform(ctx, obj, _springScale);
-      ctx.rotate(getPreyRenderAngle(obj));
+      if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
+      ctx.rotate(getRenderedObjectAngle(obj));
       var wormFrame = getAnimatedWormImage(obj);
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormSize = getWrapDrawSize('boulder', def.r, wormFrame);
@@ -569,7 +583,8 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
     else if (obj.kind === 'bug') {
       ctx.save(); ctx.translate(px, py);
       applyPreyDeform(ctx, obj, _springScale);
-      ctx.rotate(getPreyRenderAngle(obj));
+      if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
+      ctx.rotate(getRenderedObjectAngle(obj));
       var flyFrame = getAnimatedFlyImage(obj);
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flySize = getWrapDrawSize('bug', def.r, flyFrame);
