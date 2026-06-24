@@ -24,6 +24,9 @@ worm02Img.src = '/src/assets/worm02.png';
 var leafImg = new Image();
 leafImg.src = '/src/assets/leaf.png';
 
+var poopImg = new Image();
+poopImg.src = '/src/assets/poop.png';
+
 var _priorityFlashCanvas = document.createElement('canvas');
 var _priorityFlashCtx = _priorityFlashCanvas.getContext('2d');
 
@@ -141,7 +144,7 @@ function _buildSpiralFromContour(contour, loops, stepsPerLoop) {
 }
 
 export function buildSilkSpiral(obj) {
-  if (obj.kind !== 'bug' && obj.kind !== 'boulder') return null;
+  if (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop') return null;
   var r = obj.def.r;
   var img, drawW, drawH;
   if (obj.kind === 'bug') {
@@ -150,12 +153,18 @@ export function buildSilkSpiral(obj) {
     drawW = flyImg.complete && flyImg.naturalWidth > 0
       ? drawH * (flyImg.naturalWidth / flyImg.naturalHeight)
       : drawH * 0.766;
-  } else {
+  } else if (obj.kind === 'boulder') {
     img = wormImg;
     drawW = r * 6.3;
     drawH = wormImg.complete && wormImg.naturalWidth > 0
       ? drawW * (wormImg.naturalHeight / wormImg.naturalWidth)
       : drawW * 1.509;
+  } else {
+    img = poopImg;
+    drawH = r * 3.2;
+    drawW = poopImg.complete && poopImg.naturalWidth > 0
+      ? drawH * (poopImg.naturalWidth / poopImg.naturalHeight)
+      : r * 2.6;
   }
   var cacheKey = obj.kind + '_' + Math.round(r * 10);
   if (!_silkSpiralCache[cacheKey]) {
@@ -164,7 +173,7 @@ export function buildSilkSpiral(obj) {
     _silkSpiralCache[cacheKey] = contour;
   }
   var contour = _silkSpiralCache[cacheKey];
-  var loops = obj.kind === 'bug' ? 10 : 12;
+  var loops = obj.kind === 'bug' ? 10 : obj.kind === 'poop' ? 11 : 12;
   return _buildSpiralFromContour(contour, loops, 64);
 }
 
@@ -174,6 +183,7 @@ function getRenderedObjectAngle(obj) {
     return baseAngle + (obj._wrapAngle || 0) + Math.PI / 2;
   }
   if (obj.kind === 'bug') return obj.angle + Math.PI / 2 + (obj._wrapAngle || 0);
+  if (obj.kind === 'poop') return obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6;
   return obj.angle + (obj._wrapAngle || 0);
 }
 
@@ -195,19 +205,31 @@ function getRenderedObjectBounds(obj) {
       : def.r * 9.2;
     return { width: wormW, height: wormH };
   }
+  if (obj.kind === 'poop') {
+    var poopH = def.r * 3.2;
+    var poopW = poopImg.complete && poopImg.naturalWidth > 0
+      ? poopH * (poopImg.naturalWidth / poopImg.naturalHeight)
+      : def.r * 2.6;
+    return { width: poopW, height: poopH };
+  }
   return { width: def.r * 2, height: def.r * 2 };
 }
 
-function drawSilkSpiralLocal(ctx, obj, progress) {
-  if (!obj._silkSpiral || (obj.kind !== 'bug' && obj.kind !== 'boulder')) return;
+function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
+  if (!obj._silkSpiral || (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop')) return;
   var pts = obj._silkSpiral;
   var drawCount = Math.floor(progress * (pts.length - 1));
   if (drawCount < 1) return;
+  var glow = shimmer || 0;
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 1.5 + glow * 0.35;
+  ctx.strokeStyle = 'rgba(255,255,255,' + (0.92 + glow * 0.06).toFixed(3) + ')';
+  if (glow > 0) {
+    ctx.shadowBlur = 8 + glow * 8;
+    ctx.shadowColor = 'rgba(255,255,255,' + (0.18 + glow * 0.16).toFixed(3) + ')';
+  }
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
   for (var si = 1; si <= drawCount; si++) ctx.lineTo(pts[si].x, pts[si].y);
@@ -215,7 +237,7 @@ function drawSilkSpiralLocal(ctx, obj, progress) {
   var tip = pts[drawCount];
   ctx.beginPath();
   ctx.arc(tip.x, tip.y, 1.8, 0, 2 * Math.PI);
-  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.fillStyle = 'rgba(255,255,255,' + (1 - glow * 0.04).toFixed(3) + ')';
   ctx.fill();
   ctx.restore();
 }
@@ -238,6 +260,12 @@ function drawObjectSpriteLocal(ctx, obj) {
       var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
       ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
     }
+    return;
+  }
+  if (obj.kind === 'poop' && poopImg.complete && poopImg.naturalWidth > 0) {
+    var poopH = def.r * 3.2;
+    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
+    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
   }
 }
 
@@ -259,44 +287,47 @@ export function buildCollectSnapshot(obj) {
   return { canvas: canvas, size: size };
 }
 
-function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect) {
-  var pulse = obj.state === 'stuck'
-    ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
-    : 0.22;
+function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashImage) {
   var r = def.r;
-  if (obj.cA && obj.cB && (obj.state === 'stuck' || obj.playerDragging)) {
-    var strain = obj.playerDragging ? (obj.dragStrain || 0) : 0;
+  var charge = obj._pickupCharge || 0;
+  if (obj.cA && obj.cB && obj.state === 'stuck') {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = obj.playerDragging
-      ? 'rgba(245,232,205,' + Math.min(0.96, 0.58 + strain * 0.22).toFixed(2) + ')'
+    ctx.strokeStyle = charge > 0
+      ? 'rgba(245,232,205,' + Math.min(0.96, 0.58 + charge * 0.22).toFixed(2) + ')'
       : 'rgba(25,18,14,0.55)';
-    ctx.lineWidth = obj.playerDragging ? (7.0 + strain * 4.6) : 3.2;
+    ctx.lineWidth = charge > 0 ? (7.0 + charge * 4.6) : 3.2;
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(obj.cA.b.pos.x - obj.particle.pos.x, obj.cA.b.pos.y - obj.particle.pos.y);
     ctx.moveTo(0, 0);
     ctx.lineTo(obj.cB.b.pos.x - obj.particle.pos.x, obj.cB.b.pos.y - obj.particle.pos.y);
     ctx.stroke();
-    if (obj.playerDragging) {
-      ctx.globalAlpha = 0.34 + Math.min(0.42, strain * 0.22);
+    if (charge > 0) {
+      ctx.globalAlpha = 0.34 + Math.min(0.42, charge * 0.22);
       ctx.lineWidth += 3.6;
       ctx.stroke();
     }
     ctx.restore();
   }
+  if (poopImg.complete && poopImg.naturalWidth > 0) {
+    var poopH = r * 3.2;
+    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
+    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    if (applyPriorityFlashImage) applyPriorityFlashImage(ctx, poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    statsDc('image');
+    return;
+  }
+  var pulse = obj.state === 'stuck'
+    ? (0.38 + 0.24 * Math.abs(Math.sin(obj.animT * 0.08)))
+    : 0.22;
   ctx.beginPath();
   ctx.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
   ctx.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
   ctx.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
   ctx.fillStyle = 'rgba(' + Math.round(18 + pulse * 30) + ',' + Math.round(13 + pulse * 18) + ',' + Math.round(10 + pulse * 14) + ',0.96)';
   ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(-r * 0.12, r * 0.1, r * 1.05, r * 1.3, 0.08, 0, 2 * Math.PI);
-  ctx.strokeStyle = obj.playerDragging ? 'rgba(255,242,220,0.78)' : 'rgba(55,40,34,0.35)';
-  ctx.lineWidth = obj.playerDragging ? 3.8 : 1.6;
-  ctx.stroke();
   applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.9);
 }
 
@@ -397,8 +428,57 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
 
     var _isWrapping = obj.state === 'wrapping';
 
+    /* ── 落石（穿透破网，不粘连） ── */
+    if (obj.kind === 'stone') {
+      ctx.save();
+      ctx.translate(px, py);
+      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
+      var stoneR = def.r;
+      var pullT = obj._tutorialPullTension || 0;
+      ctx.rotate((obj.angle || 0) * 0.45);
+      var stoneGrad = ctx.createRadialGradient(-stoneR * 0.28, -stoneR * 0.42, stoneR * 0.08, 0, 0, stoneR * 1.02);
+      stoneGrad.addColorStop(0, '#d6dbe0');
+      stoneGrad.addColorStop(0.38, '#a3abb4');
+      stoneGrad.addColorStop(0.78, '#707982');
+      stoneGrad.addColorStop(1, '#4a535c');
+      ctx.beginPath();
+      ctx.moveTo(-stoneR * 0.78, -stoneR * 0.22);
+      ctx.lineTo(-stoneR * 0.42, -stoneR * 0.82);
+      ctx.lineTo(stoneR * 0.24, -stoneR * 0.9);
+      ctx.lineTo(stoneR * 0.82, -stoneR * 0.34);
+      ctx.lineTo(stoneR * 0.72, stoneR * 0.36);
+      ctx.lineTo(stoneR * 0.18, stoneR * 0.88);
+      ctx.lineTo(-stoneR * 0.46, stoneR * 0.78);
+      ctx.lineTo(-stoneR * 0.9, stoneR * 0.18);
+      ctx.closePath();
+      ctx.fillStyle = stoneGrad;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(24,28,34,' + (0.52 + pullT * 0.12).toFixed(2) + ')';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-stoneR * 0.28, -stoneR * 0.34);
+      ctx.lineTo(-stoneR * 0.04, -stoneR * 0.52);
+      ctx.lineTo(stoneR * 0.16, -stoneR * 0.28);
+      ctx.lineTo(stoneR * 0.02, -stoneR * 0.04);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(stoneR * 0.08, stoneR * 0.18);
+      ctx.lineTo(stoneR * 0.34, stoneR * 0.06);
+      ctx.lineTo(stoneR * 0.28, stoneR * 0.34);
+      ctx.lineTo(stoneR * 0.02, stoneR * 0.42);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(38,42,47,0.22)';
+      ctx.fill();
+      statsDc('poly', 3);
+      applyPriorityFlashRect(ctx, -stoneR, -stoneR, stoneR * 2, stoneR * 2);
+      ctx.restore();
+    }
+
     /* ── 毛毛虫 ── */
-    if (obj.kind === 'boulder') {
+    else if (obj.kind === 'boulder') {
       ctx.save(); ctx.translate(px, py);
       if (obj._drawStretchScale !== 1 || obj._drawStretchSquash !== 1) {
         ctx.rotate(obj._drawStretchAngle || 0);
@@ -525,7 +605,9 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
       if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
       ctx.rotate(obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6);
       if (_isWrapping) { ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(30,20,18,0.9)'; }
-      drawPoopBlob(ctx, obj, def, applyPriorityFlashRect);
+      drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, function (localCtx, img, x, y, w, h) {
+        if (_isPriorityTarget) drawPriorityImage(localCtx, img, x, y, w, h, _priorityPulse);
+      });
       if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
       ctx.restore();
     }
@@ -539,9 +621,12 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
       statsDc('stroke');
     }
 
-    if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder')) {
+    if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder' || obj.kind === 'poop')) {
       var silkProgress = obj.state === 'wrapping' ? obj.wrapT : 1;
       if (silkProgress > 0) {
+        var silkShimmer = obj.state === 'wrapped'
+          ? (0.5 + 0.5 * Math.sin(obj.animT * 0.18 + (obj._popT || 0) * 0.1)) * 0.7
+          : 0;
         ctx.save();
         ctx.translate(px, py);
         ctx.globalAlpha = obj.alpha;
@@ -552,7 +637,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         }
         if (obj._drawScaleX !== 1 || obj._drawScaleY !== 1) ctx.scale(obj._drawScaleX, obj._drawScaleY);
         ctx.rotate(getRenderedObjectAngle(obj));
-        drawSilkSpiralLocal(ctx, obj, silkProgress);
+        drawSilkSpiralLocal(ctx, obj, silkProgress, silkShimmer);
         ctx.restore();
       }
     }
@@ -567,7 +652,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
 export function drawWrappingOverlay(ctx, thrownObjects) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi];
-    if (obj.state !== 'wrapping') continue;
+    if (obj.state !== 'wrapping' || obj.kind === 'drop') continue;
     var def = obj.def;
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     var wt = obj.wrapT;
@@ -592,5 +677,77 @@ export function drawWrappingOverlay(ctx, thrownObjects) {
     ctx.arc(px + Math.cos(tipAngle) * tr, py + Math.sin(tipAngle) * tr, 2.2, 0, 2 * Math.PI);
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.fill();
+  }
+}
+
+/* ── 叶子收集碎裂 ── */
+var _leafShards = [];
+var LEAF_SHARD_HOLD_FRAMES = 28; /* 碎裂后保持可见的帧数 */
+var LEAF_SHARD_FADE_FRAMES = 18; /* 随后淡出的帧数 */
+
+/* sx/sy/sw/sh: leaf.png 裁剪区（0~1）；ox/oy: 相对叶心的偏移（相对 leafW） */
+var LEAF_SHARD_CUTS = [
+  { sx: 0.02, sy: 0.02, sw: 0.46, sh: 0.44, ox: -0.24, oy: -0.26 },
+  { sx: 0.50, sy: 0.02, sw: 0.48, sh: 0.46, ox:  0.26, oy: -0.24 },
+  { sx: 0.02, sy: 0.46, sw: 0.48, sh: 0.52, ox: -0.22, oy:  0.26 },
+  { sx: 0.48, sy: 0.44, sw: 0.50, sh: 0.54, ox:  0.24, oy:  0.24 },
+  { sx: 0.30, sy: 0.28, sw: 0.40, sh: 0.36, ox:  0.02, oy:  0.02 }
+];
+
+export function spawnLeafShards(x, y, leafR, leafAngle, scatterAngle) {
+  if (!leafImg.complete || leafImg.naturalWidth <= 0) return;
+  var leafW = leafR * 6.08;
+  var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
+  var imgW = leafImg.naturalWidth;
+  var imgH = leafImg.naturalHeight;
+  for (var i = 0; i < LEAF_SHARD_CUTS.length; i++) {
+    var cut = LEAF_SHARD_CUTS[i];
+    var shardAng = scatterAngle + (i / LEAF_SHARD_CUTS.length) * Math.PI * 2 + (Math.random() - 0.5) * 0.55;
+    var spd = 1.1 + Math.random() * 1.5;
+    _leafShards.push({
+      x: x + cut.ox * leafW,
+      y: y + cut.oy * leafH,
+      t: 0,
+      vx: Math.cos(shardAng) * spd,
+      vy: Math.sin(shardAng) * spd * 0.38 + 0.22,
+      angle: leafAngle + (Math.random() - 0.5) * 0.5,
+      angVel: (Math.random() - 0.5) * 0.14,
+      w: cut.sw * leafW,
+      h: cut.sh * leafH,
+      sx: cut.sx * imgW,
+      sy: cut.sy * imgH,
+      sw: cut.sw * imgW,
+      sh: cut.sh * imgH
+    });
+  }
+}
+
+export function updateAndDrawLeafShards(ctx, dt) {
+  if (_leafShards.length === 0) return;
+  for (var i = _leafShards.length - 1; i >= 0; i--) {
+    var s = _leafShards[i];
+    s.vy += 0.12 * dt;
+    s.vx *= Math.pow(0.958, dt);
+    s.vy *= Math.pow(0.993, dt);
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.angle += s.angVel * dt;
+    s.angVel *= Math.pow(0.94, dt);
+    s.t += dt;
+    if (s.t >= LEAF_SHARD_HOLD_FRAMES + LEAF_SHARD_FADE_FRAMES) {
+      _leafShards.splice(i, 1);
+      continue;
+    }
+    var alpha = 1;
+    if (s.t > LEAF_SHARD_HOLD_FRAMES) {
+      alpha = 1 - (s.t - LEAF_SHARD_HOLD_FRAMES) / LEAF_SHARD_FADE_FRAMES;
+    }
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.angle);
+    ctx.drawImage(leafImg, s.sx, s.sy, s.sw, s.sh, -s.w * 0.5, -s.h * 0.5, s.w, s.h);
+    ctx.restore();
+    statsDc('image');
   }
 }

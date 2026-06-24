@@ -17,6 +17,17 @@ function _isEdgeAlive(c, spatialIndex) {
   return spatialIndex.isAliveId(c.__webId);
 }
 
+function _resolveStickConstraint(pt, spiderweb, aliveCheck) {
+  if (!pt) return null;
+  if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
+    var sid = pt.constraintId != null ? pt.constraintId : (pt.c && pt.c.__webId);
+    if (!sid || !aliveCheck.isAliveId(sid)) return null;
+    if (!pt.c) pt.c = aliveCheck.getConstraint(sid);
+    if (!pt.c) return null;
+  } else if (spiderweb.constraints.indexOf(pt.c) === -1) return null;
+  return pt.c;
+}
+
 /**
  * 找到离指定位置最近的、仍有存活连接的粒子作为锚点。
  * 优先选择真正网线连接数 >= 2 的网格节点（避免把 stub 锚定到链中间节点上）。
@@ -81,7 +92,7 @@ function createOneStub(cx, cy, anchorPt, spiderweb) {
  */
 var _noStubStreak = 0; /* 连续未出线头的破坏次数 */
 
-function createBreakStubs(edges, spiderweb, spatialIndex) {
+function createBreakStubs(edges, spiderweb, spatialIndex, forcedCount) {
   if (!edges || edges.length === 0) return;
 
   /* 收集所有涉及的端点作为锚点候选 */
@@ -94,12 +105,14 @@ function createBreakStubs(edges, spiderweb, spatialIndex) {
   /* 1-2条边→10%出1个线头，3-4条→50%出1个，5条以上→必出1个 */
   var n = edges.length;
   var count = 0;
-  if (n <= 2) { if (Math.random() < 0.1) count = 1; }
+  if (typeof forcedCount === 'number') {
+    count = Math.max(0, Math.floor(forcedCount));
+  } else if (n <= 2) { if (Math.random() < 0.1) count = 1; }
   else if (n <= 4) { if (Math.random() < 0.5) count = 1; }
   else { count = 1; }
 
   /* 每2次破坏保底1个线头 */
-  if (count === 0) {
+  if (count === 0 && typeof forcedCount !== 'number') {
     _noStubStreak++;
     if (_noStubStreak >= 2) { count = 1; _noStubStreak = 0; }
   } else {
@@ -312,36 +325,129 @@ function cleanDanglingTails(spiderweb, spatialIndex) {
   }
 }
 
+export function segmentHitsCircle(ax, ay, bx, by, cx, cy, radius) {
+  var r2 = radius * radius;
+  var adx = ax - cx, ady = ay - cy;
+  if (adx * adx + ady * ady <= r2) return true;
+  var bdx = bx - cx, bdy = by - cy;
+  if (bdx * bdx + bdy * bdy <= r2) return true;
+  var sdx = bx - ax, sdy = by - ay;
+  var len2 = sdx * sdx + sdy * sdy;
+  if (len2 <= 1e-6) return false;
+  var t = ((cx - ax) * sdx + (cy - ay) * sdy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  var px = ax + sdx * t, py = ay + sdy * t;
+  var ddx = px - cx, ddy = py - cy;
+  return ddx * ddx + ddy * ddy <= r2;
+}
+
+function _edgeInsideBreakDisc(ax, ay, bx, by, bpx, bpy, breakR2) {
+  return !((ax * ax + ay * ay > breakR2) || (bx * bx + by * by > breakR2));
+}
+
+/**
+ * 以圆形冲击半径破坏蛛网。石头使用线段-圆相交，破坏面与石头半径一致。
+ * @returns {number} 被破坏的边数量
+ */
+export function breakWebInRadius(bpx, bpy, breakR, spiderweb, webBreakFlashes, breakFrame, onBreakSegment, spatialOpts, useSegmentHit, forcedStubCount) {
+  if (!spiderweb || !(breakR > 0)) return 0;
+  var breakR2 = breakR * breakR;
+  var broken = [];
+  var useBitmap = spatialOpts && spatialOpts.index;
+
+  function edgeIsHit(c) {
+    var ax = c.a.pos.x - bpx, ay = c.a.pos.y - bpy;
+    var bx = c.b.pos.x - bpx, by = c.b.pos.y - bpy;
+    if (useSegmentHit) {
+      return segmentHitsCircle(c.a.pos.x, c.a.pos.y, c.b.pos.x, c.b.pos.y, bpx, bpy, breakR);
+    }
+    return _edgeInsideBreakDisc(ax, ay, bx, by, bpx, bpy, breakR2);
+  }
+
+  if (useBitmap) {
+    var idx = spatialOpts.index;
+    var cs = spiderweb.constraints;
+    for (var bi = 0; bi < cs.length; bi++) {
+      var c = cs[bi];
+      if (!(c instanceof DistanceConstraint)) continue;
+      if (c.__webGlobal) continue;
+      if (c.__webId && !idx.isAliveId(c.__webId)) continue;
+      if (!edgeIsHit(c)) continue;
+      broken.push({ a: c.a, b: c.b, distance: c.distance });
+      if (c.__webId) idx.removeConstraint(c.__webId);
+      else {
+        var wi = spiderweb.constraints.indexOf(c);
+        if (wi !== -1) spiderweb.constraints.splice(wi, 1);
+      }
+      if (onBreakSegment) onBreakSegment(c, { skipDirty: true });
+      webBreakFlashes.push({
+        ax: c.a.pos.x, ay: c.a.pos.y,
+        bx: c.b.pos.x, by: c.b.pos.y,
+        t: breakFrame
+      });
+    }
+    if (spatialOpts.markDirtyAABB) {
+      spatialOpts.markDirtyAABB(bpx - breakR, bpy - breakR, bpx + breakR, bpy + breakR);
+    }
+  } else {
+    spiderweb.constraints = spiderweb.constraints.filter(function (c) {
+      if (!(c instanceof DistanceConstraint)) return true;
+      if (!edgeIsHit(c)) return true;
+      broken.push({ a: c.a, b: c.b, distance: c.distance });
+      return false;
+    });
+    for (var ri = 0; ri < broken.length; ri++) {
+      if (onBreakSegment) onBreakSegment(broken[ri]);
+      webBreakFlashes.push({
+        ax: broken[ri].a.pos.x, ay: broken[ri].a.pos.y,
+        bx: broken[ri].b.pos.x, by: broken[ri].b.pos.y,
+        t: breakFrame
+      });
+    }
+  }
+
+  if (broken.length > 0) {
+    createBreakStubs(broken, spiderweb, useBitmap ? spatialOpts.index : null, forcedStubCount);
+  }
+  return broken.length;
+}
+
 /**
  * 获取物体定义参数
  */
 export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex, currentWaveIndex) {
-  var waveCfg = (gameState === 'LEVEL_ACTIVE' || gameState === 'LEVEL_INTRO')
-    ? getWaveCfgFn(currentLevelIndex, currentWaveIndex) : null;
+  function wrapDur(base) {
+    var speed = Math.max(0.05, P.wrapSpeed || 1);
+    return Math.max(1, Math.round(base / speed));
+  }
+  if (kind === 'stone') return {
+    r: 80, collectRadius: 0, weight: 8,
+    stayFrames: 0,
+    gravity: 3.4, wrapDur: 0
+  };
   if (kind === 'boulder') return {
     r: 7, collectRadius: 7, weight: P.caterpillarWeight,
-    stayFrames: Math.round((waveCfg ? waveCfg.catR : P.caterpillarReleaseSec) * 60),
-    gravity: P.caterpillarGravity, wrapDur: 120
+    stayFrames: Math.round(P.caterpillarReleaseSec * 60),
+    gravity: P.caterpillarGravity, wrapDur: wrapDur(120)
   };
   if (kind === 'bug') return {
     r: 9, collectRadius: 5, weight: P.flyWeight,
-    stayFrames: Math.round((waveCfg ? waveCfg.flyR : P.flyReleaseSec) * 60),
-    gravity: 0, wrapDur: 80
+    stayFrames: Math.round(P.flyReleaseSec * 60),
+    gravity: 0, wrapDur: wrapDur(80)
   };
   if (kind === 'poop') return {
     r: 20, collectRadius: 17, weight: P.caterpillarWeight,
     stayFrames: Infinity,
-    gravity: P.caterpillarGravity, wrapDur: 120,
-    peelThreshold: 68,
-    peelHoldFrames: 60,
-    peelDrag: 0.985,
-    dragResistance: 0.88,
-    dragFollow: 1.0
+    gravity: P.caterpillarGravity, wrapDur: wrapDur(120),
+    peelDrag: 0.962
   };
   return {
     r: 14, collectRadius: 12, weight: P.leafWeight,
     stayFrames: Math.round(P.leafReleaseSec * 60),
-    gravity: 0.06, wrapDur: 50
+    gravity: Math.min(P.leafGravityMin, P.leafGravityMax) + Math.random() * Math.max(0, Math.abs(P.leafGravityMax - P.leafGravityMin)),
+    maxSpeed: P.leafMaxSpeed,
+    wrapDur: wrapDur(40)
   };
 }
 
@@ -397,6 +503,8 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
   this._pickupTension = 0;
   this._pickupCharge = 0;
   this._pickupPullAngle = 0;
+  this._manualPullOff = false;
+  this._disableRestick = false;
   this._pluckT = 0;
   this._pluckVx = 0;
   this._pluckVy = 0;
@@ -409,7 +517,12 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
 
   var sx, sy, svx = 0, svy = 0;
 
-  if (kind === 'boulder' || kind === 'poop') {
+  if (kind === 'stone') {
+    this._disableRestick = true;
+    this._holePunched = false;
+  }
+
+  if (kind === 'boulder' || kind === 'poop' || kind === 'stone') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
     this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
@@ -437,11 +550,14 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
     this.grav = def.gravity;
     this.vx = 0; this.vy = 0;
     this.drag = 0.92;
-    this.angle = (Math.random() - 0.5) * 1.0;
-    this.angleVel = (Math.random() - 0.5) * 0.02;
+    this.angle = Math.random() * Math.PI * 2;
+    this.angleVel = (Math.random() * 2 - 1) * (Math.PI / 6) / 60;
     this.angleDrag = 0.97;
     this.angleTurb = 0.003;
     this.glideForce = 0.055;
+    this.swayPhase = Math.random() * Math.PI * 2;
+    this.swaySpeed = 0.045 + Math.random() * 0.025;
+    this.swayAmp = 0.020 + Math.random() * 0.025;
   }
 
   this.prevX = sx; this.prevY = sy;
@@ -449,6 +565,7 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
   this.particle.lastPos.mutableSet(new Vec2(sx - svx, sy - svy));
   this.particle._ownerObj = this;
   this.particle._noSimDrag = false;
+  if (kind === 'stone') this.particle.__ignoreBounds = true;
   if (kind === 'bug') this.particle.__isBug = true;
   if (kind === 'bug') this.particle.__isBug = true;
   this.comp = new Composite();
@@ -471,59 +588,39 @@ export function clearObjectConstraints(obj) {
   }
 }
 
-export function breakWebSegmentAsBug(seg, spiderweb, webBreakFlashes, _breakFrame, onBreakSegment, spatialOpts) {
-  if (!seg || !spiderweb) return false;
-  var useBitmap = spatialOpts && spatialOpts.index;
-  webBreakFlashes.push({
-    ax: seg.a.pos.x, ay: seg.a.pos.y,
-    bx: seg.b.pos.x, by: seg.b.pos.y,
-    t: _breakFrame
-  });
-  if (onBreakSegment) onBreakSegment(seg, useBitmap ? { skipDirty: false } : null);
-  if (useBitmap) {
-    if (seg.__webId) spatialOpts.index.removeConstraint(seg.__webId);
-  } else {
-    var wi = spiderweb.constraints.indexOf(seg);
-    if (wi !== -1) spiderweb.constraints.splice(wi, 1);
-  }
-
-  createBreakStubs([{ a: seg.a, b: seg.b, distance: seg.distance }], spiderweb, useBitmap ? spatialOpts.index : null);
-
-  var _si = useBitmap ? spatialOpts.index : null;
-  var stubList = [];
-  for (var sci = 0; sci < spiderweb.particles.length; sci++) {
-    if (spiderweb.particles[sci].__isStub) stubList.push(spiderweb.particles[sci]);
-  }
-  for (var sci2 = 0; sci2 < stubList.length; sci2++) {
-    collapseChain(stubList[sci2], spiderweb, _si);
-  }
-  cleanDanglingTails(spiderweb, _si);
-  return true;
+function _attachObjectToConstraint(obj, constraint, x, y, distanceScale, minDistance) {
+  var p = obj.particle;
+  p.pos.mutableSet(new Vec2(x, y));
+  p.lastPos.mutableSet(new Vec2(x, y));
+  var dA = p.pos.dist(constraint.a.pos);
+  var dB = p.pos.dist(constraint.b.pos);
+  obj.cA = new DistanceConstraint(p, constraint.a, 0.95, Math.max(minDistance, dA * distanceScale));
+  obj.cB = new DistanceConstraint(p, constraint.b, 0.95, Math.max(minDistance, dB * distanceScale));
+  obj.comp.constraints.push(obj.cA);
+  obj.comp.constraints.push(obj.cB);
+  obj.stuckOnConstraint = constraint;
+  obj._stickIsRadial = !!constraint.isRadial;
+  if (obj.kind === 'drop') obj.angleVel = 0;
+  return { dA: dA, dB: dB };
 }
 
 ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
-  if (!pt) return false;
-  if (aliveCheck && typeof aliveCheck.isAliveId === 'function') {
-    var sid = pt.constraintId != null ? pt.constraintId : (pt.c && pt.c.__webId);
-    if (!sid || !aliveCheck.isAliveId(sid)) return false;
-    if (!pt.c) pt.c = aliveCheck.getConstraint(sid);
-    if (!pt.c) return false;
-  } else if (spiderweb.constraints.indexOf(pt.c) === -1) return false;
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
   var p = this.particle;
-  p.pos.mutableSet(new Vec2(pt.x, pt.y));
-  p.lastPos.mutableSet(new Vec2(pt.x, pt.y));
-  var dA = p.pos.dist(pt.c.a.pos);
-  var dB = p.pos.dist(pt.c.b.pos);
+  this._manualPullOff = false;
+  this._disableRestick = false;
+  this.released = false;
+  clearObjectConstraints(this);
+  var attached = _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, 0);
+  var dA = attached.dA;
+  var dB = attached.dB;
   this.stickyFromA = dA;
   this.stickyFromB = dB;
   this.stickyToA = Math.max(this.def.r * 0.4, dA * 0.35);
   this.stickyToB = Math.max(this.def.r * 0.4, dB * 0.35);
-  this.cA = new DistanceConstraint(p, pt.c.a, 0.95, dA);
-  this.cB = new DistanceConstraint(p, pt.c.b, 0.95, dB);
-  this.comp.constraints.push(this.cA);
-  this.comp.constraints.push(this.cB);
-  this.stuckOnConstraint = pt.c;
-  this._stickIsRadial = !!pt.c.isRadial;
+  this.cA.distance = dA;
+  this.cB.distance = dB;
   var radial = Math.min(1, pt.radial || 0);
   this.stayFrames = Math.max(30, Math.round(this.def.stayFrames * (1 - radial / 3)));
   this.stuckAngle = this.initAngle; /* 粘住后保持下落时的初始角度 */
@@ -534,12 +631,38 @@ ThrownObj.prototype.stickToPoint = function (pt, spiderweb, aliveCheck) {
   var ivy = p.pos.y - p.lastPos.y;
   var impactScale = this.def.weight * 1.8;
   var idx = ivx * impactScale, idy = ivy * impactScale;
-  pt.c.a.pos.x += idx; pt.c.a.pos.y += idy;
-  pt.c.b.pos.x += idx; pt.c.b.pos.y += idy;
+  constraint.a.pos.x += idx; constraint.a.pos.y += idy;
+  constraint.b.pos.x += idx; constraint.b.pos.y += idy;
   var bounceFactor = this.def.weight * 1.2;
-  pt.c.a.lastPos.x += ivx * bounceFactor;
-  pt.c.b.lastPos.x += ivx * bounceFactor;
+  constraint.a.lastPos.x += ivx * bounceFactor;
+  constraint.b.lastPos.x += ivx * bounceFactor;
 
+  return true;
+};
+
+ThrownObj.prototype.reanchorWrappedToPoint = function (pt, spiderweb, aliveCheck) {
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
+  this._manualPullOff = false;
+  clearObjectConstraints(this);
+  _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, this.def.r * 0.4);
+  this.state = 'wrapped';
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this.particle._noSimDrag = true;
+  return true;
+};
+
+ThrownObj.prototype.reanchorStuckToPoint = function (pt, spiderweb, aliveCheck) {
+  var constraint = _resolveStickConstraint(pt, spiderweb, aliveCheck);
+  if (!constraint) return false;
+  clearObjectConstraints(this);
+  _attachObjectToConstraint(this, constraint, pt.x, pt.y, 1, this.def.r * 0.4);
+  this.state = 'stuck';
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this.playerDragging = true;
+  this.particle._noSimDrag = false;
   return true;
 };
 
@@ -564,7 +687,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         t: _breakFrame
       });
     }
-    if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false } : null);
+    if (onBreakSegment) onBreakSegment(bc, useBitmap ? { skipDirty: false, sourceObj: this } : { sourceObj: this });
     if (useBitmap) {
       if (bc.__webId) spatialOpts.index.removeConstraint(bc.__webId);
     } else {
@@ -577,7 +700,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     this.stuckOnConstraint = null;
   }
 
-  /* 毛毛虫额外破坏 */
+  /* 毛毛虫额外破坏（固定冲击半径，与毛毛虫玩法一致） */
   if (this.kind === 'boulder') {
     var bpx = p.pos.x, bpy = p.pos.y, breakR = 32, breakR2 = breakR * breakR;
     var boulderBroken = []; /* 收集所有被破坏的边信息 */
@@ -595,7 +718,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         if (keep) continue;
         boulderBroken.push({ a: c.a, b: c.b, distance: c.distance });
         idx.removeConstraint(c.__webId);
-        if (onBreakSegment) onBreakSegment(c, { skipDirty: true });
+        if (onBreakSegment) onBreakSegment(c, { skipDirty: true, sourceObj: this });
         webBreakFlashes.push({
           ax: c.a.pos.x, ay: c.a.pos.y,
           bx: c.b.pos.x, by: c.b.pos.y,
@@ -615,7 +738,7 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
         return keep;
       });
       for (var ri = 0; ri < boulderBroken.length; ri++) {
-        if (onBreakSegment) onBreakSegment(boulderBroken[ri]);
+        if (onBreakSegment) onBreakSegment(boulderBroken[ri], { sourceObj: this });
         webBreakFlashes.push({
           ax: boulderBroken[ri].a.pos.x, ay: boulderBroken[ri].a.pos.y,
           bx: boulderBroken[ri].b.pos.x, by: boulderBroken[ri].b.pos.y,
@@ -644,35 +767,37 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
   var W = this._W, H = this._H; // set by main when creating
 
   if (this.kind === 'bug') {
-    this.state = 'falling';
-    this.grav = 0;
-    this.enteredWebZone = false;
-    this.hitHistory = [];
-    this._hitHistoryCount = 0;
-    this.penetrationDist = 0;
-    this.released = true;
+    this.state = 'falling2';
+    this.grav = 0.08;
+    this._disableRestick = true;
+    this.released = false;
     this._releaseFrame = this.animT;
-    this._escapeCount = (this._escapeCount || 0) + 1; /* 挣脱次数累计 */
-    this._reStickDelay = 160 + Math.floor(Math.random() * 120); /* 乱飞多少帧后重新找网 */
-    this._reStickTimer = 0;
+    this._escapeCount = (this._escapeCount || 0) + 1;
     var escapeAngle = Math.atan2(p.pos.y - H / 2, p.pos.x - W / 2) + (Math.random() - 0.5) * 1.2;
-    var escapeSpeed = 4 + Math.random() * 2.5;
-    this.baseVx = Math.cos(escapeAngle) * escapeSpeed;
-    this.baseVy = Math.sin(escapeAngle) * escapeSpeed;
+    var escapeSpeed = 4.8 + Math.random() * 2.8;
+    this.vx = Math.cos(escapeAngle) * escapeSpeed;
+    this.vy = Math.sin(escapeAngle) * escapeSpeed;
     this.buzzFreqX = 0.08 + Math.random() * 0.06;
     this.buzzFreqY = 0.07 + Math.random() * 0.05;
     this.buzzAmp = 10 + Math.random() * 8;
     this.buzzPhaseX = Math.random() * Math.PI * 2;
     this.buzzPhaseY = Math.random() * Math.PI * 2;
-    p.lastPos.x = p.pos.x - this.baseVx;
-    p.lastPos.y = p.pos.y - this.baseVy;
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
   } else {
     this.state = 'falling2';
-    p.lastPos.x = p.pos.x - currentVx;
+    this._disableRestick = true;
     var releaseKick = this.kind === 'boulder'
       ? this.def.weight * 0.405
       : this.def.weight * 0.45;
-    p.lastPos.y = p.pos.y - (currentVy + releaseKick);
+    var outwardX = p.pos.x - W * 0.5;
+    var outwardY = p.pos.y - H * 0.5;
+    var outwardLen = Math.sqrt(outwardX * outwardX + outwardY * outwardY) || 1;
+    var outwardKick = this.kind === 'boulder' ? 3.8 : 3.2;
+    this.vx = (outwardX / outwardLen) * outwardKick + currentVx * 0.55;
+    this.vy = (outwardY / outwardLen) * outwardKick + currentVy * 0.55 + releaseKick;
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
   }
 };
 
@@ -682,16 +807,70 @@ ThrownObj.prototype.peelOff = function (dragDx, dragDy) {
   this.stuckOnConstraint = null;
   this.playerDragging = false;
   this.dragStrain = 0;
+  this._disableRestick = true;
   this.state = 'falling2';
   this.alpha = 1;
   var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
-  var speed = 6.8;
-  this.peelVx = (dragDx / len) * speed;
-  this.peelVy = (dragDy / len) * speed;
+  var dirX = dragDx / len;
+  var dirY = dragDy / len;
+  this.peelVx = dirX * 3.4;
+  this.peelVy = Math.max(2.4, dirY * 1.15 + 2.0);
   this.vx = this.peelVx;
   this.vy = this.peelVy;
   p.lastPos.x = p.pos.x - this.peelVx;
   p.lastPos.y = p.pos.y - this.peelVy;
+};
+
+ThrownObj.prototype.pullOffWeb = function (dragDx, dragDy) {
+  if (this.kind !== 'boulder') return false;
+  var p = this.particle;
+  clearObjectConstraints(this);
+  this.stuckOnConstraint = null;
+  this.playerDragging = false;
+  this.dragStrain = 0;
+  this._pickupTension = 0;
+  this._pickupCharge = 0;
+  this._manualPullOff = true;
+  this._disableRestick = true;
+
+  var len = Math.sqrt(dragDx * dragDx + dragDy * dragDy) || 1;
+  if (this.kind === 'bug') {
+    this.state = 'falling2';
+    this.alpha = 1;
+    this.grav = 1.15;
+    this.vx = (dragDx / len) * 1.1;
+    this.vy = Math.max(0.4, (dragDy / len) * 1.2 + 0.55);
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
+    return true;
+  }
+
+  if (this.kind === 'drop') {
+    this.state = 'falling';
+    this.alpha = 1;
+    this.released = true;
+    this.enteredWebZone = false;
+    this.penetrationDist = 0;
+    this.hitHistory = [];
+    this._hitHistoryCount = 0;
+    this.stayTimer = 0;
+    this.wobbleAmp = 0;
+    this.angleVel = (Math.random() * 2 - 1) * (Math.PI / 6) / 60;
+    this.vx = (dragDx / len) * 0.18;
+    this.vy = Math.max(0.22, (dragDy / len) * 0.18 + 0.18);
+    p.lastPos.x = p.pos.x - this.vx;
+    p.lastPos.y = p.pos.y - this.vy;
+    return true;
+  }
+
+  this.state = 'falling2';
+  this.alpha = 1;
+  var peelSpeed = 6.2;
+  this.vx = (dragDx / len) * peelSpeed;
+  this.vy = (dragDy / len) * peelSpeed;
+  p.lastPos.x = p.pos.x - this.vx;
+  p.lastPos.y = p.pos.y - this.vy;
+  return true;
 };
 
 ThrownObj.prototype.destroy = function (sim) {

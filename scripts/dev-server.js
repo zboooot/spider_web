@@ -31,6 +31,45 @@ if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) {
 }
 
 const port = parsedPort;
+const SHARED_DEFAULTS_PATH = path.resolve(ROOT_DIR, 'src/data/sharedGameDefaults.js');
+
+function normalizeSharedDefaults(payload) {
+  const out = payload && typeof payload === 'object' ? payload : {};
+  if (!out.panelParams || typeof out.panelParams !== 'object' || Array.isArray(out.panelParams)) out.panelParams = {};
+  if (!Array.isArray(out.waveConfigs)) out.waveConfigs = [];
+  if (!Array.isArray(out.levelConditions)) out.levelConditions = [];
+  return out;
+}
+
+function toSharedDefaultsModule(payload) {
+  return 'export var SHARED_GAME_DEFAULTS = ' + JSON.stringify(payload, null, 2) + ';\n';
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 10 * 1024 * 1024) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+async function handleWriteSharedDefaults(req, res) {
+  const raw = await readRequestBody(req);
+  const parsed = JSON.parse(raw || '{}');
+  const normalized = normalizeSharedDefaults(parsed);
+  await fs.promises.writeFile(SHARED_DEFAULTS_PATH, toSharedDefaultsModule(normalized), 'utf8');
+  sendResponse(res, 200, JSON.stringify({ ok: true, filePath: SHARED_DEFAULTS_PATH }), {
+    'Content-Type': 'application/json; charset=utf-8'
+  });
+}
 
 function getContentType(filePath) {
   return CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
@@ -88,6 +127,11 @@ function resolveRequestPath(requestUrl) {
 
 async function handleRequest(req, res) {
   const method = req.method || 'GET';
+
+  if (method === 'POST' && req.url === '/__shared-defaults') {
+    await handleWriteSharedDefaults(req, res);
+    return;
+  }
 
   if (method !== 'GET' && method !== 'HEAD') {
     sendResponse(res, 405, 'Method Not Allowed', {

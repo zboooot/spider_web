@@ -10,11 +10,28 @@ popoBlinkImg.src = '/src/assets/popo_blink.png';
 var popoPackImg = new Image();
 popoPackImg.src = '/src/assets/popo_pack.png';
 
+var popoShockImg = new Image();
+popoShockImg.src = '/src/assets/popo_shock.png';
+
+var popoCry01Img = new Image();
+popoCry01Img.src = '/src/assets/popo_cry01.png';
+
+var popoCry02Img = new Image();
+popoCry02Img.src = '/src/assets/popo_cry02.png';
+
+var popoBoredImg = new Image();
+popoBoredImg.src = '/src/assets/popo_bored.png';
+
 function getSpiderHeadFrame(blinkState, wrappingTarget) {
   if (wrappingTarget) return popoPackImg;
+  if (blinkState && blinkState.mood === 'shock') return popoShockImg;
+  if (blinkState && blinkState.mood === 'crying') {
+    return (Math.floor((blinkState.faceAnimT || 0) / 10) % 2 === 0) ? popoCry01Img : popoCry02Img;
+  }
   if (blinkState && blinkState.blinking && blinkState.t >= 0.35 && blinkState.t <= 1.35) {
     return popoBlinkImg;
   }
+  if (blinkState && blinkState.mood === 'bored') return popoBoredImg;
   return popoHeadImg;
 }
 
@@ -185,9 +202,16 @@ export function setupSpiderDraw(spider, legConstraintCount, footState, blinkStat
       var fnx = fdx / fl, fny = fdy / fl, prx = -fny, pry = fnx;
       var imgH = HEAD_IMG_W * (headFrame.naturalHeight / headFrame.naturalWidth);
       var shakeOff = (blinkState && blinkState.headShake > 0)
-        ? Math.sin(blinkState.headShake * 1.8) * blinkState.headShakeAmp : 0;
-      var imgCX = headCenter.x + prx * shakeOff;
-      var imgCY = headCenter.y + pry * shakeOff;
+        ? Math.sin(blinkState.headShake * 3.6) * blinkState.headShakeAmp : 0;
+      var shockX = 0, shockY = 0, cryDrop = 0;
+      if (blinkState && blinkState.mood === 'shock') {
+        shockX = Math.sin((blinkState.headShake || 0) * 2.8) * 2.1;
+        shockY = Math.cos((blinkState.headShake || 0) * 2.2) * 1.6;
+      } else if (blinkState && blinkState.mood === 'crying') {
+        cryDrop = 2.8 + Math.abs(Math.sin((blinkState.faceAnimT || 0) * 0.18)) * 1.8;
+      }
+      var imgCX = headCenter.x + prx * shakeOff + shockX;
+      var imgCY = headCenter.y + pry * shakeOff + shockY + cryDrop;
       ctx.drawImage(
         headFrame,
         imgCX - HEAD_IMG_W * 0.5,

@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-server.js",
+    "apply-shared-defaults": "node scripts/apply-shared-defaults.js",
+    "test": "node --test",
     "build": "vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
+    "playwright": "^1.49.0",
     "vite": "^6.0.0",
     "vite-plugin-singlefile": "^2.3.3"
   }

@@ -7,6 +7,9 @@ wormImg.src = '/src/assets/worm.png';
 var leafImg = new Image();
 leafImg.src = '/src/assets/leaf.png';
 
+var poopImg = new Image();
+poopImg.src = '/src/assets/poop.png';
+
 /**
  * HUD 物品栏图标绘制
  */
@@ -98,10 +101,31 @@ export function drawInventoryDrop(ctx, w, h) {
   ctx.restore();
 }
 
+export function drawInventoryPoop(ctx, w, h) {
+  ctx.clearRect(0, 0, w, h);
+  if (poopImg.complete && poopImg.naturalWidth > 0) {
+    var drawH = 34;
+    var drawW = drawH * (poopImg.naturalWidth / poopImg.naturalHeight);
+    ctx.drawImage(poopImg, (w - drawW) * 0.5, (h - drawH) * 0.5, drawW, drawH);
+    return;
+  }
+  ctx.save();
+  ctx.translate(w * 0.5, h * 0.5 + 2);
+  var r = 6.8;
+  ctx.beginPath();
+  ctx.ellipse(0, r * 0.58, r * 0.74, r * 0.56, 0, 0, 2 * Math.PI);
+  ctx.ellipse(-r * 0.38, -r * 0.12, r * 0.62, r * 0.56, -0.18, 0, 2 * Math.PI);
+  ctx.ellipse(r * 0.2, -r * 0.66, r * 0.56, r * 0.48, 0.14, 0, 2 * Math.PI);
+  ctx.fillStyle = '#2b221f';
+  ctx.fill();
+  ctx.restore();
+}
+
 export function renderArtToCanvas(canvasEl, kind) {
   var ctx = canvasEl.getContext('2d');
   if (kind === 'boulder') drawInventoryBoulder(ctx, canvasEl.width, canvasEl.height);
   else if (kind === 'bug') drawInventoryBug(ctx, canvasEl.width, canvasEl.height);
+  else if (kind === 'poop') drawInventoryPoop(ctx, canvasEl.width, canvasEl.height);
   else drawInventoryDrop(ctx, canvasEl.width, canvasEl.height);
 }
 
