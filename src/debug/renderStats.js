@@ -51,7 +51,7 @@ var _prof = {
     preyRnd: 'Prey',
     spiderRnd: 'Spider',
     other: 'Other',
-    pacing: 'Pacing gap'
+    unmeasured: 'Untagged'
   }
 };
 
@@ -61,8 +61,14 @@ var _PANEL_REFRESH_MS = 600;
 var _DIAG_PANEL_REFRESH_MS = 200;
 var _MAX_RECORD_SECONDS = 600;
 
+var _WORK_EMA = 0.1;
+var _frameWork = { ms: 0, ema: 0 };
+
 var _display = {
   frameMs: 0,
+  workMs: 0,
+  waitMs: 0,
+  utilPct: 0,
   drawCalls: 0,
   lines: 0,
   faces: 0,
@@ -129,6 +135,7 @@ function _newSecondBucket(secIndex) {
     drawCalls: [],
     lines: [],
     faces: [],
+    workMs: [],
     profileSums: {}
   };
 }
@@ -179,10 +186,13 @@ function _compactSecond(bucket) {
   var frames = bucket.frameMs.slice().sort(function (a, b) { return a - b; });
   var frameCount = frames.length;
   var profile = _profileFromSums(bucket.profileSums, frameCount);
-  var jsMeasuredMs = profile.jsMeasuredMs || 0;
+  var taggedMs = profile.jsMeasuredMs || 0;
   delete profile.jsMeasuredMs;
   var avgFrame = _avg(bucket.frameMs);
-  var pacingGapMs = Math.round(Math.max(0, avgFrame - jsMeasuredMs) * 10) / 10;
+  var avgWork = _avg(bucket.workMs);
+  var avgWait = Math.max(0, avgFrame - avgWork);
+  var utilPct = avgFrame > 0.05 ? Math.round((avgWork / avgFrame) * 1000) / 10 : 0;
+  var workFrames = bucket.workMs.slice().sort(function (a, b) { return a - b; });
   return {
     sec: bucket.sec,
     fps: frameCount ? Math.round((frameCount / 1) * 10) / 10 : 0,
@@ -206,8 +216,16 @@ function _compactSecond(bucket) {
     },
     scene: Object.assign({}, _scene),
     timing: {
-      jsMeasuredMs: jsMeasuredMs,
-      pacingGapMs: pacingGapMs,
+      frameIntervalMs: Math.round(avgFrame * 10) / 10,
+      workMs: {
+        avg: Math.round(avgWork * 10) / 10,
+        p95: Math.round(_percentile(workFrames, 95) * 10) / 10,
+        max: Math.round((workFrames.length ? workFrames[workFrames.length - 1] : 0) * 10) / 10
+      },
+      waitMs: Math.round(avgWait * 10) / 10,
+      utilPct: utilPct,
+      taggedMs: Math.round(taggedMs * 10) / 10,
+      untaggedMs: Math.round(Math.max(0, avgWork - taggedMs) * 10) / 10,
       profile: profile
     },
     longTasks: bucket.longTasks,
@@ -298,6 +316,12 @@ function _smoothDisplay(key, value) {
 
 function _refreshDisplayMetrics() {
   _smoothDisplay('frameMs', _fps.ms);
+  _smoothDisplay('workMs', _frameWork.ema);
+  var wait = Math.max(0, (_fps.ms || 0) - (_frameWork.ema || 0));
+  _smoothDisplay('waitMs', wait);
+  _display.utilPct = (_fps.ms || 0) > 0.05
+    ? Math.round(((_frameWork.ema || 0) / _fps.ms) * 1000) / 10
+    : 0;
   _smoothDisplay('drawCalls', _frame.drawCalls);
   _smoothDisplay('lines', _frame.lines);
   _smoothDisplay('faces', statsFaces());
@@ -445,15 +469,23 @@ export function statsClearRecording() {
 
 function _buildSummary(seconds) {
   var fpsVals = [];
+  var workVals = [];
+  var utilVals = [];
   var spike33 = 0;
   var spike50 = 0;
   var frameMax = 0;
+  var workMax = 0;
   var worstSec = null;
   var statesSeen = {};
   var levelLabels = {};
   for (var i = 0; i < seconds.length; i++) {
     var row = seconds[i];
     fpsVals.push(row.fps || 0);
+    if (row.timing && row.timing.workMs) {
+      workVals.push(row.timing.workMs.avg || 0);
+      utilVals.push(row.timing.utilPct || 0);
+      if ((row.timing.workMs.max || 0) > workMax) workMax = row.timing.workMs.max;
+    }
     spike33 += row.spikes.gt33 || 0;
     spike50 += row.spikes.gt50 || 0;
     if ((row.frameMs.max || 0) > frameMax) {
@@ -472,6 +504,9 @@ function _buildSummary(seconds) {
     spikeGt33Total: spike33,
     spikeGt50Total: spike50,
     frameMsMax: frameMax,
+    workMsMax: workMax,
+    workMsAvg: workVals.length ? Math.round(_avg(workVals) * 10) / 10 : 0,
+    utilAvgPct: utilVals.length ? Math.round(_avg(utilVals) * 10) / 10 : 0,
     worstSec: worstSec,
     statesSeen: stateList,
     levelsSeen: levelList
@@ -487,8 +522,11 @@ export function statsBuildExportPackage() {
     durationSec: seconds.length,
     truncated: seconds.length >= _MAX_RECORD_SECONDS,
     notes: {
-      pacingGapMs: 'Frame interval minus measured JS work; mostly vsync wait at 60Hz, not GPU load.',
-      timingProfile: 'Per-second average of instrumented JS sections (not EMA).',
+      frameIntervalMs: 'Time between requestAnimationFrame callbacks (includes vsync wait).',
+      workMs: 'Wall-clock CPU time spent inside the game loop this frame.',
+      waitMs: 'frameIntervalMs - workMs; idle until next frame, not render cost.',
+      utilPct: 'workMs / frameIntervalMs; low util at 60fps is normal.',
+      profile: 'Per-second average of instrumented sections; sums to taggedMs.',
       game: 'Snapshot at end of each second: level, wave phase, prey breakdown, flags.'
     },
     device: _deviceInfo(),
@@ -517,7 +555,7 @@ export function statsDownloadExportPackage() {
   return { ok: true, seconds: pkg.seconds.length };
 }
 
-export function statsEndFrame(timestamp) {
+export function statsEndFrame(timestamp, workMs) {
   statsTimeEnd();
   for (var pi = 0; pi < _PROF_ORDER.length; pi++) {
     var pk = _PROF_ORDER[pi];
@@ -526,6 +564,12 @@ export function statsEndFrame(timestamp) {
       ? _prof.ema[pk] * (1 - _PROF_EMA) + v * _PROF_EMA
       : v;
   }
+
+  var work = workMs != null ? workMs : 0;
+  _frameWork.ms = work;
+  _frameWork.ema = _frameWork.ema != null
+    ? _frameWork.ema * (1 - _WORK_EMA) + work * _WORK_EMA
+    : work;
 
   if (!_fps.lastTs) {
     _fps.lastTs = timestamp;
@@ -547,6 +591,7 @@ export function statsEndFrame(timestamp) {
     _ensureSecondBucket();
     if (_sec._startedAt == null) _sec._startedAt = _nowPerf();
     _sec.frameMs.push(dt);
+    _sec.workMs.push(work);
     _sec.drawCalls.push(_frame.drawCalls);
     _sec.lines.push(_frame.lines);
     _sec.faces.push(statsFaces());
@@ -563,24 +608,29 @@ export function statsEndFrame(timestamp) {
 }
 
 function statsFormatProfile() {
-  var lines = ['--- profile (JS ema) ---'];
-  var total = 0;
-  for (var ti = 0; ti < _PROF_ORDER.length; ti++) {
-    total += _prof.ema[_PROF_ORDER[ti]] || 0;
-  }
-
+  var workBase = _display.workMs || 0;
+  var tagged = 0;
+  var lines = ['--- work breakdown ---'];
   for (var i = 0; i < _PROF_ORDER.length; i++) {
     var key = _PROF_ORDER[i];
     var ms = _prof.ema[key] || 0;
-    var pct = total > 0.05 ? Math.round((ms / total) * 100) : 0;
+    tagged += ms;
+    var pct = workBase > 0.05 ? Math.round((ms / workBase) * 100) : 0;
     lines.push(
       _padLabel(_prof.labels[key], 10) + _padMs(ms) + ' ' + _padPct(pct)
     );
   }
-
-  var gap = Math.max(0, (_display.frameMs || 0) - total);
-  lines.push(_padLabel(_prof.labels.pacing, 10) + _padMs(gap) + '    —');
-  lines.push('(pacing gap ≈ vsync wait, not GPU)');
+  var untagged = Math.max(0, workBase - tagged);
+  if (untagged > 0.05) {
+    lines.push(
+      _padLabel(_prof.labels.unmeasured, 10) + _padMs(untagged)
+        + ' ' + _padPct(workBase > 0.05 ? Math.round((untagged / workBase) * 100) : 0)
+    );
+  }
+  lines.push(
+    'Wait(vsync)' + _padMs(_display.waitMs || 0)
+      + '  util' + _padInt(_display.utilPct || 0, 3) + '%'
+  );
   return lines;
 }
 
@@ -603,7 +653,9 @@ function _diagHeaderLines() {
     flags.spawnAnim ? 'spawn' : ''
   ].filter(Boolean).join(',');
   return [
-    'now' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
+    'work' + _padMs(_display.workMs) + ' wait' + _padMs(_display.waitMs)
+      + ' util' + _padInt(_display.utilPct, 3) + '%',
+    'frame' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
     'Spk>33 ' + _live.spikesGt33 + '  >50 ' + _live.spikesGt50
       + '  stepMx ' + _live.logicStepsMax + '  bkMx' + _padMs(_live.backlogMax),
     dev.platform + ' DPR' + dev.dpr + ' ' + dev.viewport

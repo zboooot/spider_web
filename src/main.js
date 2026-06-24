@@ -4970,6 +4970,7 @@ window.onload = function () {
 
   var loop = function (timestamp) {
     statsBeginFrame();
+    var workT0 = performance.now();
 
     var elapsedMs = _lastTimestamp ? Math.min(timestamp - _lastTimestamp, 250) : FIXED_STEP_MS;
     _lastTimestamp = timestamp;
@@ -4998,7 +4999,7 @@ window.onload = function () {
       renderFrame(timestamp, updateScale);
     }
 
-    statsEndFrame(timestamp);
+    statsEndFrame(timestamp, performance.now() - workT0);
     updateStatsPanel();
     syncPerfRecordBtnLabel();
     requestAnimFrame(loop);
