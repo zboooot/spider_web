@@ -44,7 +44,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects, buildSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -3339,6 +3339,7 @@ window.onload = function () {
 
       } else if (obj.state === 'wrapping') {
         p.lastPos.mutableSet(p.pos);
+        ensureSilkSpiral(obj);
         obj.wrapT = Math.min(1, obj.wrapT + (_currentTimeScale === 0 ? 0 : 1 / obj.wrapDur));
         if (Math.round(obj.wrapT * obj.wrapDur) % 12 === 0) audioEngine.playSfxWrap(obj.wrapT);
         if (obj.wrapT >= 1) {
