@@ -5,6 +5,10 @@ import { spatialIndex, isWebConstraintAlive } from '../physics/SpatialIndexServi
 import { segmentHitsCircle } from '../entities/ThrownObj.js';
 import { TUTORIAL_STONE_PULL_FRAMES } from '../tutorial/tutorialController.js';
 
+var IS_MOBILE = navigator.maxTouchPoints > 1 || /iPhone|iPad|Android/i.test(navigator.userAgent);
+var DANGER_BFS_PREY_THRESHOLD = 8;
+var REPAIR_SPARKLE_COUNT = IS_MOBILE ? 6 : 12;
+
 var _pToCI = null;
 var _dangerFinal = null;
 var _dangerRaw = null;
@@ -103,6 +107,11 @@ function _growLineTo(ctx, c) {
   }
 }
 
+function _constraintNeedsFlash(c) {
+  var ft = c.__flashT;
+  return ft != null && ft < 1;
+}
+
 function _drawWebConstraintLine(ctx, c) {
   ctx.strokeStyle = _DEFAULT_STROKE;
   ctx.lineWidth = _DEFAULT_WIDTH;
@@ -138,16 +147,37 @@ function _applyFlash(ctx, c) {
 }
 
 function _drawCalmSegments(ctx, comp, n) {
+  var batchOpen = false;
+  ctx.strokeStyle = _DEFAULT_STROKE;
+  ctx.lineWidth = _DEFAULT_WIDTH;
+  ctx.beginPath();
   for (var i = 0; i < n; i++) {
     var c = comp.constraints[i];
     if (c instanceof DistanceConstraint) {
       if (!_aliveWebSeg(c)) continue;
-      _drawWebConstraintLine(ctx, c);
+      if (_constraintNeedsFlash(c)) {
+        if (batchOpen) {
+          ctx.stroke();
+          batchOpen = false;
+          ctx.beginPath();
+        }
+        _drawWebConstraintLine(ctx, c);
+        continue;
+      }
+      _growLineTo(ctx, c);
+      batchOpen = true;
+      statsDc('line');
     } else {
+      if (batchOpen) {
+        ctx.stroke();
+        batchOpen = false;
+        ctx.beginPath();
+      }
       c.draw(ctx);
       statsDc('line');
     }
   }
+  if (batchOpen) ctx.stroke();
 }
 
 function _needsDangerPass(thrownObjects, tutorialImpact) {
@@ -167,7 +197,7 @@ function _applyTutorialStoneImpactDanger(comp, n, tutorialImpact) {
   return;
 }
 
-function _applyDangerBfs(comp, n) {
+function _applyDangerBfs(comp, n, skipHop2) {
   for (var ci = 0; ci < n; ci++) {
     if (!_dangerRaw[ci]) continue;
     var d0 = 1;
@@ -182,6 +212,7 @@ function _applyDangerBfs(comp, n) {
         if (ni3 === ci) continue;
         var d1 = d0 * 0.45;
         if (_dangerFinal[ni3] < d1) _dangerFinal[ni3] = d1;
+        if (skipHop2) continue;
         var cc1 = comp.constraints[ni3];
         if (!_aliveWebSeg(cc1)) continue;
         var pts2 = [cc1.a.__pid, cc1.b.__pid];
@@ -465,8 +496,7 @@ function _drawRepairCompleteFlashes(ctx, getRepairCompleteFlashes, getBreakFrame
     _fillClosedRing(ctx, ring, 255, 255, 255, fillAlpha, 12 + fade * 6, 0.12 * fade);
 
     /* 补网区域内轻微 sparkling */
-    var sparkleCount = 12;
-    for (var si = 0; si < sparkleCount; si++) {
+    for (var si = 0; si < REPAIR_SPARKLE_COUNT; si++) {
       var pos = _ringAreaPoint(ring, si * 5 + 2);
       var twinkle = Math.abs(Math.sin(elapsed * 0.38 + si * 1.85));
       if (twinkle < 0.38) continue;
@@ -588,7 +618,7 @@ export function setupWebDraw(spiderweb, getThrownObjects, getWebBreakFlashes, ge
         else if (obj.kind !== 'poop' && obj.state === 'stuck' && (obj._pickupTension || 0) > 0.08) danger = 1;
         if (danger > 0 && !_dangerRaw[ci2]) _dangerRaw[ci2] = 1;
       }
-      _applyDangerBfs(comp, n);
+      _applyDangerBfs(comp, n, thrownObjects.length > DANGER_BFS_PREY_THRESHOLD);
     }
 
     if (needFlash) _applyBreakFlashes(comp, n, webBreakFlashes, getBreakFrame());

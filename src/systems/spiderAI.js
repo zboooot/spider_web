@@ -51,7 +51,6 @@ export function createSpiderAI() {
   function pickRandomNode(spiderweb) {
     var pts = spiderweb.particles;
     if (!pts || pts.length === 0) return null;
-    /* prefer mid-ring particles (not the very outer edge pinned ones) */
     var tries = 0, p;
     do {
       p = pts[Math.floor(Math.random() * pts.length)];

@@ -51,16 +51,24 @@ var _prof = {
     preyRnd: 'Prey',
     spiderRnd: 'Spider',
     other: 'Other',
-    gpu: 'GPU/other'
+    unmeasured: 'Untagged'
   }
 };
 
 var _PROF_EMA = 0.05;
 var _DISPLAY_EMA = 0.06;
 var _PANEL_REFRESH_MS = 600;
+var _DIAG_PANEL_REFRESH_MS = 200;
+var _MAX_RECORD_SECONDS = 600;
+
+var _WORK_EMA = 0.1;
+var _frameWork = { ms: 0, ema: 0 };
 
 var _display = {
   frameMs: 0,
+  workMs: 0,
+  waitMs: 0,
+  utilPct: 0,
   drawCalls: 0,
   lines: 0,
   faces: 0,
@@ -70,6 +78,284 @@ var _display = {
   bgRndPct: 0,
   preyActive: 0
 };
+
+var _diagMode = false;
+var _recording = false;
+var _recordedSeconds = [];
+var _recordingStartedAt = null;
+var _diagModeAtStart = false;
+var _contextGetter = null;
+var _longTaskTotal = 0;
+var _longTaskMsTotal = 0;
+var _heapSupported = false;
+
+var _live = {
+  frameMs: [],
+  maxFrames: 300,
+  spikesGt33: 0,
+  spikesGt50: 0,
+  windowStartPerf: 0,
+  logicStepsMax: 0,
+  backlogMax: 0,
+  droppedCatchup: 0,
+  betweenFramePauses: 0,
+  p95Ms: 0,
+  maxMs: 0
+};
+
+var _sec = null;
+var _secIndex = 0;
+
+function _nowPerf() {
+  return performance.now();
+}
+
+function _percentile(sorted, p) {
+  if (!sorted.length) return 0;
+  var idx = Math.ceil((p / 100) * sorted.length) - 1;
+  if (idx < 0) idx = 0;
+  if (idx >= sorted.length) idx = sorted.length - 1;
+  return sorted[idx];
+}
+
+function _avg(nums) {
+  if (!nums.length) return 0;
+  var sum = 0;
+  for (var i = 0; i < nums.length; i++) sum += nums[i];
+  return sum / nums.length;
+}
+
+function _newSecondBucket(secIndex) {
+  return {
+    sec: secIndex,
+    frameMs: [],
+    steps: [],
+    backlogs: [],
+    spikesGt33: 0,
+    spikesGt50: 0,
+    droppedCatchup: 0,
+    longTasks: 0,
+    longTaskMs: 0,
+    betweenFramePauses: 0,
+    betweenFramePauseMs: 0,
+    inFrameUntaggedMs: [],
+    heapStartMb: null,
+    heapEndMb: null,
+    drawCalls: [],
+    lines: [],
+    faces: [],
+    workMs: [],
+    profileSums: {}
+  };
+}
+
+function _ensureSecondBucket() {
+  if (_sec) return;
+  _sec = _newSecondBucket(_secIndex);
+}
+
+function _detectBrowser(ua) {
+  if (/MicroMessenger/i.test(ua)) return 'WeChat';
+  if (/FBAN|FBAV/i.test(ua)) return 'Facebook';
+  if (/Line\//i.test(ua)) return 'Line';
+  if (/CriOS/i.test(ua)) return 'Chrome(iOS)';
+  if (/FxiOS/i.test(ua)) return 'Firefox(iOS)';
+  if (/EdgiOS/i.test(ua)) return 'Edge(iOS)';
+  if (/SamsungBrowser/i.test(ua)) return 'Samsung';
+  if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) return 'Chrome';
+  if (/Edg\//i.test(ua)) return 'Edge';
+  if (/Firefox\//i.test(ua)) return 'Firefox';
+  if (/Safari\//i.test(ua) && !/Chrome|CriOS|Chromium/i.test(ua)) return 'Safari';
+  return 'Other';
+}
+
+function _detectEngine(ua) {
+  if (/AppleWebKit/i.test(ua)) {
+    return /Chrome|CriOS|Chromium|Edg|SamsungBrowser/i.test(ua) ? 'WebKit(Blink-shell)' : 'WebKit';
+  }
+  if (/Gecko\//i.test(ua)) return 'Gecko';
+  return 'Unknown';
+}
+
+function _deviceInfo() {
+  var ua = navigator.userAgent || '';
+  var platform = /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+    : /Android/i.test(ua) ? 'Android'
+      : 'Desktop';
+  return {
+    platform: platform,
+    browser: _detectBrowser(ua),
+    engine: _detectEngine(ua),
+    ua: ua,
+    dpr: window.devicePixelRatio || 1,
+    viewport: window.innerWidth + 'x' + window.innerHeight,
+    cores: navigator.hardwareConcurrency || null,
+    memoryGb: navigator.deviceMemory || null,
+    touchPoints: navigator.maxTouchPoints || 0,
+    standalone: !!(navigator.standalone)
+  };
+}
+
+function _profileFromSums(profileSums, frameCount) {
+  var out = {};
+  var total = 0;
+  var n = Math.max(1, frameCount || 1);
+  for (var i = 0; i < _PROF_ORDER.length; i++) {
+    var key = _PROF_ORDER[i];
+    var ms = (profileSums[key] || 0) / n;
+    out[key] = Math.round(ms * 10) / 10;
+    total += ms;
+  }
+  out.jsMeasuredMs = Math.round(total * 10) / 10;
+  return out;
+}
+
+function _heapMb() {
+  try {
+    if (performance.memory && performance.memory.usedJSHeapSize) {
+      return Math.round(performance.memory.usedJSHeapSize / 104857.6) / 10;
+    }
+  } catch (e) { /* unavailable on iOS Safari */ }
+  return null;
+}
+
+function _taggedFrameMs() {
+  var sum = 0;
+  for (var i = 0; i < _PROF_ORDER.length; i++) sum += _prof.frame[_PROF_ORDER[i]] || 0;
+  return sum;
+}
+
+function _gameContext() {
+  if (typeof _contextGetter === 'function') {
+    try { return _contextGetter() || {}; } catch (e) { return {}; }
+  }
+  return {};
+}
+
+function _compactSecond(bucket) {
+  var frames = bucket.frameMs.slice().sort(function (a, b) { return a - b; });
+  var frameCount = frames.length;
+  var profile = _profileFromSums(bucket.profileSums, frameCount);
+  var taggedMs = profile.jsMeasuredMs || 0;
+  delete profile.jsMeasuredMs;
+  var avgFrame = _avg(bucket.frameMs);
+  var avgWork = _avg(bucket.workMs);
+  var avgWait = Math.max(0, avgFrame - avgWork);
+  var utilPct = avgFrame > 0.05 ? Math.round((avgWork / avgFrame) * 1000) / 10 : 0;
+  var workFrames = bucket.workMs.slice().sort(function (a, b) { return a - b; });
+  return {
+    sec: bucket.sec,
+    fps: frameCount ? Math.round((frameCount / 1) * 10) / 10 : 0,
+    frames: frameCount,
+    frameMs: {
+      avg: Math.round(avgFrame * 10) / 10,
+      p95: Math.round(_percentile(frames, 95) * 10) / 10,
+      max: Math.round((frameCount ? frames[frameCount - 1] : 0) * 10) / 10
+    },
+    spikes: { gt33: bucket.spikesGt33, gt50: bucket.spikesGt50 },
+    logic: {
+      stepsAvg: Math.round(_avg(bucket.steps) * 100) / 100,
+      stepsMax: bucket.steps.length ? Math.max.apply(null, bucket.steps) : 0,
+      backlogMax: Math.round((bucket.backlogs.length ? Math.max.apply(null, bucket.backlogs) : 0) * 10) / 10,
+      droppedCatchup: bucket.droppedCatchup
+    },
+    draw: {
+      callsAvg: Math.round(_avg(bucket.drawCalls)),
+      linesAvg: Math.round(_avg(bucket.lines)),
+      facesAvg: Math.round(_avg(bucket.faces))
+    },
+    scene: Object.assign({}, _scene),
+    timing: {
+      frameIntervalMs: Math.round(avgFrame * 10) / 10,
+      workMs: {
+        avg: Math.round(avgWork * 10) / 10,
+        p95: Math.round(_percentile(workFrames, 95) * 10) / 10,
+        max: Math.round((workFrames.length ? workFrames[workFrames.length - 1] : 0) * 10) / 10
+      },
+      waitMs: Math.round(avgWait * 10) / 10,
+      utilPct: utilPct,
+      taggedMs: Math.round(taggedMs * 10) / 10,
+      untaggedMs: Math.round(Math.max(0, avgWork - taggedMs) * 10) / 10,
+      profile: profile
+    },
+    runtime: {
+      longTasks: bucket.longTasks,
+      longTaskMs: Math.round((bucket.longTaskMs || 0) * 10) / 10,
+      betweenFramePauses: bucket.betweenFramePauses,
+      betweenFramePauseMs: Math.round((bucket.betweenFramePauseMs || 0) * 10) / 10,
+      inFrameUntaggedMs: Math.round(_avg(bucket.inFrameUntaggedMs) * 10) / 10,
+      heapMb: bucket.heapEndMb,
+      heapDeltaMb: bucket.heapStartMb != null && bucket.heapEndMb != null
+        ? Math.round((bucket.heapEndMb - bucket.heapStartMb) * 10) / 10
+        : null
+    },
+    game: _gameContext()
+  };
+}
+
+function _flushSecondBucket() {
+  if (!_sec || !_sec.frameMs.length) {
+    _sec = null;
+    return;
+  }
+  var compact = _compactSecond(_sec);
+  if (_recording && _recordedSeconds.length < _MAX_RECORD_SECONDS) {
+    _recordedSeconds.push(compact);
+  }
+  _secIndex++;
+  _sec = null;
+}
+
+function _trackFrameHitch(frameMs) {
+  _live.frameMs.push(frameMs);
+  if (_live.frameMs.length > _live.maxFrames) _live.frameMs.shift();
+  if (frameMs > 33) {
+    _live.spikesGt33++;
+    if (_sec) _sec.spikesGt33++;
+  }
+  if (frameMs > 50) {
+    _live.spikesGt50++;
+    if (_sec) _sec.spikesGt50++;
+  }
+  var sorted = _live.frameMs.slice().sort(function (a, b) { return a - b; });
+  _live.p95Ms = _percentile(sorted, 95);
+  _live.maxMs = sorted.length ? sorted[sorted.length - 1] : 0;
+}
+
+function _resetLiveWindow() {
+  _live.frameMs = [];
+  _live.spikesGt33 = 0;
+  _live.spikesGt50 = 0;
+  _live.logicStepsMax = 0;
+  _live.backlogMax = 0;
+  _live.droppedCatchup = 0;
+  _live.betweenFramePauses = 0;
+  _live.p95Ms = 0;
+  _live.maxMs = 0;
+  _live.windowStartPerf = _nowPerf();
+}
+
+function _initLongTaskObserver() {
+  _heapSupported = _heapMb() != null;
+  if (typeof PerformanceObserver === 'undefined') return;
+  try {
+    var obs = new PerformanceObserver(function (list) {
+      var entries = list.getEntries();
+      for (var ei = 0; ei < entries.length; ei++) {
+        var dur = entries[ei].duration || 0;
+        _longTaskTotal++;
+        _longTaskMsTotal += dur;
+        if (_sec) {
+          _sec.longTasks++;
+          _sec.longTaskMs += dur;
+        }
+      }
+    });
+    obs.observe({ entryTypes: ['longtask'] });
+  } catch (e) { /* Safari may not support longtask */ }
+}
+
+_initLongTaskObserver();
 
 function _padLabel(label, width) {
   return label.length >= width ? label : label + new Array(width - label.length + 1).join(' ');
@@ -90,6 +376,34 @@ function _padPct(pct) {
   return (s + '%').length >= 4 ? s + '%' : new Array(4 - (s + '%').length + 1).join(' ') + s + '%';
 }
 
+function _padFixed(text, width) {
+  var s = text == null ? '' : String(text);
+  if (s.length >= width) return s.slice(0, width);
+  return s + new Array(width - s.length + 1).join(' ');
+}
+
+function _formatFlags(flags) {
+  flags = flags || {};
+  return 'flg '
+    + (flags.wrapping ? 'W' : '-')
+    + (flags.poopStun ? 'P' : '-')
+    + (flags.bulletTime ? 'B' : '-')
+    + (flags.spawnAnim ? 'S' : '-');
+}
+
+function _formatPrey(preyByKind) {
+  preyByKind = preyByKind || {};
+  return ' B' + _padInt(preyByKind.boulder || 0, 1)
+    + '/g' + _padInt(preyByKind.bug || 0, 1)
+    + '/d' + _padInt(preyByKind.drop || 0, 1)
+    + '/p' + _padInt(preyByKind.poop || 0, 1);
+}
+
+function _formatRecLabel() {
+  if (_recording) return 'REC ' + _padInt(_recordedSeconds.length, 3) + 's';
+  return 'REC off   ';
+}
+
 function _smoothDisplay(key, value) {
   var v = value == null ? 0 : value;
   _display[key] = _display[key] != null
@@ -99,6 +413,12 @@ function _smoothDisplay(key, value) {
 
 function _refreshDisplayMetrics() {
   _smoothDisplay('frameMs', _fps.ms);
+  _smoothDisplay('workMs', _frameWork.ema);
+  var wait = Math.max(0, (_fps.ms || 0) - (_frameWork.ema || 0));
+  _smoothDisplay('waitMs', wait);
+  _display.utilPct = (_fps.ms || 0) > 0.05
+    ? Math.round(((_frameWork.ema || 0) / _fps.ms) * 1000) / 10
+    : 0;
   _smoothDisplay('drawCalls', _frame.drawCalls);
   _smoothDisplay('lines', _frame.lines);
   _smoothDisplay('faces', statsFaces());
@@ -162,7 +482,188 @@ export function statsAddBgLeaves(n) {
   _scene.bgLeaves += n;
 }
 
-export function statsEndFrame(timestamp) {
+export function statsRecordFrameMeta(meta) {
+  if (!_diagMode && !_recording) return;
+  _ensureSecondBucket();
+  var steps = meta && meta.logicSteps != null ? meta.logicSteps : 0;
+  var backlog = meta && meta.backlogMs != null ? meta.backlogMs : 0;
+  _sec.steps.push(steps);
+  _sec.backlogs.push(backlog);
+  if (steps > _live.logicStepsMax) _live.logicStepsMax = steps;
+  if (backlog > _live.backlogMax) _live.backlogMax = backlog;
+  if (meta && meta.droppedCatchup) {
+    _live.droppedCatchup++;
+    _sec.droppedCatchup++;
+  }
+}
+
+export function statsSetRuntimeContextGetter(fn) {
+  _contextGetter = fn;
+}
+
+export function statsGetDiagnosticMode() {
+  return _diagMode;
+}
+
+function _syncPanelVisibility() {
+  _panelVisible = _diagMode;
+  if (_panelEl) {
+    _panelEl.style.display = _panelVisible ? '' : 'none';
+    _panelEl.classList.toggle('perf-diag', _diagMode);
+    _panelEl.classList.toggle('perf-recording', _diagMode && _recording);
+  }
+}
+
+function _persistDiagPref() {
+  try {
+    localStorage.setItem('spiderPerfDiag', _diagMode ? '1' : '0');
+  } catch (e) { }
+}
+
+export function statsSetDiagnosticMode(on, persist) {
+  _diagMode = !!on;
+  _syncPanelVisibility();
+  if (persist !== false) _persistDiagPref();
+}
+
+export function statsIsRecording() {
+  return _recording;
+}
+
+export function statsGetRecordedSecondCount() {
+  return _recordedSeconds.length;
+}
+
+export function statsStartRecording() {
+  if (_recording) return false;
+  _recording = true;
+  _recordingStartedAt = new Date().toISOString();
+  _recordedSeconds = [];
+  _secIndex = 0;
+  _sec = null;
+  _longTaskTotal = 0;
+  _resetLiveWindow();
+  _diagModeAtStart = _diagMode;
+  _syncPanelVisibility();
+  return true;
+}
+
+export function statsStopRecording() {
+  if (!_recording) return false;
+  _flushSecondBucket();
+  _recording = false;
+  _syncPanelVisibility();
+  return true;
+}
+
+export function statsClearRecording() {
+  _recordedSeconds = [];
+  _secIndex = 0;
+  _sec = null;
+  _recordingStartedAt = null;
+  _resetLiveWindow();
+}
+
+function _buildSummary(seconds) {
+  var fpsVals = [];
+  var workVals = [];
+  var utilVals = [];
+  var spike33 = 0;
+  var spike50 = 0;
+  var frameMax = 0;
+  var workMax = 0;
+  var longTaskMs = 0;
+  var betweenFramePauses = 0;
+  var worstSec = null;
+  var statesSeen = {};
+  var levelLabels = {};
+  for (var i = 0; i < seconds.length; i++) {
+    var row = seconds[i];
+    fpsVals.push(row.fps || 0);
+    if (row.timing && row.timing.workMs) {
+      workVals.push(row.timing.workMs.avg || 0);
+      utilVals.push(row.timing.utilPct || 0);
+      if ((row.timing.workMs.max || 0) > workMax) workMax = row.timing.workMs.max;
+    }
+    if (row.runtime) {
+      longTaskMs += row.runtime.longTaskMs || 0;
+      betweenFramePauses += row.runtime.betweenFramePauses || 0;
+    }
+    spike33 += row.spikes.gt33 || 0;
+    spike50 += row.spikes.gt50 || 0;
+    if ((row.frameMs.max || 0) > frameMax) {
+      frameMax = row.frameMs.max;
+      worstSec = row.sec;
+    }
+    var g = row.game || {};
+    if (g.state) statesSeen[g.state] = true;
+    if (g.levelLabel) levelLabels[g.levelLabel] = true;
+  }
+  var stateList = Object.keys(statesSeen);
+  var levelList = Object.keys(levelLabels);
+  return {
+    fpsAvg: fpsVals.length ? Math.round(_avg(fpsVals) * 10) / 10 : 0,
+    fpsMin: fpsVals.length ? Math.min.apply(null, fpsVals) : 0,
+    spikeGt33Total: spike33,
+    spikeGt50Total: spike50,
+    frameMsMax: frameMax,
+    workMsMax: workMax,
+    workMsAvg: workVals.length ? Math.round(_avg(workVals) * 10) / 10 : 0,
+    utilAvgPct: utilVals.length ? Math.round(_avg(utilVals) * 10) / 10 : 0,
+    longTaskMsTotal: Math.round(longTaskMs * 10) / 10,
+    betweenFramePausesTotal: betweenFramePauses,
+    worstSec: worstSec,
+    statesSeen: stateList,
+    levelsSeen: levelList
+  };
+}
+
+export function statsBuildExportPackage() {
+  if (_recording) _flushSecondBucket();
+  var seconds = _recordedSeconds.slice();
+  return {
+    format: 'spider-web-perf/v2',
+    exportedAt: new Date().toISOString(),
+    durationSec: seconds.length,
+    truncated: seconds.length >= _MAX_RECORD_SECONDS,
+    notes: {
+      frameIntervalMs: 'Time between requestAnimationFrame callbacks (includes vsync wait).',
+      workMs: 'Wall-clock CPU time spent inside the game loop this frame.',
+      waitMs: 'frameIntervalMs - workMs; idle until next frame, not render cost.',
+      utilPct: 'workMs / frameIntervalMs; low util at 60fps is normal.',
+      profile: 'Per-second average of instrumented sections; sums to taggedMs.',
+      runtime: 'GC is not exposed in browsers. longTask/betweenFramePause/heap are indirect proxies.',
+      game: 'Snapshot at end of each second: level, wave phase, prey breakdown, flags.'
+    },
+    device: _deviceInfo(),
+    session: {
+      startedAt: _recordingStartedAt,
+      diagnosticModeAtStart: _diagModeAtStart,
+      diagnosticModeAtExport: _diagMode,
+      longTasksTotal: _longTaskTotal,
+      longTaskMsTotal: Math.round(_longTaskMsTotal * 10) / 10,
+      heapSupported: _heapSupported
+    },
+    summary: _buildSummary(seconds),
+    seconds: seconds
+  };
+}
+
+export function statsDownloadExportPackage() {
+  var pkg = statsBuildExportPackage();
+  if (!pkg.seconds.length) return { ok: false, reason: 'empty' };
+  var blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'spider-perf-' + stamp + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  return { ok: true, seconds: pkg.seconds.length };
+}
+
+export function statsEndFrame(timestamp, workMs) {
   statsTimeEnd();
   for (var pi = 0; pi < _PROF_ORDER.length; pi++) {
     var pk = _PROF_ORDER[pi];
@@ -171,6 +672,12 @@ export function statsEndFrame(timestamp) {
       ? _prof.ema[pk] * (1 - _PROF_EMA) + v * _PROF_EMA
       : v;
   }
+
+  var work = workMs != null ? workMs : 0;
+  _frameWork.ms = work;
+  _frameWork.ema = _frameWork.ema != null
+    ? _frameWork.ema * (1 - _WORK_EMA) + work * _WORK_EMA
+    : work;
 
   if (!_fps.lastTs) {
     _fps.lastTs = timestamp;
@@ -187,29 +694,90 @@ export function statsEndFrame(timestamp) {
     _fps.frames = 0;
   }
 
+  if (_diagMode || _recording) {
+    _trackFrameHitch(dt);
+    _ensureSecondBucket();
+    if (_sec._startedAt == null) _sec._startedAt = _nowPerf();
+    if (_sec.heapStartMb == null) _sec.heapStartMb = _heapMb();
+    _sec.heapEndMb = _heapMb();
+
+    var inFrameUntagged = Math.max(0, work - _taggedFrameMs());
+    if (inFrameUntagged > 0.5) _sec.inFrameUntaggedMs.push(inFrameUntagged);
+
+    var extraBetween = dt - work;
+    if (dt > 25 && extraBetween > 8) {
+      _sec.betweenFramePauses++;
+      _sec.betweenFramePauseMs += extraBetween;
+      _live.betweenFramePauses++;
+    }
+
+    _sec.frameMs.push(dt);
+    _sec.workMs.push(work);
+    _sec.drawCalls.push(_frame.drawCalls);
+    _sec.lines.push(_frame.lines);
+    _sec.faces.push(statsFaces());
+    for (var si = 0; si < _PROF_ORDER.length; si++) {
+      var sk = _PROF_ORDER[si];
+      _sec.profileSums[sk] = (_sec.profileSums[sk] || 0) + (_prof.frame[sk] || 0);
+    }
+    if (_nowPerf() - _sec._startedAt >= 1000) {
+      _flushSecondBucket();
+    }
+  }
+
   _refreshDisplayMetrics();
 }
 
 function statsFormatProfile() {
-  var lines = ['--- profile (JS ema) ---'];
-  var total = 0;
-  for (var ti = 0; ti < _PROF_ORDER.length; ti++) {
-    total += _prof.ema[_PROF_ORDER[ti]] || 0;
-  }
-
+  var workBase = _display.workMs || 0;
+  var tagged = 0;
+  var lines = ['--- work breakdown ---'];
   for (var i = 0; i < _PROF_ORDER.length; i++) {
     var key = _PROF_ORDER[i];
     var ms = _prof.ema[key] || 0;
-    var pct = total > 0.05 ? Math.round((ms / total) * 100) : 0;
+    tagged += ms;
+    var pct = workBase > 0.05 ? Math.round((ms / workBase) * 100) : 0;
     lines.push(
       _padLabel(_prof.labels[key], 10) + _padMs(ms) + ' ' + _padPct(pct)
     );
   }
-
-  var gap = Math.max(0, (_display.frameMs || 0) - total);
-  lines.push(_padLabel(_prof.labels.gpu, 10) + _padMs(gap) + '    —');
-  lines.push('(CSS blur 计入 GPU/other)');
+  var untagged = Math.max(0, workBase - tagged);
+  lines.push(
+    _padLabel(_prof.labels.unmeasured, 10) + _padMs(untagged)
+      + ' ' + _padPct(workBase > 0.05 ? Math.round((untagged / workBase) * 100) : 0)
+  );
+  lines.push(
+    'Wait(vsync)' + _padMs(_display.waitMs || 0)
+      + '  util' + _padInt(_display.utilPct || 0, 3) + '%'
+  );
   return lines;
+}
+
+function _diagHeaderLines() {
+  var dev = _deviceInfo();
+  var game = _gameContext();
+  var lvl = game.levelLabel || (game.level != null ? ('L' + (game.level + 1)) : 'L?');
+  var wave = game.waveLabel || (game.wave != null ? ('W' + (game.wave + 1)) : 'W?');
+  var phase = _padFixed(game.wavePhase ? String(game.wavePhase).replace('WAVE_', '') : '—', 8);
+  var flags = game.flags || {};
+  var heapTxt = _heapSupported
+    ? ('heap' + _padFixed((_heapMb() != null ? _heapMb().toFixed(1) : '0.0'), 5) + 'MB')
+    : 'heap  N/A  ';
+  return [
+    'work' + _padMs(_display.workMs) + ' wait' + _padMs(_display.waitMs)
+      + ' util' + _padInt(_display.utilPct, 3) + '%',
+    'frame' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
+    'Spk>33' + _padInt(_live.spikesGt33, 3) + ' >50' + _padInt(_live.spikesGt50, 3)
+      + ' stepMx' + _padInt(_live.logicStepsMax, 1) + ' bkMx' + _padMs(_live.backlogMax),
+    _padFixed(dev.platform, 7) + ' ' + _padFixed(dev.browser, 11)
+      + ' DPR' + _padFixed(String(dev.dpr), 3) + ' c' + _padInt(dev.cores || 0, 2),
+    _padFixed(dev.viewport, 11) + ' ' + _formatRecLabel(),
+    _padFixed(lvl + ' ' + wave, 6) + ' ' + phase + ' ' + _padFixed(game.state || '—', 11)
+      + _formatPrey(game.preyByKind),
+    _formatFlags(flags) + ' drop' + _padInt(_live.droppedCatchup, 2) + '  LT'
+      + _padInt(_longTaskTotal, 2) + '/' + _padInt(Math.round(_longTaskMsTotal), 4) + 'ms',
+    'extPaus' + _padInt(_live.betweenFramePauses, 3) + '  ' + heapTxt
+  ];
 }
 
 export function statsFaces() {
@@ -237,7 +805,7 @@ export function statsFormatPanel() {
   var d = _display;
   var fpsStr = s.fps ? String(s.fps) : '  —';
   if (fpsStr.length < 4) fpsStr = new Array(4 - fpsStr.length + 1).join(' ') + fpsStr;
-  return [
+  var lines = [
     'FPS ' + fpsStr + '  ' + _padMs(d.frameMs),
     'Draw' + _padInt(d.drawCalls, 5) + ' Line' + _padInt(d.lines, 5) + ' Face' + _padInt(d.faces, 5),
     'Img ' + _padInt(d.images, 3) + '  Clear' + _padInt(d.clears, 3),
@@ -248,44 +816,45 @@ export function statsFormatPanel() {
       + ' ry' + _padInt(sc.bgRays, 1) + ' bk' + _padInt(sc.bgBokeh, 2)
       + ' rnd' + _padInt(d.bgRndPct, 3) + '%',
     'DPR ' + sc.dpr
-  ].concat(statsFormatProfile());
+  ];
+  if (_diagMode) {
+    lines = lines.concat(_diagHeaderLines());
+    lines = lines.concat(statsFormatProfile());
+  }
+  return lines;
 }
 
 var _panelEl = null;
-var _panelVisible = true;
+var _panelVisible = false;
 
 export function statsGetPanelVisible() {
   return _panelVisible;
 }
 
-export function statsSetPanelVisible(visible, persist) {
+export function statsSetPanelVisible(visible) {
   _panelVisible = !!visible;
   if (_panelEl) _panelEl.style.display = _panelVisible ? '' : 'none';
-  if (persist !== false) {
-    try {
-      localStorage.setItem('spiderStatsPanelVisible', _panelVisible ? '1' : '0');
-    } catch (e) { }
-  }
 }
 
-function _loadPanelVisiblePref() {
+function _loadDiagPref() {
   try {
-    if (localStorage.getItem('spiderStatsPanelVisible') === '0') _panelVisible = false;
+    if (localStorage.getItem('spiderPerfDiag') === '1') _diagMode = true;
   } catch (e) { }
 }
 
 export function statsBindPanel(el) {
   if (!el) return function () {};
   _panelEl = el;
-  _loadPanelVisiblePref();
-  statsSetPanelVisible(_panelVisible, false);
+  _loadDiagPref();
+  _syncPanelVisibility();
 
   var lastPaint = -_PANEL_REFRESH_MS;
   var cachedText = '';
   return function updatePanel() {
     if (!_panelVisible) return;
     var now = performance.now();
-    if (now - lastPaint < _PANEL_REFRESH_MS) return;
+    var refreshMs = (_diagMode || _recording) ? _DIAG_PANEL_REFRESH_MS : _PANEL_REFRESH_MS;
+    if (now - lastPaint < refreshMs) return;
     lastPaint = now;
     var lines = statsFormatPanel();
     var text = lines.join('\n');

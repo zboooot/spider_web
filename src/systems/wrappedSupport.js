@@ -85,6 +85,26 @@ export function projectPointToConstraint(px, py, constraint) {
   return { c: constraint, t: t, x: x, y: y };
 }
 
+/**
+ * 构建锚定连通子网上下文（pin → BFS 可达粒子 + 存活约束）
+ */
+export function buildAnchoredWebContext(spiderweb, spatialOpts) {
+  if (!spiderweb) {
+    return { aliveConstraints: [], anchoredParticles: [], anchoredSet: {} };
+  }
+  var aliveConstraints = getAliveSupportConstraints(spiderweb, spatialOpts);
+  var anchoredParticles = getAnchoredParticles(spiderweb, aliveConstraints);
+  var anchoredSet = {};
+  for (var i = 0; i < anchoredParticles.length; i++) {
+    anchoredSet[anchoredParticles[i]] = true;
+  }
+  return { aliveConstraints: aliveConstraints, anchoredParticles: anchoredParticles, anchoredSet: anchoredSet };
+}
+
+export function isParticleAnchored(particle, anchoredSet) {
+  return !!(particle && anchoredSet && anchoredSet[particle]);
+}
+
 export function findWrappedReanchorPoint(px, py, currentConstraint, spiderweb, spatialOpts) {
   if (!spiderweb) return null;
   var aliveConstraints = getAliveSupportConstraints(spiderweb, spatialOpts);

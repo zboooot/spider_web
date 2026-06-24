@@ -1,6 +1,7 @@
 import { Vec2 } from '../engine/Vec2.js';
 import { DistanceConstraint } from '../engine/constraints.js';
 import { audioEngine } from '../audio/audioEngine.js';
+import { isCandidateOnAnchoredWeb } from './navigationGraph.js';
 
 var DEFAULT_GAIT_TUNE = {
   minStepDistMove: 28,
@@ -247,13 +248,17 @@ function collectCandidatesFullScan(webComp, thorax, samplePoints, minR, stepR, a
  * @param {object}   currentFootPos      当前脚位置（forward progress 参考）
  * @param {Set|null} occupiedFootholds   其他腿占用的 foothold key（硬排除）
  * @param {object}   spatialOpts         { index, queryBuf }，为 null 则全量扫描
+ * @param {boolean}  filterAnchored      仅保留锚定连通子网上的落脚点（默认 true）
+ * @param {number}   stuckTier           卡住分级：放宽搜索与评分（0=正常）
  */
-export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds, spatialOpts) {
+export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoints, occupiedPositions, occupiedSegments, maxStepR, preferStable, currentFootPos, occupiedFootholds, spatialOpts, filterAnchored, stuckTier) {
   if (typeof window !== 'undefined' && window._spiderStats) window._spiderStats.findStepTargetCalls = (window._spiderStats.findStepTargetCalls || 0) + 1;
   var tune = _getGaitTune();
-  var stepR = maxStepR || 42, minR = 16;
-  var MIN_LEG_SEP = 14;
-  var MIN_STEP_PROGRESS = 20;
+  stuckTier = stuckTier || 0;
+  var stepR = maxStepR || 42;
+  var minR = stuckTier >= 2 ? 10 : (stuckTier >= 1 ? 12 : 16);
+  var MIN_LEG_SEP = stuckTier >= 2 ? 11 : 14;
+  var MIN_STEP_PROGRESS = stuckTier >= 2 ? 12 : 20;
   var thorax = spiderComp.particles[0].pos;
   var head = spiderComp.particles[1].pos;
   var fx = head.x - thorax.x, fy = head.y - thorax.y;
@@ -294,12 +299,20 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
 
   if (!cands.length) return null;
 
+  if (filterAnchored !== false) {
+    cands = cands.filter(function (c) { return isCandidateOnAnchoredWeb(c, webComp, spatialOpts); });
+    if (!cands.length) return null;
+  }
+
+  var candsBeforeFootholdFilter = cands;
+
   /* ── 硬排除：同 foothold key 已被其他腿占用 ── */
   if (occupiedFootholds && occupiedFootholds.size > 0) {
     cands = cands.filter(function (c) {
       var k = getCandidateFootholdKey(c);
       return !k || !occupiedFootholds.has(k);
     });
+    if (!cands.length && stuckTier >= 2) cands = candsBeforeFootholdFilter;
     if (!cands.length) return null;
   }
 
@@ -344,6 +357,13 @@ export function findStepTarget(webComp, legIndex, spiderComp, moveDir, samplePoi
   var SIDE_PENALTY  = 3000;
   var SEG_PENALTY = preferStable ? tune.segPenaltyStable : (moveLen > 0.2 ? tune.segPenaltyMoving : tune.segPenaltyLowMove);
   var FORWARD_MIN_PROGRESS = moveLen > 0.2 ? tune.forwardMinProgressMove : tune.forwardMinProgressIdle;
+  if (stuckTier >= 2) {
+    SEG_PENALTY *= 0.35;
+    FORWARD_MIN_PROGRESS *= 0.5;
+  } else if (stuckTier >= 1) {
+    SEG_PENALTY *= 0.6;
+    FORWARD_MIN_PROGRESS *= 0.75;
+  }
 
   /**
    * 候选评分 — 保留当前分支全部评分规则
@@ -581,11 +601,15 @@ function buildOccupiedStepContext(i, footState, spider) {
  * @param {number}  maxStepR      最大搜索半径覆盖（可选）
  * @param {boolean} preferStable  偏好稳定点（可选）
  * @param {object}  spatialOpts   { index, queryBuf }，null 则 fallback 全量（可选）
+ * @param {number}  stuckTier     卡住分级（0=正常）
  */
-export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, maxStepR, preferStable, spatialOpts) {
+export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, moveDir, STEP_COOLDOWN, maxStepR, preferStable, spatialOpts, stuckTier) {
   var tune = _getGaitTune();
+  stuckTier = stuckTier || 0;
   var fs = footState[i];
   if (!fs || fs.stepping || fs.cooldown > 0) return;
+
+  if (stuckTier >= 2) preferStable = false;
 
   var ctx = buildOccupiedStepContext(i, footState, spider);
 
@@ -595,7 +619,9 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
     maxStepR, preferStable,
     { x: fs.current.x, y: fs.current.y },
     ctx.occupiedFootholds,
-    spatialOpts || null
+    spatialOpts || null,
+    true,
+    stuckTier
   );
   if (!sp) return;
 
@@ -603,14 +629,16 @@ export function triggerStep(i, md, footState, spiderweb, spider, samplePoints, m
     ? spider.legChains[i][0].pos
     : spider.particles[0].pos;
   var hdx = sp.x - hip.x, hdy = sp.y - hip.y;
-  if (hdx * hdx + hdy * hdy > tune.maxHipTargetDist * tune.maxHipTargetDist) return;
+  var hipMax = tune.maxHipTargetDist * (stuckTier >= 2 ? 1.18 : 1);
+  if (hdx * hdx + hdy * hdy > hipMax * hipMax) return;
 
   var dx = sp.x - fs.current.x, dy = sp.y - fs.current.y;
   var stepMoveLen = md ? Math.sqrt(md.x * md.x + md.y * md.y) : 0;
-  /* 闲逛步态：preferStable + 缩步幅 → 允许更小的落脚距离 */
   var minStepDist = (preferStable && stepMoveLen > 0 && maxStepR != null)
     ? tune.minStepDistIdle
     : (stepMoveLen > 0.2 ? tune.minStepDistMove : tune.minStepDistIdle);
+  if (stuckTier >= 2) minStepDist *= 0.55;
+  else if (stuckTier >= 1) minStepDist *= 0.78;
   if (dx * dx + dy * dy < minStepDist * minStepDist) return;
 
   liftFoot(fs, spider);

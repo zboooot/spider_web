@@ -25,6 +25,9 @@ import {
   poopImg,
 } from '../assets/imageAssets.js';
 
+var IS_MOBILE = navigator.maxTouchPoints > 1 || /iPhone|iPad|Android/i.test(navigator.userAgent);
+var USE_MOBILE_RENDER_LITE = IS_MOBILE;
+
 function _invalidateSilkContourCache() {
   _silkSpiralCache = {};
 }
@@ -87,16 +90,52 @@ function getAnimatedWormImage(obj) {
 }
 
 var _silkSpiralCache = {};
+var _contourOffscreen = document.createElement('canvas');
+var _contourOffscreenCtx = _contourOffscreen.getContext('2d');
+var _collectSnapshotCanvas = document.createElement('canvas');
+var _collectSnapshotCtx = _collectSnapshotCanvas.getContext('2d');
+
+function _silkSpiralParams(kind) {
+  if (USE_MOBILE_RENDER_LITE) {
+    if (kind === 'bug') return { loops: 6, steps: 32 };
+    if (kind === 'poop') return { loops: 7, steps: 32 };
+    return { loops: 8, steps: 32 };
+  }
+  if (kind === 'bug') return { loops: 10, steps: 64 };
+  if (kind === 'poop') return { loops: 11, steps: 64 };
+  return { loops: 12, steps: 64 };
+}
+
+function _applyWrappingGlow(ctx, kind) {
+  if (USE_MOBILE_RENDER_LITE) return;
+  if (kind === 'poop') {
+    ctx.shadowBlur = 22;
+    ctx.shadowColor = 'rgba(30,20,18,0.9)';
+    return;
+  }
+  ctx.shadowBlur = 28;
+  ctx.shadowColor = '#ffe8a0';
+}
+
+function _clearWrappingGlow(ctx) {
+  if (USE_MOBILE_RENDER_LITE) return;
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = 'transparent';
+}
 
 function _extractContour(img, drawW, drawH, angleSamples) {
-  var offscreen = document.createElement('canvas');
-  offscreen.width = Math.ceil(drawW);
-  offscreen.height = Math.ceil(drawH);
-  var oc = offscreen.getContext('2d');
-  oc.drawImage(img, 0, 0, offscreen.width, offscreen.height);
-  var data = oc.getImageData(0, 0, offscreen.width, offscreen.height).data;
-  var cx = offscreen.width / 2;
-  var cy = offscreen.height / 2;
+  var w = Math.ceil(drawW);
+  var h = Math.ceil(drawH);
+  if (_contourOffscreen.width !== w || _contourOffscreen.height !== h) {
+    _contourOffscreen.width = w;
+    _contourOffscreen.height = h;
+  }
+  var oc = _contourOffscreenCtx;
+  oc.clearRect(0, 0, w, h);
+  oc.drawImage(img, 0, 0, w, h);
+  var data = oc.getImageData(0, 0, w, h).data;
+  var cx = w / 2;
+  var cy = h / 2;
   var maxR = Math.sqrt(cx * cx + cy * cy);
   var contour = [];
   for (var ai = 0; ai < angleSamples; ai++) {
@@ -106,8 +145,8 @@ function _extractContour(img, drawW, drawH, angleSamples) {
     for (var ri = 2; ri <= maxR; ri += 1.5) {
       var px = Math.round(cx + cos * ri);
       var py = Math.round(cy + sin * ri);
-      if (px < 0 || px >= offscreen.width || py < 0 || py >= offscreen.height) break;
-      var idx = (py * offscreen.width + px) * 4;
+      if (px < 0 || px >= w || py < 0 || py >= h) break;
+      var idx = (py * w + px) * 4;
       if (data[idx + 3] > 20) foundR = ri;
     }
     contour.push({ r: foundR, angle: angle });
@@ -171,17 +210,53 @@ export function buildSilkSpiral(obj) {
   var cacheKey = buildContourCacheKey(obj.kind, img, r);
   if (!_silkSpiralCache[cacheKey]) {
     if (!img.complete || img.naturalWidth === 0) return null;
-    var raw = _smoothContour(_extractContour(img, size.width, size.height, 180));
+    var samples = USE_MOBILE_RENDER_LITE ? 90 : 180;
+    var raw = _smoothContour(_extractContour(img, size.width, size.height, samples));
     _silkSpiralCache[cacheKey] = applyContourPhaseOffset(raw, getSpiralPhaseOffset(obj.kind));
   }
   var contour = _silkSpiralCache[cacheKey];
   obj._silkContour = contour;
-  return _buildSpiralFromContour(contour, getSpiralLoops(obj.kind), 64);
+  var spiral = _silkSpiralParams(obj.kind);
+  return _buildSpiralFromContour(contour, spiral.loops, spiral.steps);
 }
 
 export function ensureSilkSpiral(obj) {
   if (!isSilkWrappedKind(obj.kind)) return;
   if (!obj._silkSpiral) obj._silkSpiral = buildSilkSpiral(obj);
+}
+
+/** 启动时预热常见半径的 silk 轮廓，避免首包同步 getImageData 卡顿 */
+export function prewarmSilkSpiralCache() {
+  var specs = [
+    { kind: 'bug', r: 9 },
+    { kind: 'boulder', r: 7 },
+    { kind: 'poop', r: 20 }
+  ];
+  function warm() {
+    for (var i = 0; i < specs.length; i++) {
+      buildSilkSpiral({ kind: specs[i].kind, def: { r: specs[i].r } });
+    }
+  }
+  var imgs = [flyImg, worm00Img, poopImg];
+  var pending = 0;
+  for (var j = 0; j < imgs.length; j++) {
+    if (!imgs[j].complete || imgs[j].naturalWidth === 0) pending++;
+  }
+  if (pending === 0) {
+    warm();
+    return;
+  }
+  var left = pending;
+  for (var k = 0; k < imgs.length; k++) {
+    (function (img) {
+      if (img.complete && img.naturalWidth > 0) return;
+      img.addEventListener('load', function onLoad() {
+        img.removeEventListener('load', onLoad);
+        left--;
+        if (left <= 0) warm();
+      });
+    })(imgs[k]);
+  }
 }
 
 function getRenderedObjectAngle(obj) {
@@ -284,7 +359,7 @@ function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   ctx.lineJoin = 'round';
   ctx.lineWidth = 1.5 + glow * 0.35;
   ctx.strokeStyle = 'rgba(255,255,255,' + (0.78 + glow * 0.05).toFixed(3) + ')';
-  if (glow > 0) {
+  if (glow > 0 && !USE_MOBILE_RENDER_LITE) {
     ctx.shadowBlur = 8 + glow * 8;
     ctx.shadowColor = 'rgba(255,255,255,' + (0.14 + glow * 0.12).toFixed(3) + ')';
   }
@@ -328,19 +403,26 @@ export function buildCollectSnapshot(obj) {
   if (obj.kind !== 'bug' && obj.kind !== 'boulder') return null;
   var bounds = getRenderedObjectBounds(obj);
   var size = Math.ceil(Math.sqrt(bounds.width * bounds.width + bounds.height * bounds.height) + 18);
-  var canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  canvas.className = 'collect-token-art';
-  canvas.style.width = size + 'px';
-  canvas.style.height = size + 'px';
-  var ctx = canvas.getContext('2d');
+  if (_collectSnapshotCanvas.width !== size || _collectSnapshotCanvas.height !== size) {
+    _collectSnapshotCanvas.width = size;
+    _collectSnapshotCanvas.height = size;
+  }
+  var ctx = _collectSnapshotCtx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, size, size);
   ctx.translate(size * 0.5, size * 0.5);
   applyPreyDeform(ctx, obj, 1);
   if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
   ctx.rotate(getRenderedObjectAngle(obj));
   drawObjectSpriteLocal(ctx, obj);
   drawSilkSpiralLocal(ctx, obj, 1, 0);
+  var canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  canvas.className = 'collect-token-art';
+  canvas.style.width = size + 'px';
+  canvas.style.height = size + 'px';
+  canvas.getContext('2d').drawImage(_collectSnapshotCanvas, 0, 0);
   return { canvas: canvas, size: size };
 }
 
@@ -594,7 +676,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       var wormFrame = getAnimatedWormImage(obj);
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormSize = getWrapDrawSize('boulder', def.r, wormFrame);
-        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) _applyWrappingGlow(ctx, 'boulder');
         if (_pickupNudge > 0.12 && !_isWrapping) {
           ctx.shadowBlur = 8 + _pickupNudge * 8;
           ctx.shadowColor = 'rgba(255,228,130,' + (0.12 + _pickupNudge * 0.2).toFixed(2) + ')';
@@ -605,7 +687,8 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
         } else if (_pickupNudge > 0.12) {
           drawPriorityImage(ctx, wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height, 0.22 + _pickupNudge * 0.26);
         }
-        if (_isWrapping || _pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+        if (_isWrapping) _clearWrappingGlow(ctx);
+        if (_pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
@@ -641,7 +724,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       var flyFrame = getAnimatedFlyImage(obj);
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flySize = getWrapDrawSize('bug', def.r, flyFrame);
-        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) _applyWrappingGlow(ctx, 'bug');
         if (_pickupNudge > 0.12 && !_isWrapping) {
           ctx.shadowBlur = 8 + _pickupNudge * 8;
           ctx.shadowColor = 'rgba(255,228,130,' + (0.12 + _pickupNudge * 0.2).toFixed(2) + ')';
@@ -652,7 +735,8 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
         } else if (_pickupNudge > 0.12) {
           drawPriorityImage(ctx, flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height, 0.22 + _pickupNudge * 0.26);
         }
-        if (_isWrapping || _pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+        if (_isWrapping) _clearWrappingGlow(ctx);
+        if (_pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
         var r = def.r;
@@ -689,10 +773,10 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       if (leafImg.complete && leafImg.naturalWidth > 0) {
         var leafW = def.r * 6.08;  // 3.8 × 1.6
         var leafH = leafW * (leafImg.naturalHeight / leafImg.naturalWidth);
-        if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
+        if (_isWrapping) _applyWrappingGlow(ctx, 'drop');
         ctx.drawImage(leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH);
         if (_isPriorityTarget) drawPriorityImage(ctx, leafImg, -leafW * 0.5, -leafH * 0.5, leafW, leafH, _priorityPulse);
-        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+        if (_isWrapping) _clearWrappingGlow(ctx);
         statsDc('image');
       } else {
         var r = def.r;
@@ -715,11 +799,11 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       ctx.save(); ctx.translate(px, py);
       applyPreyDeform(ctx, obj, _springScale);
       ctx.rotate(getPreyRenderAngle(obj));
-      if (_isWrapping) { ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(30,20,18,0.9)'; }
+      if (_isWrapping) _applyWrappingGlow(ctx, 'poop');
       drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, function (localCtx, img, x, y, w, h) {
         if (_isPriorityTarget) drawPriorityImage(localCtx, img, x, y, w, h, _priorityPulse);
       });
-      if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+      if (_isWrapping) _clearWrappingGlow(ctx);
       drawSilkOnCurrentTransform(ctx, obj);
       ctx.restore();
     }
