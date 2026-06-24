@@ -832,6 +832,7 @@ window.onload = function () {
   }
 
   function buildSpider() {
+    spiderFalling = false;
     if (spider) { var si = sim.composites.indexOf(spider); if (si !== -1) sim.composites.splice(si, 1); }
     var spawnFromY = cy - 110;
     spider = createSpider(sim, new Vec2(cx, spawnFromY), { legStiff: P.legStiff, jointStiff: P.jointStiff });
@@ -930,6 +931,9 @@ window.onload = function () {
   var objCounts = { boulder: 0, bug: 0, drop: 0, poop: 0 };
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
+  var spiderFalling = false;
+  var SPIDER_FALL_GRAV = 0.55;
+  var SPIDER_FALL_STEP_REACH = 48;
   var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
   var selectedWrappedPrey = null; /* 玩家选中的 wrapped 虫类（苍蝇/毛毛虫），用于轮廓高亮 */
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
@@ -1670,12 +1674,81 @@ window.onload = function () {
     return false;
   }
 
+  function _hasAnySpiderFoothold() {
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      if (!fs) continue;
+      if (fs.landedNode && _isSpiderFootNodeAlive(fs.landedNode)) return true;
+      if (fs.landedSeg && _isSpiderFootSegmentAlive(fs.landedSeg)) return true;
+    }
+    return false;
+  }
+
+  function _enterSpiderFall() {
+    if (spiderFalling) return;
+    spiderFalling = true;
+    target = null;
+    idleTarget = null;
+    autoChaseTarget = null;
+    if (blinkState.mood !== 'shock') blinkState.mood = 'shock';
+  }
+
+  function _exitSpiderFall() {
+    if (!spiderFalling) return;
+    spiderFalling = false;
+    for (var fi = 0; fi < footState.length; fi++) {
+      if (footState[fi]) footState[fi].needsEmergencyStep = false;
+    }
+    if (poopStunTimer <= 0 && blinkState.mood === 'shock') blinkState.mood = 'calm';
+  }
+
+  function _maybeExitSpiderFall() {
+    if (spiderFalling && _hasAnySpiderFoothold()) _exitSpiderFall();
+  }
+
+  function _shiftSpiderBy(dx, dy) {
+    for (var pi = 0; pi < spider.particles.length; pi++) {
+      spider.particles[pi].pos.x += dx;
+      spider.particles[pi].pos.y += dy;
+      spider.particles[pi].lastPos.x += dx;
+      spider.particles[pi].lastPos.y += dy;
+    }
+    for (var fi = 0; fi < footState.length; fi++) {
+      var fs = footState[fi];
+      fs.current.x += dx;
+      fs.current.y += dy;
+      fs.from.x += dx;
+      fs.from.y += dy;
+      fs.targetPos.x += dx;
+      fs.targetPos.y += dy;
+      fs.particle.pos.x += dx;
+      fs.particle.pos.y += dy;
+      fs.particle.lastPos.x += dx;
+      fs.particle.lastPos.y += dy;
+    }
+  }
+
+  function _getSpiderFallFloorY() {
+    return Math.min(webCy + webRad * 1.05, H - 36);
+  }
+
+  function _applySpiderFallGravity(dt) {
+    if (!spiderFalling || !spider) return;
+    var dy = SPIDER_FALL_GRAV * dt;
+    var floorY = _getSpiderFallFloorY();
+    var thoraxY = spider.thorax.pos.y;
+    if (thoraxY + dy > floorY) dy = Math.max(0, floorY - thoraxY);
+    if (dy <= 0) return;
+    _shiftSpiderBy(0, dy);
+  }
+
   function _invalidateSpiderFoot(fs) {
     if (!fs) return;
     if (wrappingTarget) cancelWrappingDueToSupportLoss();
     liftFoot(fs, spider);
     fs.cooldown = 0;
     fs.needsEmergencyStep = true;
+    if (!_hasAnySpiderFoothold()) _enterSpiderFall();
   }
 
   function _detachObjectFromBrokenWeb(obj) {
@@ -3267,7 +3340,7 @@ window.onload = function () {
   }
 
   function tryCollectObjects() {
-    if (wrappingTarget !== null || poopStunTimer > 0 || isTutorialSpiderLocked()) return;
+    if (wrappingTarget !== null || spiderFalling || poopStunTimer > 0 || isTutorialSpiderLocked()) return;
     for (var fi = 0; fi < footState.length; fi++) {
       if (footState[fi] && footState[fi].needsEmergencyStep) return;
     }
@@ -3961,14 +4034,16 @@ window.onload = function () {
     if (poopStunTimer > 0) return;
     updateIdlePauseFootTwitch();
     var spatialOpts = _spatialOpts();
-    var gaitTarget = target || idleTarget;
+    var gaitTarget = spiderFalling ? null : (target || idleTarget);
     var isIdleGait = !target && !!idleTarget;
     var idleStepThresh = P.idleStepThresh != null ? P.idleStepThresh : 20;
     var stepThreshSq = isIdleGait ? idleStepThresh * idleStepThresh : STEP_THRESH * STEP_THRESH;
     var stepCooldown = isIdleGait
       ? (P.idleStepCooldown != null ? P.idleStepCooldown : 11)
       : STEP_COOLDOWN;
-    var stepReach = isIdleGait ? (P.idleStepReach != null ? P.idleStepReach : 34) : undefined;
+    var stepReach = spiderFalling
+      ? SPIDER_FALL_STEP_REACH
+      : (isIdleGait ? (P.idleStepReach != null ? P.idleStepReach : 34) : undefined);
     for (var fi = 0; fi < footState.length; fi++) {
       var fs = footState[fi];
       if (fs.stepping || fs.cooldown > 0) continue;
@@ -3976,9 +4051,8 @@ window.onload = function () {
       var partner = footState[fi % 2 === 0 ? fi + 1 : fi - 1];
       var ps = partner && partner.stepping;
       if (ps) continue;
-      if (fs.needsEmergencyStep) {
-        if (gaitTarget) triggerStep(fi, moveDir, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, isIdleGait, spatialOpts);
-        else triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, true, spatialOpts);
+      if (spiderFalling || fs.needsEmergencyStep) {
+        triggerStep(fi, null, footState, spiderweb, spider, samplePoints, moveDir, stepCooldown, stepReach, true, spatialOpts);
         if (fs.stepping) fs.needsEmergencyStep = false;
         continue;
       }
@@ -4515,7 +4589,7 @@ window.onload = function () {
     var isRepairing = false; /* 标记当前是否在执行补网任务 */
 
     /* ── 补网任务：优先级高于玩家点击和 autoPlay，不可打断 ── */
-    if (!isPoopStunned && !wrappingTarget && repairQueue.length > 0) {
+    if (!isPoopStunned && !wrappingTarget && !spiderFalling && repairQueue.length > 0) {
       /* 检查队首任务是否仍然有效（ring 上的节点还活着） */
       while (repairQueue.length > 0 && !_isRepairTaskValid(repairQueue[0])) {
         repairQueue.shift();
@@ -4626,7 +4700,7 @@ window.onload = function () {
     }
 
     /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
-    if (!isPoopStunned && !wrappingTarget && !isRepairing && userPriorityTarget) {
+    if (!isPoopStunned && !wrappingTarget && !spiderFalling && !isRepairing && userPriorityTarget) {
       if (userPriorityTarget.type === 'object') {
         if (!getActivePriorityObject()) {
           clearPriorityTarget();
@@ -4649,11 +4723,11 @@ window.onload = function () {
 
     /* ── autoPlay：自动选取最近 stuck 物体为目标 ── */
     if (_autoPlayPause > 0) { _autoPlayPause--; }
-    if (!isPoopStunned && !autoPlay && !wrappingTarget && !isRepairing && !userPriorityTarget) {
+    if (!isPoopStunned && !autoPlay && !wrappingTarget && !spiderFalling && !isRepairing && !userPriorityTarget) {
       target = null;
       autoChaseTarget = null;
     }
-    if (!isPoopStunned && autoPlay && !wrappingTarget && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
+    if (!isPoopStunned && autoPlay && !wrappingTarget && !spiderFalling && !isRepairing && _autoPlayPause <= 0 && !userPriorityTarget) {
       if (autoChaseTarget && !isTargetObjectChaseable(autoChaseTarget)) {
         pauseAndClearCurrentTarget();
       } else {
@@ -4683,7 +4757,7 @@ window.onload = function () {
     idleTarget = null;
     idleWanderActive = false;
     idleWanderSession = false;
-    if (!isTutorialActive() && !isPoopStunned && !wrappingTarget && !isRepairing && !userPriorityTarget
+    if (!isTutorialActive() && !isPoopStunned && !wrappingTarget && !spiderFalling && !isRepairing && !userPriorityTarget
         && gameState === 'LEVEL_ACTIVE' && !target && !_isBulletTime
         && _autoPlayPause <= 0 && !_spawnAnim.active) {
       idleWanderSession = true;
@@ -4718,10 +4792,15 @@ window.onload = function () {
       }
     }
 
+    if (!_isBulletTime && spiderFalling) _applySpiderFallGravity(timeScale);
+
     if (isPoopStunned || isLevelStartLocked) {
       target = null;
       idleTarget = null;
     } else if (isTutorialSpiderLocked()) {
+      target = null;
+      idleTarget = null;
+    } else if (spiderFalling) {
       target = null;
       idleTarget = null;
     } else if (isWrapping) {
@@ -4792,6 +4871,7 @@ window.onload = function () {
           fs.particle.pos.mutableSet(fs.current);
           fs.stepping = false;
           landFoot(fs, spider, spiderweb, footState);
+          _maybeExitSpiderFall();
         }
       } else {
         if (fs.landedNode) {
