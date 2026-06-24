@@ -49,7 +49,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards, prewarmSilkSpiralCache } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -106,6 +106,7 @@ var IS_MOBILE = navigator.maxTouchPoints > 1 || /iPhone|iPad|Android/i.test(navi
    MAIN
 ================================================================ */
 window.onload = function () {
+  prewarmSilkSpiralCache();
   var WEB_SCALE = 1.2;
   var WAVE_CONFIG_STORAGE_KEY = 'spiderWaveConfigs';
   var LEVEL_CONDITIONS_STORAGE_KEY = 'spiderLevelConditions';
@@ -998,6 +999,25 @@ window.onload = function () {
   var webBreakFlashes = [];
   var _breakFrame = 0;
   var _burstParticles = []; /* 打包完成放射粒子 */
+  var _burstParticlePool = [];
+
+  function _pushBurstParticle(props) {
+    var p = _burstParticlePool.length ? _burstParticlePool.pop() : {};
+    for (var pk in props) {
+      if (Object.prototype.hasOwnProperty.call(props, pk)) p[pk] = props[pk];
+    }
+    _burstParticles.push(p);
+    return p;
+  }
+
+  function _recycleBurstParticle(p) {
+    p.sparkle = false;
+    p.smoke = false;
+    p.grow = 0;
+    p.occlude = 0;
+    p.phase = 0;
+    _burstParticlePool.push(p);
+  }
   var _wrapSplashParticles = []; /* 打包中白色线状飞溅（顶层绘制） */
   var _wrapSplashTimer = 0;
   var _wrapSplashInterval = 9; /* 每组飞溅的间隔（帧） */
@@ -1793,7 +1813,7 @@ window.onload = function () {
   }
 
   function spawnPoopBurst(x, y) {
-    _burstParticles.push({
+    _pushBurstParticle({
       x: x, y: y,
       vx: 0, vy: 0,
       life: 1.0,
@@ -1850,7 +1870,7 @@ window.onload = function () {
     for (var i = 0; i < 40; i++) {
       var ang = (i / 40) * Math.PI * 2 + Math.random() * 0.7;
       var spd = 2.4 + Math.random() * 4.0;
-      _burstParticles.push({
+      _pushBurstParticle({
         x: x, y: y,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd * 0.82,
@@ -1869,7 +1889,7 @@ window.onload = function () {
     for (var j = 0; j < 14; j++) {
       var ang2 = (j / 14) * Math.PI * 2 + Math.random() * 0.45;
       var spd2 = 5.2 + Math.random() * 3.4;
-      _burstParticles.push({
+      _pushBurstParticle({
         x: x, y: y,
         vx: Math.cos(ang2) * spd2,
         vy: Math.sin(ang2) * spd2 * 0.76,
@@ -2681,7 +2701,7 @@ window.onload = function () {
   }
 
   function _pushSparkleParticle(x, y, vx, vy) {
-    _burstParticles.push({
+    _pushBurstParticle({
       x: x,
       y: y,
       vx: vx,
@@ -2717,7 +2737,7 @@ window.onload = function () {
     var dx = toX - x, dy = toY - y;
     var baseAng = Math.atan2(dy, dx);
     /* 中心闪光 */
-    _burstParticles.push({
+    _pushBurstParticle({
       x: x, y: y,
       vx: 0, vy: 0,
       life: 1.0,
@@ -2734,7 +2754,7 @@ window.onload = function () {
     for (var i = 0; i < 10; i++) {
       var ang = baseAng + (Math.random() - 0.5) * 2.2;
       var spd = 2.0 + Math.random() * 3.0;
-      _burstParticles.push({
+      _pushBurstParticle({
         x: x + (Math.random() - 0.5) * 4,
         y: y + (Math.random() - 0.5) * 4,
         vx: Math.cos(ang) * spd,
@@ -4551,7 +4571,7 @@ window.onload = function () {
   ================================================================ */
   var LOGIC_FPS = 60;
   var FIXED_STEP_MS = 1000 / LOGIC_FPS;
-  var MAX_CATCHUP_STEPS = 4;
+  var MAX_CATCHUP_STEPS = IS_MOBILE ? 2 : 4;
   var _lastTimestamp = 0;
   var _fixedAccumulatorMs = 0;
   var _bgFrame = 0;
@@ -4712,7 +4732,7 @@ window.onload = function () {
           if (Math.floor(rTask.timer) % 2 === 0) {
             var sAng = Math.random() * Math.PI * 2;
             var sSpd = 2.5 + Math.random() * 4.0;
-            _burstParticles.push({
+            _pushBurstParticle({
               x: sx + (Math.random() - 0.5) * 16,
               y: sy + (Math.random() - 0.5) * 16,
               vx: Math.cos(sAng) * sSpd,
@@ -4728,7 +4748,7 @@ window.onload = function () {
           }
           /* 偶尔喷一个带 glow 的大粒子 */
           if (Math.floor(rTask.timer) % 10 === 0) {
-            _burstParticles.push({
+            _pushBurstParticle({
               x: sx + (Math.random() - 0.5) * 20,
               y: sy + (Math.random() - 0.5) * 20,
               vx: (Math.random() - 0.5) * 1.5,
@@ -5009,8 +5029,6 @@ window.onload = function () {
       if (tutorialStoneImpact && tutorialStoneImpact.phase === 'pull') {
         updateTutorialStoneImpactFollow(timeScale);
       }
-      if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
-      queryThrownStick();
     }
     statsTimeEnd();
 
@@ -5031,6 +5049,7 @@ window.onload = function () {
     statsTimeStart('query');
     _syncStepSearchTopology();
     if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    if (!_isBulletTime) queryThrownStick();
 
     updateFootTriggers();
 
@@ -5156,7 +5175,11 @@ window.onload = function () {
           _bp.r += (_bp.grow || 0.1) * _speedScale;
         }
         _bp.life -= _bp.decay * _speedScale;
-        if (_bp.life <= 0) { _burstParticles.splice(_bpi, 1); continue; }
+        if (_bp.life <= 0) {
+          _recycleBurstParticle(_bp);
+          _burstParticles.splice(_bpi, 1);
+          continue;
+        }
         _ctx.save();
         if (_bp.ring) {
           _ctx.globalAlpha = _bp.life * 0.82;
