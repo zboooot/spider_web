@@ -21,7 +21,7 @@ var MAX_BUG_BUZZ = 3;
 var pickupTearLoop = null;
 
 /* ── 5套主题ID映射关卡索引 ── */
-var THEME_IDS = ['morning-jade', 'golden-autumn', 'misty-violet', 'cherry-blossom', 'midnight-lume'];
+var THEME_IDS = ['morning-jade', 'midnight-lume', 'misty-violet', 'golden-autumn', 'cherry-blossom'];
 
 /* ══════════════════════════════════════════
    音频上下文管理

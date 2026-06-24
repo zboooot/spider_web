@@ -3753,7 +3753,7 @@ window.onload = function () {
 
     // 主题色点
     var dotsEl = document.getElementById('bg-theme-dots');
-    var themeColors = ['#3da86c', '#b46e34', '#8b5cf6', '#ff8da1', '#3b82f6'];
+    var themeColors = ['#3da86c', '#3b82f6', '#8b5cf6', '#b46e34', '#ff8da1'];
     BG_THEMES.forEach(function (t, i) {
       var dot = document.createElement('div');
       dot.className = 'bg-theme-dot';

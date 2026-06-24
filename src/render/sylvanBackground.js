@@ -23,19 +23,19 @@ export var THEMES = [
     leafDensityRange: [2, 3]
   },
   {
-    id: 'golden-autumn',
-    name: '金秋枫影',
-    bgGradient: ['#8c5127', '#b46e34', '#a4672d', '#facc15'],
-    accent: '#fef08a',
-    motesColor: 'rgba(254, 240, 138, 0.45)',
-    rayColor: 'rgba(255, 255, 255, 0.14)',
-    leafColors: ['#e3b85d', '#cca041', '#f0cf75', '#d99f36', '#ffd984'],
-    barkColor: '#3d2216',
-    highlightColor: 'rgba(254, 215, 170, 0.3)',
-    leafShape: 'maple',
-    branchType: 'wide',
-    leafSizeRange: [120, 170],
-    leafDensityRange: [2, 3]
+    id: 'midnight-lume',
+    name: '暗夜蓝杉',
+    bgGradient: ['#2e4d9c', '#3b82f6', '#1e3a8a', '#67e8f9'],
+    accent: '#67e8f9',
+    motesColor: 'rgba(34, 211, 238, 0.45)',
+    rayColor: 'rgba(14, 165, 233, 0.12)',
+    leafColors: ['#0284c7', '#0ea5e9', '#38bdf8', '#7dd3fc', '#0369a1'],
+    barkColor: '#12182b',
+    highlightColor: 'rgba(224, 242, 254, 0.3)',
+    leafShape: 'spruce',
+    branchType: 'conifer',
+    leafSizeRange: [65, 95],
+    leafDensityRange: [12, 16]
   },
   {
     id: 'misty-violet',
@@ -53,6 +53,21 @@ export var THEMES = [
     leafDensityRange: [1, 2]
   },
   {
+    id: 'golden-autumn',
+    name: '金秋枫影',
+    bgGradient: ['#8c5127', '#b46e34', '#a4672d', '#facc15'],
+    accent: '#fef08a',
+    motesColor: 'rgba(254, 240, 138, 0.45)',
+    rayColor: 'rgba(255, 255, 255, 0.14)',
+    leafColors: ['#e3b85d', '#cca041', '#f0cf75', '#d99f36', '#ffd984'],
+    barkColor: '#3d2216',
+    highlightColor: 'rgba(254, 215, 170, 0.3)',
+    leafShape: 'maple',
+    branchType: 'wide',
+    leafSizeRange: [120, 170],
+    leafDensityRange: [2, 3]
+  },
+  {
     id: 'cherry-blossom',
     name: '春樱盛绽',
     bgGradient: ['#f2a6b5', '#fff0f2', '#ffaec9', '#fda4af'],
@@ -66,21 +81,6 @@ export var THEMES = [
     branchType: 'gnarled',
     leafSizeRange: [55, 85],
     leafDensityRange: [4, 6]
-  },
-  {
-    id: 'midnight-lume',
-    name: '暗夜蓝杉',
-    bgGradient: ['#2e4d9c', '#3b82f6', '#1e3a8a', '#67e8f9'],
-    accent: '#67e8f9',
-    motesColor: 'rgba(34, 211, 238, 0.45)',
-    rayColor: 'rgba(14, 165, 233, 0.12)',
-    leafColors: ['#0284c7', '#0ea5e9', '#38bdf8', '#7dd3fc', '#0369a1'],
-    barkColor: '#12182b',
-    highlightColor: 'rgba(224, 242, 254, 0.3)',
-    leafShape: 'spruce',
-    branchType: 'conifer',
-    leafSizeRange: [65, 95],
-    leafDensityRange: [12, 16]
   }
 ];
 
