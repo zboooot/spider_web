@@ -84,7 +84,7 @@ import {
 
 import {
   statsBeginFrame, statsEndFrame, statsSetScene, statsBindPanel,
-  statsTimeStart, statsTimeEnd, statsGetPanelVisible, statsSetPanelVisible,
+  statsTimeStart, statsTimeEnd,
   statsSetRuntimeContextGetter, statsRecordFrameMeta,
   statsGetDiagnosticMode, statsSetDiagnosticMode,
   statsIsRecording, statsStartRecording, statsStopRecording,
@@ -889,21 +889,6 @@ window.onload = function () {
     if (!perfRecordBtnEl || !statsIsRecording()) return;
     perfRecordBtnEl.textContent = 'Record Perf: ON (' + statsGetRecordedSecondCount() + 's)';
   }
-
-  (function initStatsPanelToggle() {
-    var btn = document.getElementById('btn-stats-toggle');
-    if (!btn) return;
-    function syncBtn() {
-      btn.textContent = statsGetPanelVisible()
-        ? '\uD83D\uDCCA \u9690\u85cf\u6027\u80fd\u9762\u677f'
-        : '\uD83D\uDCCA \u663e\u793a\u6027\u80fd\u9762\u677f';
-    }
-    syncBtn();
-    btn.onclick = function () {
-      statsSetPanelVisible(!statsGetPanelVisible());
-      syncBtn();
-    };
-  })();
 
   function countSimStats(physicsIters) {
     var particles = 0;
@@ -3912,7 +3897,6 @@ window.onload = function () {
     togglePerfDiag: function () {
       var on = !statsGetDiagnosticMode();
       statsSetDiagnosticMode(on);
-      if (on) statsSetPanelVisible(true);
       return on;
     },
     isPerfRecording: function () {

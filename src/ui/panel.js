@@ -103,7 +103,7 @@ export function initPanel(P, DEFAULTS, callbacks) {
 
   var perfDiagBtn = document.getElementById('btn-perf-diag');
   function renderPerfDiagBtn(on) {
-    perfDiagBtn.textContent = on ? 'Perf Diag: ON' : 'Perf Diag: OFF';
+    perfDiagBtn.textContent = on ? 'Perf Diag: ON (panel)' : 'Perf Diag: OFF';
     perfDiagBtn.style.background = on ? 'rgba(60,110,60,0.35)' : '';
     perfDiagBtn.style.color = on ? '#2a5a2a' : '';
   }

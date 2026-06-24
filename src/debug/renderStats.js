@@ -384,12 +384,25 @@ export function statsGetDiagnosticMode() {
   return _diagMode;
 }
 
-export function statsSetDiagnosticMode(on) {
-  _diagMode = !!on;
+function _syncPanelVisibility() {
+  _panelVisible = _diagMode || _recording;
   if (_panelEl) {
-    _panelEl.classList.toggle('perf-diag', _diagMode);
+    _panelEl.style.display = _panelVisible ? '' : 'none';
+    _panelEl.classList.toggle('perf-diag', _diagMode || _recording);
     _panelEl.classList.toggle('perf-recording', _recording);
   }
+}
+
+function _persistDiagPref() {
+  try {
+    localStorage.setItem('spiderPerfDiag', _diagMode ? '1' : '0');
+  } catch (e) { }
+}
+
+export function statsSetDiagnosticMode(on, persist) {
+  _diagMode = !!on;
+  _syncPanelVisibility();
+  if (persist !== false) _persistDiagPref();
 }
 
 export function statsIsRecording() {
@@ -409,10 +422,10 @@ export function statsStartRecording() {
   _sec = null;
   _longTaskTotal = 0;
   _resetLiveWindow();
-  statsSetDiagnosticMode(true);
+  statsSetDiagnosticMode(true, false);
   _diagModeAtStart = true;
-  statsSetPanelVisible(true, false);
   if (_panelEl) _panelEl.classList.add('perf-recording');
+  _syncPanelVisibility();
   return true;
 }
 
@@ -421,6 +434,7 @@ export function statsStopRecording() {
   _flushSecondBucket();
   _recording = false;
   if (_panelEl) _panelEl.classList.remove('perf-recording');
+  _syncPanelVisibility();
   return true;
 }
 
@@ -641,46 +655,40 @@ export function statsFormatPanel() {
       + ' rnd' + _padInt(d.bgRndPct, 3) + '%',
     'DPR ' + sc.dpr
   ];
-  if (_diagMode) lines = lines.concat(_diagHeaderLines());
+  if (_diagMode || _recording) lines = lines.concat(_diagHeaderLines());
   return lines.concat(statsFormatProfile());
 }
 
 var _panelEl = null;
-var _panelVisible = true;
+var _panelVisible = false;
 
 export function statsGetPanelVisible() {
   return _panelVisible;
 }
 
-export function statsSetPanelVisible(visible, persist) {
+export function statsSetPanelVisible(visible) {
   _panelVisible = !!visible;
   if (_panelEl) _panelEl.style.display = _panelVisible ? '' : 'none';
-  if (persist !== false) {
-    try {
-      localStorage.setItem('spiderStatsPanelVisible', _panelVisible ? '1' : '0');
-    } catch (e) { }
-  }
 }
 
-function _loadPanelVisiblePref() {
+function _loadDiagPref() {
   try {
-    if (localStorage.getItem('spiderStatsPanelVisible') === '0') _panelVisible = false;
+    if (localStorage.getItem('spiderPerfDiag') === '1') _diagMode = true;
   } catch (e) { }
 }
 
 export function statsBindPanel(el) {
   if (!el) return function () {};
   _panelEl = el;
-  _loadPanelVisiblePref();
-  statsSetPanelVisible(_panelVisible, false);
-  statsSetDiagnosticMode(_diagMode);
+  _loadDiagPref();
+  _syncPanelVisibility();
 
   var lastPaint = -_PANEL_REFRESH_MS;
   var cachedText = '';
   return function updatePanel() {
     if (!_panelVisible) return;
     var now = performance.now();
-    var refreshMs = _diagMode ? _DIAG_PANEL_REFRESH_MS : _PANEL_REFRESH_MS;
+    var refreshMs = (_diagMode || _recording) ? _DIAG_PANEL_REFRESH_MS : _PANEL_REFRESH_MS;
     if (now - lastPaint < refreshMs) return;
     lastPaint = now;
     var lines = statsFormatPanel();
