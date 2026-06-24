@@ -154,6 +154,29 @@ function _ensureSecondBucket() {
   _sec = _newSecondBucket(_secIndex);
 }
 
+function _detectBrowser(ua) {
+  if (/MicroMessenger/i.test(ua)) return 'WeChat';
+  if (/FBAN|FBAV/i.test(ua)) return 'Facebook';
+  if (/Line\//i.test(ua)) return 'Line';
+  if (/CriOS/i.test(ua)) return 'Chrome(iOS)';
+  if (/FxiOS/i.test(ua)) return 'Firefox(iOS)';
+  if (/EdgiOS/i.test(ua)) return 'Edge(iOS)';
+  if (/SamsungBrowser/i.test(ua)) return 'Samsung';
+  if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) return 'Chrome';
+  if (/Edg\//i.test(ua)) return 'Edge';
+  if (/Firefox\//i.test(ua)) return 'Firefox';
+  if (/Safari\//i.test(ua) && !/Chrome|CriOS|Chromium/i.test(ua)) return 'Safari';
+  return 'Other';
+}
+
+function _detectEngine(ua) {
+  if (/AppleWebKit/i.test(ua)) {
+    return /Chrome|CriOS|Chromium|Edg|SamsungBrowser/i.test(ua) ? 'WebKit(Blink-shell)' : 'WebKit';
+  }
+  if (/Gecko\//i.test(ua)) return 'Gecko';
+  return 'Unknown';
+}
+
 function _deviceInfo() {
   var ua = navigator.userAgent || '';
   var platform = /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
@@ -161,12 +184,15 @@ function _deviceInfo() {
       : 'Desktop';
   return {
     platform: platform,
+    browser: _detectBrowser(ua),
+    engine: _detectEngine(ua),
     ua: ua,
     dpr: window.devicePixelRatio || 1,
     viewport: window.innerWidth + 'x' + window.innerHeight,
     cores: navigator.hardwareConcurrency || null,
     memoryGb: navigator.deviceMemory || null,
-    touchPoints: navigator.maxTouchPoints || 0
+    touchPoints: navigator.maxTouchPoints || 0,
+    standalone: !!(navigator.standalone)
   };
 }
 
@@ -725,7 +751,7 @@ function _diagHeaderLines() {
     'frame' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
     'Spk>33 ' + _live.spikesGt33 + '  >50 ' + _live.spikesGt50
       + '  stepMx ' + _live.logicStepsMax + '  bkMx' + _padMs(_live.backlogMax),
-    dev.platform + ' DPR' + dev.dpr + ' ' + dev.viewport
+    dev.platform + ' ' + dev.browser + ' DPR' + dev.dpr + ' ' + dev.viewport
       + (dev.cores ? (' c' + dev.cores) : ''),
     lvl + ' ' + wave + ' ' + phase + ' ' + (game.state || '—') + prey,
     (flagTxt || '—') + '  ' + rec
