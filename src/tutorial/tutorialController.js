@@ -56,6 +56,7 @@ export function stoneOverlapsWebAt(x, y, stoneR, webCx, webCy, webRad) {
 }
 
 export var TUTORIAL_STONE_PULL_FRAMES = 6;
+export var TUTORIAL_BOULDER_RESPAWN_FRAMES = 2 * FPS;
 
 /** 石头底沿是否进入蛛网上缘线程带 */
 export function stoneCrossesWebTopBand(prevY, nextY, stoneR, webCy, webRad) {
@@ -214,6 +215,18 @@ export function buildBreakersBatch(W, H, cx, cy) {
   ];
 }
 
+export function buildTutorialBoulderSpec(W, H, cx, cy, waveIndex) {
+  return {
+    kind: 'boulder',
+    x: cx + (waveIndex === 1 ? -12 : 18),
+    y: -6,
+    vx: (waveIndex === 1 ? 0.4 : -0.3),
+    vy: 2.4,
+    defOverrides: { stayFrames: 420 },
+    _tutorialTag: 'prey'
+  };
+}
+
 export function buildDemoWave(W, H, cx, cy, waveIndex) {
   return [
     {
@@ -232,15 +245,7 @@ export function buildDemoWave(W, H, cx, cy, waveIndex) {
       vy: 1.15,
       _tutorialTag: 'prey'
     },
-    {
-      kind: 'boulder',
-      x: cx + (waveIndex === 1 ? -12 : 18),
-      y: -6,
-      vx: (waveIndex === 1 ? 0.4 : -0.3),
-      vy: 2.4,
-      defOverrides: { stayFrames: 420 },
-      _tutorialTag: 'prey'
-    }
+    buildTutorialBoulderSpec(W, H, cx, cy, waveIndex)
   ];
 }
 
@@ -253,6 +258,8 @@ export function createTutorialController(W, H, cx, cy) {
   var repairDragDone = false;
   var waveDropCleared = 0;
   var waveWrappedReady = false;
+  var activeWaveIndex = 1;
+  var boulderRespawnTimer = 0;
 
   function pushAction(type, payload) {
     var action = { type: type };
@@ -271,6 +278,16 @@ export function createTutorialController(W, H, cx, cy) {
   function resetWaveReadiness() {
     waveDropCleared = 0;
     waveWrappedReady = false;
+    boulderRespawnTimer = 0;
+  }
+
+  function isBoulderWavePhase() {
+    return phase === PHASE.WAVE_ONE || phase === PHASE.WAVE_TWO;
+  }
+
+  function scheduleBoulderRespawn() {
+    if (!isBoulderWavePhase() || waveWrappedReady) return;
+    boulderRespawnTimer = TUTORIAL_BOULDER_RESPAWN_FRAMES;
   }
 
   function maybePromptCollect() {
@@ -302,7 +319,17 @@ export function createTutorialController(W, H, cx, cy) {
 
     tick: function (dt) {
       if (phase === PHASE.IDLE || phase === PHASE.DONE) return;
-      frame += dt || 1;
+      var step = dt || 1;
+      frame += step;
+      if (boulderRespawnTimer > 0) {
+        boulderRespawnTimer = Math.max(0, boulderRespawnTimer - step);
+        if (boulderRespawnTimer === 0 && isBoulderWavePhase() && !waveWrappedReady) {
+          pushAction('spawn_tutorial_boulder', {
+            waveIndex: activeWaveIndex,
+            clearEscaped: true
+          });
+        }
+      }
       if (phase === PHASE.INTRO_WAIT && frame >= INTRO_DELAY_FRAMES) {
         phase = PHASE.BREAKERS;
         pushAction('spawn_batch', { batch: buildBreakersBatch(W, H, cx, cy), label: 'breakers' });
@@ -351,8 +378,14 @@ export function createTutorialController(W, H, cx, cy) {
         return;
       }
 
+      if (name === 'prey_boulder_escaped' && data.kind === 'boulder') {
+        scheduleBoulderRespawn();
+        return;
+      }
+
       if (name === 'repair_finished' && phase === PHASE.WAIT_REPAIR_FINISH) {
         phase = PHASE.WAVE_ONE;
+        activeWaveIndex = 1;
         resetWaveReadiness();
         pushAction('clear_breakers');
         pushAction('set_insect_target', { targets: TUTORIAL_TARGETS });
@@ -374,6 +407,7 @@ export function createTutorialController(W, H, cx, cy) {
       }
 
       if (name === 'object_wrapped' && isTutorialInsectKind(data.kind)) {
+        boulderRespawnTimer = 0;
         if (phase === PHASE.WAVE_ONE) {
           waveWrappedReady = true;
           maybePromptCollect();
@@ -401,6 +435,7 @@ export function createTutorialController(W, H, cx, cy) {
         collected++;
         if (collected === 1 && (phase === PHASE.WAIT_COLLECT_ONE || phase === PHASE.WAIT_COLLECT_ONE_DRAG)) {
           phase = PHASE.WAVE_TWO;
+          activeWaveIndex = 2;
           resetWaveReadiness();
           pushAction('clear_wave_drops');
           pushAction('spawn_batch', {

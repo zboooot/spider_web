@@ -80,7 +80,8 @@ import {
   applyWebPullTowardPoint,
   applyWebImpactKick,
   TUTORIAL_STONE_PULL_FRAMES,
-  TUTORIAL_TARGETS
+  TUTORIAL_TARGETS,
+  buildTutorialBoulderSpec
 } from './tutorial/tutorialController.js';
 
 import {
@@ -1336,6 +1337,19 @@ window.onload = function () {
     processTutorialActions();
   }
 
+  function _clearEscapedTutorialBoulders() {
+    for (var oi = thrownObjects.length - 1; oi >= 0; oi--) {
+      var obj = thrownObjects[oi];
+      if (!obj || obj._tutorialTag !== 'prey' || obj.kind !== 'boulder') continue;
+      if (obj.state === 'wrapped' || obj.state === 'wrapping' || obj.state === 'collecting') continue;
+      if (wrappingTarget === obj) cancelWrapping();
+      clearSelectedWrappedPrey(obj);
+      obj.destroy(sim);
+      thrownObjects.splice(oi, 1);
+      updateBadge(obj.kind, -1);
+    }
+  }
+
   function processTutorialActions() {
     var actions = tutorialController.drainActions();
     for (var ai = 0; ai < actions.length; ai++) {
@@ -1377,6 +1391,9 @@ window.onload = function () {
           thrownObjects.splice(di, 1);
           updateBadge(leaf.kind, -1);
         }
+      } else if (action.type === 'spawn_tutorial_boulder') {
+        if (action.clearEscaped) _clearEscapedTutorialBoulders();
+        launchObjectSpec(buildTutorialBoulderSpec(W, H, cx, cy, action.waveIndex || 1));
       } else if (action.type === 'mark_completed') {
         try { localStorage.setItem('spiderTutorialCompleted', '1'); } catch (e) { }
       } else if (action.type === 'handoff_to_level_1') {
@@ -3951,6 +3968,10 @@ window.onload = function () {
           }
           webScanPending = 12;
           _webScanIsRepair = false; /* 破坏触发的扫描，允许损失增大 */
+          if (isTutorialActive() && obj._tutorialTag === 'prey' && obj.kind === 'boulder') {
+            tutorialController.handleEvent('prey_boulder_escaped', { kind: obj.kind });
+            processTutorialActions();
+          }
         }
 
       } else if (obj.state === 'falling2') {

@@ -16,6 +16,7 @@ import {
   applyWebPullTowardPoint,
   applyWebImpactKick,
   TUTORIAL_STONE_PULL_FRAMES,
+  TUTORIAL_BOULDER_RESPAWN_FRAMES,
   TUTORIAL_TARGETS
 } from '../src/tutorial/tutorialController.js';
 
@@ -142,6 +143,41 @@ test('canDragTutorialWrappedPrey only allows guided collect phases', function ()
   assert.equal(canDragTutorialWrappedPrey('wave_one'), false);
   assert.equal(canDragTutorialWrappedPrey('wave_two'), false);
   assert.equal(canDragTutorialWrappedPrey('wait_repair_drag'), false);
+});
+
+test('prey boulder escape schedules respawn after two seconds until wrapped', function () {
+  var ctrl = createTutorialController(W, H, CX, CY);
+  ctrl.start();
+
+  for (var i = 0; i < 180; i++) ctrl.tick(1);
+  ctrl.handleEvent('stub_available');
+  for (var ri = 0; ri < 240; ri++) ctrl.tick(1);
+  ctrl.handleEvent('repair_drag_started');
+  ctrl.handleEvent('repair_drag_completed');
+  ctrl.handleEvent('repair_finished');
+  drainTypes(ctrl);
+
+  ctrl.handleEvent('prey_boulder_escaped', { kind: 'boulder' });
+  drainTypes(ctrl);
+
+  for (var wait = 0; wait < TUTORIAL_BOULDER_RESPAWN_FRAMES - 1; wait++) {
+    ctrl.tick(1);
+    assert.equal(drainTypes(ctrl).includes('spawn_tutorial_boulder'), false);
+  }
+  ctrl.tick(1);
+  var respawnTypes = drainTypes(ctrl);
+  assert.ok(respawnTypes.includes('spawn_tutorial_boulder'));
+
+  ctrl.handleEvent('prey_boulder_escaped', { kind: 'boulder' });
+  drainTypes(ctrl);
+  for (var wait2 = 0; wait2 < TUTORIAL_BOULDER_RESPAWN_FRAMES; wait2++) ctrl.tick(1);
+  assert.ok(drainTypes(ctrl).includes('spawn_tutorial_boulder'));
+
+  ctrl.handleEvent('object_wrapped', { kind: 'boulder' });
+  drainTypes(ctrl);
+  ctrl.handleEvent('prey_boulder_escaped', { kind: 'boulder' });
+  for (var wait3 = 0; wait3 < TUTORIAL_BOULDER_RESPAWN_FRAMES + 5; wait3++) ctrl.tick(1);
+  assert.equal(drainTypes(ctrl).includes('spawn_tutorial_boulder'), false);
 });
 
 test('tutorial flow reaches handoff after two collections', function () {
