@@ -134,16 +134,12 @@ export function initPanel(P, DEFAULTS, callbacks) {
       setTimeout(function () { h.textContent = ''; }, 2200);
       return;
     }
-    h.textContent = 'Exporting perf log...';
+    h.textContent = 'Downloading perf log...';
     try {
-      var result = await callbacks.exportPerfLog();
-      if (!result.ok) {
-        h.textContent = 'Export failed';
-      } else if (result.mode === 'clipboard') {
-        h.textContent = '\u2713 Copied ' + seconds + 's perf log';
-      } else {
-        h.textContent = '\u2713 Downloaded ' + seconds + 's perf log';
-      }
+      var result = callbacks.exportPerfLog();
+      h.textContent = result.ok
+        ? ('\u2713 Downloaded ' + seconds + 's perf log')
+        : 'Export failed';
     } catch (e) {
       h.textContent = 'Export failed';
     }

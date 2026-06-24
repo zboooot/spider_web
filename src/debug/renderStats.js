@@ -506,19 +506,6 @@ export function statsDownloadExportPackage() {
   return { ok: true, seconds: pkg.seconds.length };
 }
 
-export async function statsCopyExportPackage() {
-  var pkg = statsBuildExportPackage();
-  if (!pkg.seconds.length) return { ok: false, reason: 'empty' };
-  var text = JSON.stringify(pkg);
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
-      return { ok: true, bytes: text.length, mode: 'clipboard' };
-    }
-  } catch (e) { /* fall through */ }
-  return statsDownloadExportPackage();
-}
-
 export function statsEndFrame(timestamp) {
   statsTimeEnd();
   for (var pi = 0; pi < _PROF_ORDER.length; pi++) {

@@ -89,7 +89,7 @@ import {
   statsGetDiagnosticMode, statsSetDiagnosticMode,
   statsIsRecording, statsStartRecording, statsStopRecording,
   statsGetRecordedSecondCount, statsClearRecording,
-  statsCopyExportPackage
+  statsDownloadExportPackage
 } from './debug/renderStats.js';
 import { getBgEntityCounts } from './render/sylvanBackground.js';
 
@@ -3932,8 +3932,8 @@ window.onload = function () {
     clearPerfRecording: function () {
       statsClearRecording();
     },
-    exportPerfLog: async function () {
-      return statsCopyExportPackage();
+    exportPerfLog: function () {
+      return statsDownloadExportPackage();
     },
     getWaveEditorConfigs: function () {
       return LEVEL_CONFIGS;
