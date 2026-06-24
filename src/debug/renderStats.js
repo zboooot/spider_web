@@ -51,7 +51,7 @@ var _prof = {
     preyRnd: 'Prey',
     spiderRnd: 'Spider',
     other: 'Other',
-    gpu: 'GPU/other'
+    pacing: 'Pacing gap'
   }
 };
 
@@ -77,6 +77,7 @@ var _diagMode = false;
 var _recording = false;
 var _recordedSeconds = [];
 var _recordingStartedAt = null;
+var _diagModeAtStart = false;
 var _contextGetter = null;
 var _longTaskTotal = 0;
 
@@ -128,7 +129,7 @@ function _newSecondBucket(secIndex) {
     drawCalls: [],
     lines: [],
     faces: [],
-    profile: {}
+    profileSums: {}
   };
 }
 
@@ -153,15 +154,17 @@ function _deviceInfo() {
   };
 }
 
-function _profileSnapshot() {
+function _profileFromSums(profileSums, frameCount) {
   var out = {};
+  var total = 0;
+  var n = Math.max(1, frameCount || 1);
   for (var i = 0; i < _PROF_ORDER.length; i++) {
     var key = _PROF_ORDER[i];
-    out[key] = Math.round((_prof.ema[key] || 0) * 10) / 10;
+    var ms = (profileSums[key] || 0) / n;
+    out[key] = Math.round(ms * 10) / 10;
+    total += ms;
   }
-  var total = 0;
-  for (var j = 0; j < _PROF_ORDER.length; j++) total += _prof.ema[_PROF_ORDER[j]] || 0;
-  out.gpuOther = Math.max(0, Math.round(((_display.frameMs || 0) - total) * 10) / 10);
+  out.jsMeasuredMs = Math.round(total * 10) / 10;
   return out;
 }
 
@@ -174,24 +177,20 @@ function _gameContext() {
 
 function _compactSecond(bucket) {
   var frames = bucket.frameMs.slice().sort(function (a, b) { return a - b; });
-  var profile = {};
-  for (var i = 0; i < _PROF_ORDER.length; i++) {
-    var key = _PROF_ORDER[i];
-    profile[key] = bucket.profile[key] != null
-      ? Math.round(bucket.profile[key] * 10) / 10
-      : 0;
-  }
-  var jsTotal = 0;
-  for (var j = 0; j < _PROF_ORDER.length; j++) jsTotal += profile[_PROF_ORDER[j]] || 0;
+  var frameCount = frames.length;
+  var profile = _profileFromSums(bucket.profileSums, frameCount);
+  var jsMeasuredMs = profile.jsMeasuredMs || 0;
+  delete profile.jsMeasuredMs;
   var avgFrame = _avg(bucket.frameMs);
+  var pacingGapMs = Math.round(Math.max(0, avgFrame - jsMeasuredMs) * 10) / 10;
   return {
     sec: bucket.sec,
-    fps: frames.length ? Math.round((frames.length / 1) * 10) / 10 : 0,
-    frames: frames.length,
+    fps: frameCount ? Math.round((frameCount / 1) * 10) / 10 : 0,
+    frames: frameCount,
     frameMs: {
       avg: Math.round(avgFrame * 10) / 10,
       p95: Math.round(_percentile(frames, 95) * 10) / 10,
-      max: Math.round((frames.length ? frames[frames.length - 1] : 0) * 10) / 10
+      max: Math.round((frameCount ? frames[frameCount - 1] : 0) * 10) / 10
     },
     spikes: { gt33: bucket.spikesGt33, gt50: bucket.spikesGt50 },
     logic: {
@@ -206,8 +205,11 @@ function _compactSecond(bucket) {
       facesAvg: Math.round(_avg(bucket.faces))
     },
     scene: Object.assign({}, _scene),
-    profile: profile,
-    gpuOtherMs: Math.round(Math.max(0, avgFrame - jsTotal) * 10) / 10,
+    timing: {
+      jsMeasuredMs: jsMeasuredMs,
+      pacingGapMs: pacingGapMs,
+      profile: profile
+    },
     longTasks: bucket.longTasks,
     game: _gameContext()
   };
@@ -408,6 +410,7 @@ export function statsStartRecording() {
   _longTaskTotal = 0;
   _resetLiveWindow();
   statsSetDiagnosticMode(true);
+  _diagModeAtStart = true;
   statsSetPanelVisible(true, false);
   if (_panelEl) _panelEl.classList.add('perf-recording');
   return true;
@@ -429,37 +432,62 @@ export function statsClearRecording() {
   _resetLiveWindow();
 }
 
-export function statsBuildExportPackage() {
-  if (_recording) _flushSecondBucket();
-  var seconds = _recordedSeconds.slice();
+function _buildSummary(seconds) {
   var fpsVals = [];
   var spike33 = 0;
   var spike50 = 0;
   var frameMax = 0;
+  var worstSec = null;
+  var statesSeen = {};
+  var levelLabels = {};
   for (var i = 0; i < seconds.length; i++) {
-    fpsVals.push(seconds[i].fps || 0);
-    spike33 += seconds[i].spikes.gt33 || 0;
-    spike50 += seconds[i].spikes.gt50 || 0;
-    if ((seconds[i].frameMs.max || 0) > frameMax) frameMax = seconds[i].frameMs.max;
+    var row = seconds[i];
+    fpsVals.push(row.fps || 0);
+    spike33 += row.spikes.gt33 || 0;
+    spike50 += row.spikes.gt50 || 0;
+    if ((row.frameMs.max || 0) > frameMax) {
+      frameMax = row.frameMs.max;
+      worstSec = row.sec;
+    }
+    var g = row.game || {};
+    if (g.state) statesSeen[g.state] = true;
+    if (g.levelLabel) levelLabels[g.levelLabel] = true;
   }
+  var stateList = Object.keys(statesSeen);
+  var levelList = Object.keys(levelLabels);
   return {
-    format: 'spider-web-perf/v1',
+    fpsAvg: fpsVals.length ? Math.round(_avg(fpsVals) * 10) / 10 : 0,
+    fpsMin: fpsVals.length ? Math.min.apply(null, fpsVals) : 0,
+    spikeGt33Total: spike33,
+    spikeGt50Total: spike50,
+    frameMsMax: frameMax,
+    worstSec: worstSec,
+    statesSeen: stateList,
+    levelsSeen: levelList
+  };
+}
+
+export function statsBuildExportPackage() {
+  if (_recording) _flushSecondBucket();
+  var seconds = _recordedSeconds.slice();
+  return {
+    format: 'spider-web-perf/v2',
     exportedAt: new Date().toISOString(),
     durationSec: seconds.length,
     truncated: seconds.length >= _MAX_RECORD_SECONDS,
+    notes: {
+      pacingGapMs: 'Frame interval minus measured JS work; mostly vsync wait at 60Hz, not GPU load.',
+      timingProfile: 'Per-second average of instrumented JS sections (not EMA).',
+      game: 'Snapshot at end of each second: level, wave phase, prey breakdown, flags.'
+    },
     device: _deviceInfo(),
     session: {
       startedAt: _recordingStartedAt,
-      diagnosticMode: _diagMode,
+      diagnosticModeAtStart: _diagModeAtStart,
+      diagnosticModeAtExport: _diagMode,
       longTasksTotal: _longTaskTotal
     },
-    summary: {
-      fpsAvg: fpsVals.length ? Math.round(_avg(fpsVals) * 10) / 10 : 0,
-      fpsMin: fpsVals.length ? Math.min.apply(null, fpsVals) : 0,
-      spikeGt33Total: spike33,
-      spikeGt50Total: spike50,
-      frameMsMax: frameMax
-    },
+    summary: _buildSummary(seconds),
     seconds: seconds
   };
 }
@@ -524,7 +552,10 @@ export function statsEndFrame(timestamp) {
     _sec.drawCalls.push(_frame.drawCalls);
     _sec.lines.push(_frame.lines);
     _sec.faces.push(statsFaces());
-    _sec.profile = _profileSnapshot();
+    for (var si = 0; si < _PROF_ORDER.length; si++) {
+      var sk = _PROF_ORDER[si];
+      _sec.profileSums[sk] = (_sec.profileSums[sk] || 0) + (_prof.frame[sk] || 0);
+    }
     if (_nowPerf() - _sec._startedAt >= 1000) {
       _flushSecondBucket();
     }
@@ -550,24 +581,37 @@ function statsFormatProfile() {
   }
 
   var gap = Math.max(0, (_display.frameMs || 0) - total);
-  lines.push(_padLabel(_prof.labels.gpu, 10) + _padMs(gap) + '    —');
-  lines.push('(CSS blur 计入 GPU/other)');
+  lines.push(_padLabel(_prof.labels.pacing, 10) + _padMs(gap) + '    —');
+  lines.push('(pacing gap ≈ vsync wait, not GPU)');
   return lines;
 }
 
 function _diagHeaderLines() {
   var dev = _deviceInfo();
   var game = _gameContext();
-  var lvl = game.level != null ? ('L' + (game.level + 1)) : 'L?';
-  var wave = game.wave != null ? ('W' + (game.wave + 1)) : 'W?';
+  var lvl = game.levelLabel || (game.level != null ? ('L' + (game.level + 1)) : 'L?');
+  var wave = game.waveLabel || (game.wave != null ? ('W' + (game.wave + 1)) : 'W?');
   var rec = _recording ? ('REC ' + _recordedSeconds.length + 's') : 'REC off';
+  var phase = game.wavePhase ? String(game.wavePhase).replace('WAVE_', '') : '—';
+  var prey = game.preyByKind
+    ? (' B' + (game.preyByKind.boulder || 0) + '/g' + (game.preyByKind.bug || 0)
+      + '/d' + (game.preyByKind.drop || 0) + '/p' + (game.preyByKind.poop || 0))
+    : '';
+  var flags = game.flags || {};
+  var flagTxt = [
+    flags.wrapping ? 'wrap' : '',
+    flags.poopStun ? 'poop' : '',
+    flags.bulletTime ? 'bullet' : '',
+    flags.spawnAnim ? 'spawn' : ''
+  ].filter(Boolean).join(',');
   return [
     'now' + _padMs(_fps.ms) + ' p95' + _padMs(_live.p95Ms) + ' max' + _padMs(_live.maxMs),
     'Spk>33 ' + _live.spikesGt33 + '  >50 ' + _live.spikesGt50
       + '  stepMx ' + _live.logicStepsMax + '  bkMx' + _padMs(_live.backlogMax),
     dev.platform + ' DPR' + dev.dpr + ' ' + dev.viewport
       + (dev.cores ? (' c' + dev.cores) : ''),
-    lvl + ' ' + wave + ' ' + (game.state || '—') + '  ' + rec
+    lvl + ' ' + wave + ' ' + phase + ' ' + (game.state || '—') + prey,
+    (flagTxt || '—') + '  ' + rec
       + (_live.droppedCatchup ? (' drop' + _live.droppedCatchup) : '')
       + '  LT' + _longTaskTotal
   ];

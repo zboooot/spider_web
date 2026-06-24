@@ -890,16 +890,6 @@ window.onload = function () {
     perfRecordBtnEl.textContent = 'Record Perf: ON (' + statsGetRecordedSecondCount() + 's)';
   }
 
-  statsSetRuntimeContextGetter(function () {
-    return {
-      state: gameState,
-      level: currentLevelIndex,
-      wave: currentWaveIndex,
-      tutorial: !!tutorialActive,
-      mobile: IS_MOBILE
-    };
-  });
-
   (function initStatsPanelToggle() {
     var btn = document.getElementById('btn-stats-toggle');
     if (!btn) return;
@@ -1023,6 +1013,65 @@ window.onload = function () {
   var levelCollected = { boulder: 0, bug: 0, drop: 0 };
   var webGridBuildIdx = 0;
   var webGridInitCover = 0;
+
+  function buildPerfGameContext() {
+    var preyByState = { falling: 0, stuck: 0, wrapped: 0, other: 0 };
+    var preyByKind = { boulder: 0, bug: 0, drop: 0, poop: 0 };
+    for (var pi = 0; pi < thrownObjects.length; pi++) {
+      var pobj = thrownObjects[pi];
+      if (!pobj) continue;
+      if (pobj.kind && preyByKind[pobj.kind] != null) preyByKind[pobj.kind]++;
+      var pst = pobj.state || 'other';
+      if (pst === 'falling' || pst === 'falling2') preyByState.falling++;
+      else if (pst === 'stuck' || pst === 'freeing') preyByState.stuck++;
+      else if (pst === 'wrapped') preyByState.wrapped++;
+      else preyByState.other++;
+    }
+    return {
+      state: gameState,
+      level: currentLevelIndex,
+      levelLabel: 'L' + (currentLevelIndex + 1),
+      wave: currentWaveIndex,
+      waveLabel: 'W' + (currentWaveIndex + 1),
+      wavePhase: currentWavePhase,
+      spawnPhase: spawnPhase,
+      tutorial: !!tutorialActive,
+      mobile: IS_MOBILE,
+      autoPlay: autoPlay,
+      flags: {
+        wrapping: wrappingTarget !== null,
+        poopStun: poopStunTimer > 0,
+        bulletTime: !!(sim.draggedEntity && sim.draggedEntity.__isStub),
+        spawnAnim: _spawnAnim.active,
+        idleWander: idleWanderActive
+      },
+      preyByKind: preyByKind,
+      preyByState: preyByState,
+      onField: {
+        boulder: objCounts.boulder || 0,
+        bug: objCounts.bug || 0,
+        drop: objCounts.drop || 0,
+        poop: objCounts.poop || 0
+      },
+      inventory: {
+        boulder: inventoryCounts.boulder || 0,
+        bug: inventoryCounts.bug || 0,
+        drop: inventoryCounts.drop || 0
+      },
+      collected: {
+        boulder: levelCollected.boulder || 0,
+        bug: levelCollected.bug || 0,
+        drop: levelCollected.drop || 0
+      },
+      webDamage: {
+        brokenStubs: brokenEnds.length,
+        repairJobs: repairQueue.length
+      },
+      levelTimeSec: Math.round(levelTimer / 60)
+    };
+  }
+
+  statsSetRuntimeContextGetter(buildPerfGameContext);
 
   var tutorialActive = false;
   var tutorialController = createTutorialController(W, H, cx, cy);
