@@ -87,6 +87,20 @@ export function initPanel(P, DEFAULTS, callbacks) {
     renderAutoPlayBtn(on);
   });
 
+  /* Debug controls */
+  var debugSpawnBtn = document.getElementById('btn-debugSpawn');
+  function renderDebugSpawnBtn(on) {
+    debugSpawnBtn.textContent = on ? 'Spawn: ON' : 'Spawn: OFF';
+    debugSpawnBtn.style.background = on ? 'rgba(60,110,60,0.35)' : 'rgba(120,60,60,0.35)';
+    debugSpawnBtn.style.color = on ? '#2a5a2a' : '#6a2a2a';
+  }
+  renderDebugSpawnBtn(callbacks.isSpawnEnabled());
+  debugSpawnBtn.addEventListener('click', function () {
+    renderDebugSpawnBtn(callbacks.toggleSpawnEnabled());
+  });
+
+  document.getElementById('btn-debugBugBreak').onclick = callbacks.debugBugBreakWeb;
+
   document.getElementById('btn-save').onclick = function () {
     localStorage.setItem('spiderPanelParams', JSON.stringify(P));
     var h = document.getElementById('save-hint');

@@ -7,7 +7,7 @@ import { VerletJS } from './engine/VerletJS.js';
 
 import { createSpiderweb } from './entities/spiderweb.js';
 import { createSpider } from './entities/spider.js';
-import { ThrownObj, clearObjectConstraints, collapseChain, breakWebInRadius } from './entities/ThrownObj.js';
+import { ThrownObj, clearObjectConstraints, collapseChain, breakWebInRadius, breakWebSegmentAsBug } from './entities/ThrownObj.js';
 
 import {
   getWebSamplePoints, updateSamplePoints,
@@ -657,6 +657,7 @@ window.onload = function () {
   var _idleBoredTimer = 0;
   var _idleBoredLimit = 0;
   var isGameplayTestMode = false;
+  var debugSpawnEnabled = true;
 
   function randomIdleBoredCycleFrames() {
     return 180 + Math.floor(Math.random() * 121);
@@ -2606,6 +2607,7 @@ window.onload = function () {
 
   function updateLevelSpawner() {
     if (gameState !== 'LEVEL_ACTIVE' || tutorialActive) return;
+    if (!debugSpawnEnabled) return;
     var levelCfg = getLevelCfgAt(currentLevelIndex);
     var cfg = getWaveCfgAt(currentLevelIndex, currentWaveIndex);
     wavePhaseTimer += _currentTimeScale;
@@ -2652,6 +2654,22 @@ window.onload = function () {
     objCounts[kind] = Math.max(0, (objCounts[kind] || 0) + delta);
     var badgeEl = document.getElementById('cnt-' + kind);
     if (badgeEl) badgeEl.textContent = objCounts[kind];
+  }
+
+  function debugBugBreakWeb() {
+    if (!spiderweb) return;
+    if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
+    var seg = findNearestWebSegment(webCx, webCy, spiderweb, _spatialOpts(), null);
+    if (!seg) return;
+    if (!breakWebSegmentAsBug(seg, spiderweb, webBreakFlashes, _breakFrame, _onWebSegmentBroken, _spatialOpts())) return;
+    spiderweb._topologyVersion = (spiderweb._topologyVersion || 0) + 1;
+    if (_webDrawApi) {
+      for (var i = 0; i < webBreakFlashes.length; i++) {
+        if (!webBreakFlashes[i].affectedCI) _webDrawApi.annotateFlash(webBreakFlashes[i]);
+      }
+    }
+    _refreshBrokenEnds();
+    webScanPending = 12;
   }
 
   function directWebBreakAt(x, y, breakR, forcedStubCount) {
@@ -3673,6 +3691,14 @@ window.onload = function () {
       if (!autoPlay) target = null;
       return autoPlay;
     },
+    isSpawnEnabled: function () {
+      return debugSpawnEnabled;
+    },
+    toggleSpawnEnabled: function () {
+      debugSpawnEnabled = !debugSpawnEnabled;
+      return debugSpawnEnabled;
+    },
+    debugBugBreakWeb: debugBugBreakWeb,
     getWaveEditorConfigs: function () {
       return LEVEL_CONFIGS;
     },
