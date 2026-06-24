@@ -1,14 +1,4 @@
-var flyImg = new Image();
-flyImg.src = '/src/assets/fly.png';
-
-var wormImg = new Image();
-wormImg.src = '/src/assets/worm.png';
-
-var leafImg = new Image();
-leafImg.src = '/src/assets/leaf.png';
-
-var poopImg = new Image();
-poopImg.src = '/src/assets/poop.png';
+import { flyImg, wormImg, leafImg, poopImg } from '../assets/imageAssets.js';
 
 /**
  * HUD 物品栏图标绘制

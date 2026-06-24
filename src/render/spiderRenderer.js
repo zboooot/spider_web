@@ -1,26 +1,14 @@
 import { DistanceConstraint } from '../engine/constraints.js';
 import { statsDc } from '../debug/renderStats.js';
-
-var popoHeadImg = new Image();
-popoHeadImg.src = '/src/assets/popo.png';
-
-var popoBlinkImg = new Image();
-popoBlinkImg.src = '/src/assets/popo_blink.png';
-
-var popoPackImg = new Image();
-popoPackImg.src = '/src/assets/popo_pack.png';
-
-var popoShockImg = new Image();
-popoShockImg.src = '/src/assets/popo_shock.png';
-
-var popoCry01Img = new Image();
-popoCry01Img.src = '/src/assets/popo_cry01.png';
-
-var popoCry02Img = new Image();
-popoCry02Img.src = '/src/assets/popo_cry02.png';
-
-var popoBoredImg = new Image();
-popoBoredImg.src = '/src/assets/popo_bored.png';
+import {
+  popoHeadImg,
+  popoBlinkImg,
+  popoPackImg,
+  popoShockImg,
+  popoCry01Img,
+  popoCry02Img,
+  popoBoredImg,
+} from '../assets/imageAssets.js';
 
 function getSpiderHeadFrame(blinkState, wrappingTarget) {
   if (wrappingTarget) return popoPackImg;

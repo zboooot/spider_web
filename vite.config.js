@@ -4,6 +4,8 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 var HIDE_PANELS_CSS = [
   '/* hide panels */',
   'h1, .layout > .panel { display:none !important; }',
+  '.right-side { display:none !important; }',
+  '.stats-panel { display:none !important; }',
   '/* full-screen */',
   'html, body {',
   '  width:100vw; height:100vh; margin:0; padding:0 !important;',

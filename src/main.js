@@ -944,6 +944,11 @@ window.onload = function () {
   var _autoPlayPause = 0;   /* 打包完成或丢失目标后的停顿帧计数 */
   var POOP_STUN_FRAMES = 180;
   var poopStunTimer = 0;
+  var LEVEL_START_LOCK_FRAMES = 120; /* 2秒 @60Hz，每关开始蜘蛛冻结 */
+  var levelStartLockTimer = 0;       /* 倒计时，>0 时蜘蛛不可移动 */
+  var LEVEL_START_STONE_DELAY = 60;  /* 1秒后掉石头 */
+  var _levelStartStoneTimer = 0;     /* 倒计时，归零时发射石头 */
+  var _levelStartStonePending = false;
   var _draggingPoop = null;
   var _poopPointerDown = null;
   var _suppressPriorityClick = false;
@@ -1353,6 +1358,8 @@ window.onload = function () {
     webGridBuildIdx = 0; webGridInitCover = 0;
     brokenEnds = [];
     autoPlay = true;
+    levelStartLockTimer = 0;
+    _levelStartStonePending = false;
     P.bgTheme = 0;
     switchSylvanTheme(0);
     document.querySelectorAll('.bg-theme-dot').forEach(function (d, idx) {
@@ -1945,6 +1952,12 @@ window.onload = function () {
       d.classList.toggle('active', idx === n);
     });
     if (P.bgMusicOn) audioEngine.playLevelBGM(n);
+
+    /* ── 每关开始：2秒蜘蛛冻结 + 1秒后掉中型石头破网 ── */
+    levelStartLockTimer = LEVEL_START_LOCK_FRAMES;
+    _levelStartStoneTimer = LEVEL_START_STONE_DELAY;
+    _levelStartStonePending = true;
+
     enterWaveFalling(0, false);
   }
 
@@ -2665,6 +2678,59 @@ window.onload = function () {
     if (badgeEl) badgeEl.textContent = objCounts[kind];
   }
 
+  /**
+   * 每关开始的开场破网石头。
+   * 大小参考教程中型石头（TUTORIAL_STONE_RADIUS * 0.5 * 1.3 ≈ 41px）。
+   * 落点在网内圈随机15%扇区（径向 0.20~0.40 * webRad），偏上半，不砸中心。
+   */
+  function launchLevelStartStone() {
+    if (!spiderweb || !webRad) return;
+
+    var STONE_R = 41; /* 与教程中型石头等大 */
+    var BREAK_R = STONE_R * 1.18; /* 破网半径，与教程 breakScale 对应 */
+
+    /* 随机选取内圈15%扇区的落点：
+       - 角度：上半圆随机（-135° ~ -45°，即正上方±45°以外到左右两侧），
+                但总体均匀，再乘15%随机偏移
+       - 径向：0.20 ~ 0.40 * webRad，避开中心也避开外圈 */
+    var angleBase = Math.PI * (0.15 + Math.random() * 0.70); /* 0.15π~0.85π → 偏上半 */
+    if (Math.random() < 0.5) angleBase = -angleBase;         /* 左右对称随机 */
+    var radialFrac = 0.20 + Math.random() * 0.20;            /* 0.20~0.40 倍半径 */
+    var impactX = webCx + Math.cos(angleBase) * webRad * radialFrac;
+    var impactY = webCy + Math.sin(angleBase) * webRad * radialFrac;
+
+    /* 石头从屏幕上方对应X轴位置落下 */
+    var spec = {
+      kind: 'stone',
+      x: impactX,
+      y: -STONE_R * 0.45,
+      vx: 0,
+      vy: 6.0,
+      defOverrides: { r: STONE_R },
+      breakScale: 1.18,
+      forcedStubCount: 2,
+      _tutorialTag: 'level_start_breaker'
+    };
+    var obj = new ThrownObj('stone', W, H, sim, P, gameState, getWaveCfgAt, currentLevelIndex, currentWaveIndex);
+    obj._W = W; obj._H = H;
+    obj.def.r = STONE_R;
+    obj.particle.pos.x = impactX;
+    obj.particle.pos.y = -STONE_R * 0.45;
+    obj.particle.lastPos.x = impactX;
+    obj.particle.lastPos.y = -STONE_R * 0.45 - 6.0;
+    obj.spawnVx = 0;
+    obj.spawnVy = 6.0;
+    obj._holePunched = false;
+    obj._levelStartBreaker = true;
+    obj._levelStartBreakR = BREAK_R;
+    obj._levelStartImpactX = impactX;
+    obj._levelStartImpactY = impactY;
+    obj._disableRestick = true;
+    thrownObjects.push(obj);
+    updateBadge('stone', 1);
+    audioEngine.playSfxStoneFall();
+  }
+
   function directWebBreakAt(x, y, breakR, forcedStubCount) {
     if (!spiderweb || !(breakR > 0)) return 0;
     if (!USE_LEGACY_COLLISION) rebuildSpatialIndex();
@@ -3066,6 +3132,21 @@ window.onload = function () {
           obj.spawnVy = (obj.spawnVy || 0) * 0.985;
           if (obj.kind === 'stone' && !obj._holePunched && obj._tutorialTag === 'breaker' && tutorialActive) {
             tryBeginTutorialStoneImpact(obj, stonePrevX, stonePrevY, p.pos.x, p.pos.y);
+          }
+          /* ── 每关开场石头：到达冲击Y位置时立即破网 ── */
+          if (obj.kind === 'stone' && !obj._holePunched && obj._levelStartBreaker) {
+            if (p.pos.y >= obj._levelStartImpactY) {
+              obj._holePunched = true;
+              directWebBreakAt(obj._levelStartImpactX, obj._levelStartImpactY, obj._levelStartBreakR, 2);
+              applyWebImpactKick(spiderweb.particles, obj._levelStartImpactX, obj._levelStartImpactY, obj._levelStartBreakR * 1.3, Math.max(2.4, obj._levelStartBreakR * 0.08));
+              audioEngine.playSfxWebBreak();
+              obj.state = 'falling2';
+              obj.grav = Math.max(obj.grav || 0, 5.6);
+              obj.spawnVx = 0;
+              obj.spawnVy = 14.5;
+              obj.particle.lastPos.x = p.pos.x;
+              obj.particle.lastPos.y = p.pos.y - obj.spawnVy;
+            }
           }
         } else if (obj.kind === 'bug') {
           var bx = obj.baseVx + Math.sin(obj.animT * obj.buzzFreqX + obj.buzzPhaseX) * obj.buzzAmp * 0.08
@@ -4356,7 +4437,20 @@ window.onload = function () {
     var moving = false; moveDir = null;
     var bodyTarget = target || idleTarget;
     var isIdleBodyMove = !target && !!idleTarget;
-    if (isPoopStunned) {
+    /* ── 每关开始冻结倒计时 ── */
+    if (levelStartLockTimer > 0) levelStartLockTimer -= _currentTimeScale;
+    var isLevelStartLocked = levelStartLockTimer > 0;
+
+    /* ── 每关开始石头延迟倒计时 ── */
+    if (_levelStartStonePending) {
+      _levelStartStoneTimer -= _currentTimeScale;
+      if (_levelStartStoneTimer <= 0) {
+        _levelStartStonePending = false;
+        launchLevelStartStone();
+      }
+    }
+
+    if (isPoopStunned || isLevelStartLocked) {
       target = null;
       idleTarget = null;
     } else if (isTutorialSpiderLocked()) {

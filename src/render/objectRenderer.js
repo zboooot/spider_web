@@ -13,33 +13,17 @@ import {
   isSilkWrappedKind,
   shouldDrawSilkForObject
 } from './preyWrapProfile.js';
-
-var flyImg = new Image();
-flyImg.src = '/src/assets/fly.png';
-
-var fly01Img = new Image();
-fly01Img.src = '/src/assets/fly01.png';
-
-var fly02Img = new Image();
-fly02Img.src = '/src/assets/fly02.png';
-
-var wormImg = new Image();
-wormImg.src = '/src/assets/worm.png';
-
-var worm00Img = new Image();
-worm00Img.src = '/src/assets/worm00.png';
-
-var worm01Img = new Image();
-worm01Img.src = '/src/assets/worm01.png';
-
-var worm02Img = new Image();
-worm02Img.src = '/src/assets/worm02.png';
-
-var leafImg = new Image();
-leafImg.src = '/src/assets/leaf.png';
-
-var poopImg = new Image();
-poopImg.src = '/src/assets/poop.png';
+import {
+  flyImg,
+  fly01Img,
+  fly02Img,
+  wormImg,
+  worm00Img,
+  worm01Img,
+  worm02Img,
+  leafImg,
+  poopImg,
+} from '../assets/imageAssets.js';
 
 function _invalidateSilkContourCache() {
   _silkSpiralCache = {};
