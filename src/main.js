@@ -25,7 +25,7 @@ import {
 import { findWrappedReanchorPoint } from './systems/wrappedSupport.js';
 import {
   resolveNavigation, isNavReachable, invalidateNavCache,
-  getFootSearchRadiusForTier, findNavPath,
+  getFootSearchRadiusForTier, findNavPath, findNearestNavPoint,
   getNavSteerHint, hasReachedNavGoal
 } from './systems/navigationGraph.js';
 
@@ -1987,6 +1987,33 @@ window.onload = function () {
     );
   }
 
+  var PRIORITY_NAV_GIVEUP_STALL = 100;
+  var PRIORITY_NAV_GIVEUP_NOSTEP = 90;
+
+  function _shouldAbandonPriorityNav() {
+    if (!userPriorityTarget || !spider || !spiderweb) return false;
+    if (_locomotion.noStepFrames >= PRIORITY_NAV_GIVEUP_NOSTEP) return true;
+    if (_locomotion.stallFrames >= PRIORITY_NAV_GIVEUP_STALL) return true;
+    var tx = spider.thorax.pos;
+    var spatialOpts = _spatialOpts();
+    if (userPriorityTarget.type === 'point') {
+      var pt = userPriorityTarget.point;
+      if (!isNavReachable(tx.x, tx.y, pt.x, pt.y, spiderweb, spatialOpts)) return true;
+    } else if (userPriorityTarget.type === 'object') {
+      var obj = getActivePriorityObject();
+      if (!obj) return true;
+      var op = obj.particle.pos;
+      if (!isNavReachable(tx.x, tx.y, op.x, op.y, spiderweb, spatialOpts)) return true;
+    }
+    return false;
+  }
+
+  function _abandonPriorityNavIfStuck() {
+    if (!_shouldAbandonPriorityNav()) return;
+    clearPriorityTarget();
+    pauseAndClearCurrentTarget();
+  }
+
   /**
    * 躯干移动方向：默认直线朝最终目标。
    * 仅当脚长时间迈不出去时，才用路网路径做轻微转向提示（头仍朝目标，不逐点折线寻路）。
@@ -2047,10 +2074,15 @@ window.onload = function () {
       return;
     }
     if (!spiderweb || !cellCovered(x, y, spiderweb, webGridCoverD)) return;
-    var nav = resolveNavigation(fromX, fromY, x, y, spiderweb, spatialOpts);
-    if (!nav) return;
-    userPriorityTarget = { type: 'point', point: new Vec2(nav.destX, nav.destY) };
-    _navSteerPath = nav.path;
+    if (!isNavReachable(fromX, fromY, x, y, spiderweb, spatialOpts)) return;
+    var path = findNavPath(fromX, fromY, x, y, spiderweb, spatialOpts);
+    if (!path || !path.length) return;
+    var snap = findNearestNavPoint(x, y, spiderweb, spatialOpts);
+    userPriorityTarget = {
+      type: 'point',
+      point: new Vec2(snap ? snap.x : x, snap ? snap.y : y)
+    };
+    _navSteerPath = path;
     _locomotion.noStepFrames = 0;
     _locomotion.stallFrames = 0;
   }
@@ -4787,6 +4819,9 @@ window.onload = function () {
     }
 
     /* ── 玩家优先目标：完成当前工作后优先去用户点选的位置/物体 ── */
+    if (!isPoopStunned && !wrappingTarget && !isRepairing && userPriorityTarget) {
+      _abandonPriorityNavIfStuck();
+    }
     if (!isPoopStunned && !wrappingTarget && !isRepairing && userPriorityTarget) {
       if (userPriorityTarget.type === 'object') {
         if (!getActivePriorityObject()) {
