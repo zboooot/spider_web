@@ -208,23 +208,49 @@ function getRenderedObjectBounds(obj) {
   return { width: def.r * 2, height: def.r * 2 };
 }
 
-function drawSilkContourDebug(ctx, obj) {
-  if (!DEBUG_SILK_CONTOUR || !obj._silkContour) return;
-  var contour = obj._silkContour;
+function strokeSilkContour(ctx, contour, radiusOffset, strokeStyle, lineWidth, shadowBlur, shadowColor) {
+  if (!contour || !contour.length) return;
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,48,48,0.75)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  if (shadowBlur > 0) {
+    ctx.shadowBlur = shadowBlur;
+    ctx.shadowColor = shadowColor;
+  }
   ctx.beginPath();
   for (var ci = 0; ci < contour.length; ci++) {
     var c = contour[ci];
-    var cx = Math.cos(c.angle) * c.r;
-    var cy = Math.sin(c.angle) * c.r;
+    var r = c.r + (radiusOffset || 0);
+    var cx = Math.cos(c.angle) * r;
+    var cy = Math.sin(c.angle) * r;
     if (ci === 0) ctx.moveTo(cx, cy);
     else ctx.lineTo(cx, cy);
   }
   ctx.closePath();
   ctx.stroke();
   ctx.restore();
+}
+
+function drawSilkContourDebug(ctx, obj) {
+  if (!DEBUG_SILK_CONTOUR || !obj._silkContour) return;
+  strokeSilkContour(ctx, obj._silkContour, 0, 'rgba(255,48,48,0.75)', 1, 0, 'transparent');
+}
+
+function drawWrappedPreySelectionOutline(ctx, obj, pulse) {
+  ensureSilkSpiral(obj);
+  var contour = obj._silkContour;
+  if (!contour || !contour.length) return;
+  var pad = 4 + pulse * 2.5;
+  var alpha = (0.82 + pulse * 0.18).toFixed(2);
+  strokeSilkContour(
+    ctx,
+    contour,
+    pad,
+    'rgba(255, 255, 255, ' + alpha + ')',
+    4.2,
+    10,
+    'rgba(255, 255, 255, 0.5)'
+  );
 }
 
 function drawSilkOnCurrentTransform(ctx, obj) {
@@ -245,10 +271,10 @@ function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.lineWidth = 1.5 + glow * 0.35;
-  ctx.strokeStyle = 'rgba(255,255,255,' + (0.92 + glow * 0.06).toFixed(3) + ')';
+  ctx.strokeStyle = 'rgba(255,255,255,' + (0.78 + glow * 0.05).toFixed(3) + ')';
   if (glow > 0) {
     ctx.shadowBlur = 8 + glow * 8;
-    ctx.shadowColor = 'rgba(255,255,255,' + (0.18 + glow * 0.16).toFixed(3) + ')';
+    ctx.shadowColor = 'rgba(255,255,255,' + (0.14 + glow * 0.12).toFixed(3) + ')';
   }
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
@@ -257,7 +283,7 @@ function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   var tip = pts[drawCount];
   ctx.beginPath();
   ctx.arc(tip.x, tip.y, 1.8, 0, 2 * Math.PI);
-  ctx.fillStyle = 'rgba(255,255,255,' + (1 - glow * 0.04).toFixed(3) + ')';
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.84 - glow * 0.04).toFixed(3) + ')';
   ctx.fill();
   ctx.restore();
 }
@@ -353,13 +379,16 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashI
 /**
  * 投掷物体绘制
  */
-export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
+export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWrappedPrey) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi], def = obj.def;
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     ctx.save(); ctx.globalAlpha = obj.alpha;
     var _isPriorityTarget = !!(priorityTarget && priorityTarget.type === 'object' && priorityTarget.obj === obj);
     var _priorityPulse = _isPriorityTarget ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
+    var _isWrappedSelected = selectedWrappedPrey === obj && obj.state === 'wrapped'
+      && (obj.kind === 'bug' || obj.kind === 'boulder');
+    var _selectionPulse = _isWrappedSelected ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
 
     function applyPriorityFlashRect(localCtx, x, y, w, h) {
       if (!_isPriorityTarget) return;
@@ -532,6 +561,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         applyPriorityFlashRect(ctx, -def.r * 3.4, -def.r * 3.4, def.r * 6.8, def.r * 6.8);
       }
       drawSilkOnCurrentTransform(ctx, obj);
+      if (_isWrappedSelected) drawWrappedPreySelectionOutline(ctx, obj, _selectionPulse);
       ctx.restore();
     }
 
@@ -572,6 +602,7 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         applyPriorityFlashRect(ctx, -r * 3.4, -r * 2.2, r * 6.8, r * 4.4);
       }
       drawSilkOnCurrentTransform(ctx, obj);
+      if (_isWrappedSelected) drawWrappedPreySelectionOutline(ctx, obj, _selectionPulse);
       ctx.restore();
     }
 

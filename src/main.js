@@ -409,8 +409,8 @@ window.onload = function () {
   }
 
   function _getPickupForceThreshold(obj) {
-    if (obj.kind === 'boulder') return 8;
-    if (obj.kind === 'bug') return 5;
+    if (obj.kind === 'boulder') return 6;
+    if (obj.kind === 'bug') return 3;
     return 3;
   }
 
@@ -479,7 +479,11 @@ window.onload = function () {
     ) {
       _suppressMoveCommand = true;
       sim.draggedEntity = null;
+      if (isTutorialInsectKind(hit.obj.kind)) setSelectedWrappedPrey(hit.obj);
       return true;
+    }
+    if (hit.obj.state === 'wrapped' && isTutorialInsectKind(hit.obj.kind)) {
+      setSelectedWrappedPrey(hit.obj);
     }
     var dragMode = (hit.obj.state === 'stuck' && (hit.obj.kind === 'boulder' || hit.obj.kind === 'bug' || hit.obj.kind === 'drop'))
       ? 'web-drag'
@@ -927,6 +931,7 @@ window.onload = function () {
   var inventoryCounts = { boulder: 0, bug: 0, drop: 0 };
   var wrappingTarget = null;
   var userPriorityTarget = null; /* { type:'object'|'point', obj?, point? } */
+  var selectedWrappedPrey = null; /* 玩家选中的 wrapped 虫类（苍蝇/毛毛虫），用于轮廓高亮 */
   var autoChaseTarget = null;   /* 自动模式下当前锁定的掉落物 */
   var brokenEnds = [];      /* 断线头粒子列表，每帧更新，传给 webRenderer */
   var repairQueue = [];     /* 补网任务队列 [{ring, pos, state, timer}] */
@@ -1497,6 +1502,19 @@ window.onload = function () {
     return null;
   }
 
+  function pickSelectableWrappedPreyAt(x, y) {
+    var obj = _pickPreyAt(x, y, ['wrapped']);
+    return (obj && isTutorialInsectKind(obj.kind)) ? obj : null;
+  }
+
+  function setSelectedWrappedPrey(obj) {
+    selectedWrappedPrey = (obj && obj.state === 'wrapped' && isTutorialInsectKind(obj.kind)) ? obj : null;
+  }
+
+  function clearSelectedWrappedPrey(obj) {
+    if (!obj || selectedWrappedPrey === obj) selectedWrappedPrey = null;
+  }
+
   function _isWebAttachedState(state) {
     return state === 'sticking'
       || state === 'stuck'
@@ -1748,6 +1766,13 @@ window.onload = function () {
 
   function setPriorityTarget(x, y) {
     if (isTutorialSpiderLocked()) return;
+    var wrappedPrey = pickSelectableWrappedPreyAt(x, y);
+    if (wrappedPrey) {
+      setSelectedWrappedPrey(wrappedPrey);
+      userPriorityTarget = null;
+      return;
+    }
+    clearSelectedWrappedPrey();
     var picked = pickObjectAt(x, y);
     if (picked) {
       userPriorityTarget = { type: 'object', obj: picked };
@@ -1765,6 +1790,7 @@ window.onload = function () {
 
   function clearPriorityTarget() {
     userPriorityTarget = null;
+    selectedWrappedPrey = null;
   }
 
   function isTargetObjectChaseable(obj) {
@@ -2844,6 +2870,7 @@ window.onload = function () {
   }
 
   function beginPlucking(obj) {
+    clearSelectedWrappedPrey(obj);
     if (_pickupDrag && _pickupDrag.obj === obj) _pickupDrag = null;
     audioEngine.stopPickupTearLoop();
     audioEngine.playSfxPluckSnap();
@@ -2970,6 +2997,7 @@ window.onload = function () {
     var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
     var scatterAngle = Math.atan2(_by - spider.thorax.pos.y, _bx - spider.thorax.pos.x);
     spawnLeafShards(_bx, _by, obj.def.r, obj.angle + (obj._wrapAngle || 0), scatterAngle);
+    clearSelectedWrappedPrey(obj);
     obj.destroy(sim);
     var idx = thrownObjects.indexOf(obj);
     if (idx !== -1) thrownObjects.splice(idx, 1);
@@ -3020,6 +3048,7 @@ window.onload = function () {
   }
 
   function _removeThrownObjectAt(oi, obj) {
+    clearSelectedWrappedPrey(obj);
     if (obj.kind === 'bug') audioEngine.stopBugBuzz(oi);
     obj.destroy(sim);
     thrownObjects.splice(oi, 1);
@@ -4541,7 +4570,12 @@ window.onload = function () {
     sim.draw();
     statsTimeEnd();
     statsTimeStart('preyRnd');
-    drawThrownObjects(sim.ctx, thrownObjects, userPriorityTarget);
+    if (selectedWrappedPrey) {
+      if (thrownObjects.indexOf(selectedWrappedPrey) === -1 || selectedWrappedPrey.state !== 'wrapped') {
+        selectedWrappedPrey = null;
+      }
+    }
+    drawThrownObjects(sim.ctx, thrownObjects, userPriorityTarget, selectedWrappedPrey);
     statsTimeEnd();
     statsTimeStart('spiderRnd');
     if (spider && spider.drawConstraints) spider.drawConstraints(sim.ctx, spider);
