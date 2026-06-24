@@ -44,7 +44,7 @@ import { audioEngine } from './audio/audioEngine.js';
 
 import { setupWebDraw } from './render/webRenderer.js';
 import { setupSpiderDraw } from './render/spiderRenderer.js';
-import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
+import { drawThrownObjects, buildSilkSpiral, ensureSilkSpiral, buildCollectSnapshot, drawWrappingOverlay, getRenderedObjectCenter, spawnLeafShards, updateAndDrawLeafShards } from './render/objectRenderer.js';
 import { renderArtToCanvas, renderInventoryArts } from './render/inventoryArt.js';
 
 import {
@@ -962,6 +962,8 @@ window.onload = function () {
   var WAVE_OVERTIME = 'WAVE_OVERTIME';
 
   var gameState = 'IDLE';
+  var gamePaused = false;
+  var pauseBtnEl = document.getElementById('pause-btn');
   var currentLevelIndex = 0;
   var currentWaveIndex = 0;
   var currentWavePhase = WAVE_FALLING;
@@ -1134,12 +1136,11 @@ window.onload = function () {
   function getTutorialInventoryFocusPoint() {
     var slot = document.getElementById('inv-boulder');
     if (!slot) return null;
-    var rect = slot.getBoundingClientRect();
-    var stageRect = screenShellEl.getBoundingClientRect();
+    var bar = slot.offsetParent;
     return {
-      x: rect.left + rect.width * 0.5 - stageRect.left,
-      y: rect.top + rect.height * 0.5 - stageRect.top,
-      r: Math.max(rect.width, rect.height) * 0.72
+      x: bar.offsetLeft + slot.offsetLeft + slot.offsetWidth * 0.5,
+      y: bar.offsetTop + slot.offsetTop + slot.offsetHeight * 0.5,
+      r: Math.max(slot.offsetWidth, slot.offsetHeight) * 0.72
     };
   }
 
@@ -1372,7 +1373,9 @@ window.onload = function () {
     tutorialController.start();
     processTutorialActions();
     gameState = 'LEVEL_ACTIVE';
+    gamePaused = false;
     hideOverlay();
+    updatePauseButtonVisibility();
     levelTimer = 0;
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
@@ -1509,10 +1512,12 @@ window.onload = function () {
     });
   }
 
-  /* ── show IDLE start screen (or auto-launch tutorial via ?tutorial=1) ── */
-  if (_urlSearchParams.get('tutorial') === '1') {
-    startTutorial();
-  } else {
+  function updatePauseButtonVisibility() {
+    if (!pauseBtnEl) return;
+    pauseBtnEl.style.display = (gameState === 'LEVEL_ACTIVE' && !gamePaused) ? 'flex' : 'none';
+  }
+
+  function showMainMenuOverlay() {
     showOverlay(
       '<div class="overlay-title">SPIDER WEB</div>'
       + '<div class="overlay-subtitle" style="margin-bottom:6px">Collect prey caught in the web</div>'
@@ -1520,8 +1525,86 @@ window.onload = function () {
       + '<button class="overlay-btn" id="btn-continue" style="margin-bottom:8px">继续</button>'
       + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-restart-start">重新开始</button>'
     );
-    document.getElementById('btn-continue').onclick = continueGame;
-    document.getElementById('btn-restart-start').onclick = restartFromTutorial;
+    var btnContinue = document.getElementById('btn-continue');
+    if (btnContinue) btnContinue.onclick = continueGame;
+    var btnRestart = document.getElementById('btn-restart-start');
+    if (btnRestart) btnRestart.onclick = restartFromTutorial;
+  }
+
+  function showPauseMenu() {
+    showOverlay(
+      '<div class="overlay-title">游戏暂停</div>'
+      + '<button class="overlay-btn" id="btn-resume" style="margin-bottom:8px">继续游戏</button>'
+      + '<br><button class="overlay-btn" style="background:#555;margin-top:4px" id="btn-main-menu">返回主菜单</button>'
+    );
+    var btnResume = document.getElementById('btn-resume');
+    if (btnResume) btnResume.onclick = resumeGame;
+    var btnMainMenu = document.getElementById('btn-main-menu');
+    if (btnMainMenu) btnMainMenu.onclick = returnToMainMenu;
+  }
+
+  function pauseGame() {
+    if (gameState !== 'LEVEL_ACTIVE' || gamePaused) return;
+    gamePaused = true;
+    sim.mouseDown = false;
+    sim.draggedEntity = null;
+    sim.snapTarget = null;
+    clearPoopDragState();
+    try {
+      var ctx = audioEngine.getAC();
+      if (ctx.state === 'running') ctx.suspend();
+    } catch (e) {}
+    showPauseMenu();
+    updatePauseButtonVisibility();
+  }
+
+  function resumeGame() {
+    if (!gamePaused) return;
+    gamePaused = false;
+    hideOverlay();
+    try {
+      var ctx = audioEngine.getAC();
+      if (ctx.state === 'suspended') ctx.resume();
+    } catch (e) {}
+    updatePauseButtonVisibility();
+  }
+
+  function returnToMainMenu() {
+    gamePaused = false;
+    wrappingTarget = null;
+    repairQueue = [];
+    repairCompleteFlashes = [];
+    target = null;
+    idleTarget = null;
+    autoChaseTarget = null;
+    clearPriorityTarget();
+    _endWrappedPickup();
+    clearPoopStun();
+    clearPoopDragState();
+    sim.mouseDown = false;
+    sim.draggedEntity = null;
+    sim.snapTarget = null;
+    clearAllObjects();
+    audioEngine.stopBGM();
+    audioEngine.stopAllBugBuzz();
+    audioEngine.stopPickupTearLoop();
+    gameState = 'IDLE';
+    showMainMenuOverlay();
+    updatePauseButtonVisibility();
+  }
+
+  if (pauseBtnEl) {
+    pauseBtnEl.addEventListener('click', function (e) {
+      e.stopPropagation();
+      pauseGame();
+    });
+  }
+
+  /* ── show IDLE start screen (or auto-launch tutorial via ?tutorial=1) ── */
+  if (_urlSearchParams.get('tutorial') === '1') {
+    startTutorial();
+  } else {
+    showMainMenuOverlay();
   }
 
   function pickObjectAt(x, y) {
@@ -1930,7 +2013,7 @@ window.onload = function () {
   /* screen-shell 兜底：点击网外空白区域也能设置点目标 */
   screenShellEl.addEventListener('click', function (e) {
     if (e.target === canvas) return;
-    if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay')) return;
+    if (e.target.closest('#inventory-bar') || e.target.closest('#dbg-web') || e.target.closest('#game-overlay') || e.target.closest('#pause-btn')) return;
     setPriorityTargetFromClient(e.clientX, e.clientY);
   });
 
@@ -2054,8 +2137,10 @@ window.onload = function () {
       if (el) el.textContent = '0/' + cfg.targets[k];
     });
     gameState = 'LEVEL_ACTIVE';
+    gamePaused = false;
     spiderAI.reset(spiderweb);
     hideOverlay();
+    updatePauseButtonVisibility();
     levelTimer = 0;
     webWarmupFrames = 90;
     webGridList = null; webInitCells = 1; webScanPending = 0; webRescanActive = false;
@@ -2099,6 +2184,8 @@ window.onload = function () {
   function showLevelResult(levelSilkGain) {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'LEVEL_RESULT';
+    gamePaused = false;
+    updatePauseButtonVisibility();
     refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
@@ -2135,6 +2222,8 @@ window.onload = function () {
   function showSuccess() {
     if (gameState === 'SUCCESS' || gameState === 'GAME_OVER') return;
     gameState = 'SUCCESS';
+    gamePaused = false;
+    updatePauseButtonVisibility();
     refreshWavePhaseHUD();
     audioEngine.playSfxSuccess();
     clearAllObjects();
@@ -2151,6 +2240,8 @@ window.onload = function () {
   function showGameOver() {
     if (gameState === 'GAME_OVER' || gameState === 'SUCCESS') return;
     gameState = 'GAME_OVER';
+    gamePaused = false;
+    updatePauseButtonVisibility();
     refreshWavePhaseHUD();
     audioEngine.playSfxGameOver();
     clearAllObjects();
@@ -3017,22 +3108,17 @@ window.onload = function () {
   }
 
   function getCanvasPointOnStage(x, y) {
-    var stageRect = screenShellEl.getBoundingClientRect();
-    var canvasRect = canvas.getBoundingClientRect();
-    return {
-      x: (canvasRect.left - stageRect.left) + x * (canvasRect.width / W),
-      y: (canvasRect.top - stageRect.top) + y * (canvasRect.height / H)
-    };
+    /* collect-layer 与 canvas 同属 screen-shell 的 450×800 布局坐标，1:1 映射 */
+    return { x: x, y: y };
   }
 
   function getInventoryTarget(kind) {
     var slot = document.getElementById('inv-' + kind);
-    if (!slot) return null;
-    var slotRect = slot.getBoundingClientRect();
-    var stageRect = screenShellEl.getBoundingClientRect();
+    if (!slot || !slot.offsetParent) return null;
+    var bar = slot.offsetParent;
     return {
-      x: slotRect.left + slotRect.width * 0.5 - stageRect.left,
-      y: slotRect.top + slotRect.height * 0.5 - stageRect.top
+      x: bar.offsetLeft + slot.offsetLeft + slot.offsetWidth * 0.5,
+      y: bar.offsetTop + slot.offsetTop + slot.offsetHeight * 0.5
     };
   }
 
@@ -3164,11 +3250,11 @@ window.onload = function () {
     wrappingTarget = null;
     if (autoPlay) _autoPlayPause = 24;
     audioEngine.playCollectSound(obj.kind);
-    var leafFxPos = getCanvasPointOnStage(obj.particle.pos.x, obj.particle.pos.y);
+    var visual = getRenderedObjectCenter(obj);
+    var leafFxPos = getCanvasPointOnStage(visual.x, visual.y);
     playCollectFX(leafFxPos.x, leafFxPos.y, collectLayer, obj.kind);
-    var _bx = obj.particle.pos.x, _by = obj.particle.pos.y;
-    var scatterAngle = Math.atan2(_by - spider.thorax.pos.y, _bx - spider.thorax.pos.x);
-    spawnLeafShards(_bx, _by, obj.def.r, obj.angle + (obj._wrapAngle || 0), scatterAngle);
+    var scatterAngle = Math.atan2(visual.y - spider.thorax.pos.y, visual.x - spider.thorax.pos.x);
+    spawnLeafShards(visual.x, visual.y, obj.def.r, obj.angle + (obj._wrapAngle || 0), scatterAngle);
     clearSelectedWrappedPrey(obj);
     obj.destroy(sim);
     var idx = thrownObjects.indexOf(obj);
@@ -3598,6 +3684,10 @@ window.onload = function () {
           wrappingTarget = null;
           obj.state = 'wrapped';
           obj._popT = 0;
+          if (obj.kind === 'bug' || obj.kind === 'boulder') {
+            obj._pickupNudgePhase = Math.random() * 600;
+            obj._pickupNudgeInterval = 660 + Math.floor(Math.random() * 480);
+          }
           audioEngine.playCollectSound(obj.kind);
           var packedFxPos = getCanvasPointOnStage(p.pos.x, p.pos.y);
           playFloatingText(packedFxPos.x, packedFxPos.y, collectLayer, 'Packed');
@@ -4321,6 +4411,11 @@ window.onload = function () {
   var _bgFrame = 0;
   var _wasBulletTime = false;
   function fixedUpdate() {
+    if (gamePaused) {
+      _currentTimeScale = 0;
+      return 0;
+    }
+
     /* ── 子弹时间检测：仅拖拽断线头 stub 时进入 ── */
     var _isBulletTime = !!(sim.draggedEntity && sim.draggedEntity.__isStub);
     /* Gameplay and physics are fixed 60Hz. Do not pass RAF delta into this function. */

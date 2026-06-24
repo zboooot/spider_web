@@ -100,7 +100,8 @@ export function getSilkProgress(obj) {
 
 export function getSilkShimmer(obj) {
   if (obj.state !== 'wrapped') return 0;
-  return (0.5 + 0.5 * Math.sin(obj.animT * 0.18 + (obj._popT || 0) * 0.1)) * 0.7;
+  var base = (0.5 + 0.5 * Math.sin(obj.animT * 0.18 + (obj._popT || 0) * 0.1)) * 0.7;
+  return base + (obj._pickupNudgeStrength || 0) * 0.2;
 }
 
 export function buildContourCacheKey(kind, img, r) {

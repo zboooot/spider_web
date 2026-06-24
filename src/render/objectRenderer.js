@@ -389,13 +389,54 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashI
   applyPriorityFlashRect(ctx, -r * 2.2, -r * 2.4, r * 4.4, r * 4.9);
 }
 
+/* wrapped 虫类偶发「可摘取」提示：间隔约 11–19s，单次约 0.7s */
+var PICKUP_NUDGE_INTERVAL_MIN = 660;
+var PICKUP_NUDGE_INTERVAL_MAX = 1140;
+var PICKUP_NUDGE_DUR = 42;
+
+function ensurePickupNudgeSchedule(obj) {
+  if (obj._pickupNudgeInterval == null) {
+    obj._pickupNudgePhase = Math.random() * 400;
+    obj._pickupNudgeInterval = PICKUP_NUDGE_INTERVAL_MIN
+      + Math.floor(Math.random() * (PICKUP_NUDGE_INTERVAL_MAX - PICKUP_NUDGE_INTERVAL_MIN));
+  }
+}
+
+function getPickupNudgeStrength(obj, skipCue) {
+  obj._pickupNudgeStrength = 0;
+  if (skipCue) return 0;
+  if (obj.state !== 'wrapped' || (obj.kind !== 'bug' && obj.kind !== 'boulder')) return 0;
+  if ((obj._pickupCharge || 0) > 0.04 || (obj._pickupTension || 0) > 0.05) return 0;
+  ensurePickupNudgeSchedule(obj);
+  var local = (obj.animT + obj._pickupNudgePhase) % obj._pickupNudgeInterval;
+  if (local >= PICKUP_NUDGE_DUR) return 0;
+  var strength = Math.sin((local / PICKUP_NUDGE_DUR) * Math.PI);
+  obj._pickupNudgeStrength = strength;
+  return strength;
+}
+
+/** 物体在 Canvas 上的视觉中心（含 wrapping 颤抖偏移） */
+export function getRenderedObjectCenter(obj) {
+  var px = obj.particle.pos.x;
+  var py = obj.particle.pos.y;
+  if (obj.state === 'wrapping') {
+    var wt = obj.wrapT;
+    var at = obj.animT;
+    var tremble = wt * 3.5;
+    px += Math.sin(at * 0.95) * tremble + Math.cos(at * 1.55) * tremble * 0.5;
+    py += Math.cos(at * 1.1) * tremble * 0.8 + Math.sin(at * 1.85) * tremble * 0.3;
+  }
+  return { x: px, y: py };
+}
+
 /**
  * 投掷物体绘制
  */
 export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWrappedPrey) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi], def = obj.def;
-    var px = obj.particle.pos.x, py = obj.particle.pos.y;
+    var center = getRenderedObjectCenter(obj);
+    var px = center.x, py = center.y;
     ctx.save(); ctx.globalAlpha = obj.alpha;
     var _isPriorityTarget = !!(priorityTarget && priorityTarget.type === 'object' && priorityTarget.obj === obj);
     var _priorityPulse = _isPriorityTarget ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
@@ -437,9 +478,6 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
     if (obj.state === 'wrapping') {
       var wt = obj.wrapT;
       var at = obj.animT;
-      var tremble = wt * 3.5;
-      px += Math.sin(at * 0.95) * tremble + Math.cos(at * 1.55) * tremble * 0.5;
-      py += Math.cos(at * 1.1) * tremble * 0.8 + Math.sin(at * 1.85) * tremble * 0.3;
       var wrapAngle = Math.sin(at * 0.425 + wt * 10) * 0.31 * wt;
       obj._wrapAngle = wrapAngle;
       var wrapDeform = Math.sin(at * 0.26 + wt * 8) * 0.035 * wt;
@@ -449,13 +487,15 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       obj._drawStretchSquash = 1;
       obj._drawStretchAngle = 0;
     } else if (obj.state === 'wrapped') {
-      obj._wrapAngle = 0;
+      var _pickupNudge = getPickupNudgeStrength(obj, _isPriorityTarget || _isWrappedSelected);
       var popFrac2 = Math.min(1, obj._popT / obj._popDur);
       var popScale = 1 + Math.sin(popFrac2 * Math.PI) * 0.12;
       var idleDeform = Math.sin(obj.animT * 0.16) * 0.028;
+      var nudgeDeform = _pickupNudge * Math.sin(obj.animT * 0.72) * 0.055;
       var pullDeform = Math.min(0.22, (obj._pickupCharge || 0) * 0.18 + (obj._pickupTension || 0) * 0.06);
-      obj._drawScaleX = popScale * (1 + idleDeform);
-      obj._drawScaleY = popScale * (1 - idleDeform * 0.75);
+      obj._wrapAngle = _pickupNudge * Math.sin(obj.animT * 0.95) * 0.1;
+      obj._drawScaleX = popScale * (1 + idleDeform + nudgeDeform);
+      obj._drawScaleY = popScale * (1 - idleDeform * 0.75 - nudgeDeform * 0.65);
       obj._drawStretchScale = 1 + pullDeform;
       obj._drawStretchSquash = 1 - pullDeform * 0.58;
       obj._drawStretchAngle = obj._pickupPullAngle || 0;
@@ -485,6 +525,13 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       obj._drawStretchScale = 1;
       obj._drawStretchSquash = 1;
       obj._drawStretchAngle = 0;
+      obj._pickupNudgeStrength = 0;
+    }
+
+    var _pickupNudge = obj._pickupNudgeStrength || 0;
+    if (_pickupNudge > 0) {
+      px += Math.sin(obj.animT * 0.88) * _pickupNudge * 1.35;
+      py += Math.cos(obj.animT * 1.05) * _pickupNudge * 0.95;
     }
 
     var _isWrapping = obj.state === 'wrapping';
@@ -548,11 +595,17 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
         var wormSize = getWrapDrawSize('boulder', def.r, wormFrame);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
+        if (_pickupNudge > 0.12 && !_isWrapping) {
+          ctx.shadowBlur = 8 + _pickupNudge * 8;
+          ctx.shadowColor = 'rgba(255,228,130,' + (0.12 + _pickupNudge * 0.2).toFixed(2) + ')';
+        }
         ctx.drawImage(wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height);
         if (_isPriorityTarget) {
           drawPriorityImage(ctx, wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height, _priorityPulse);
+        } else if (_pickupNudge > 0.12) {
+          drawPriorityImage(ctx, wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height, 0.22 + _pickupNudge * 0.26);
         }
-        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+        if (_isWrapping || _pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
         var segs = 4, segR = def.r * 0.92, gap = segR * 1.45;
@@ -589,11 +642,17 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWr
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
         var flySize = getWrapDrawSize('bug', def.r, flyFrame);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
+        if (_pickupNudge > 0.12 && !_isWrapping) {
+          ctx.shadowBlur = 8 + _pickupNudge * 8;
+          ctx.shadowColor = 'rgba(255,228,130,' + (0.12 + _pickupNudge * 0.2).toFixed(2) + ')';
+        }
         ctx.drawImage(flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height);
         if (_isPriorityTarget) {
           drawPriorityImage(ctx, flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height, _priorityPulse);
+        } else if (_pickupNudge > 0.12) {
+          drawPriorityImage(ctx, flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height, 0.22 + _pickupNudge * 0.26);
         }
-        if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+        if (_isWrapping || _pickupNudge > 0.12) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
         var r = def.r;

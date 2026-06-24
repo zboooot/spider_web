@@ -38,6 +38,43 @@ h1{
   border-radius:4px;
   background:transparent;
 }
+.pause-btn{
+  position:absolute;
+  top:10px;
+  left:10px;
+  z-index:10;
+  pointer-events:auto;
+  width:40px;
+  height:40px;
+  border:none;
+  border-radius:10px;
+  background:rgba(0,0,0,0.45);
+  backdrop-filter:blur(4px);
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:0;
+  transition:background 0.15s,transform 0.07s;
+  box-shadow:0 2px 8px rgba(0,0,0,0.35);
+}
+.pause-btn:hover{background:rgba(0,0,0,0.62);}
+.pause-btn:active{transform:scale(0.94);}
+.pause-btn-icon{
+  display:flex;
+  gap:5px;
+  align-items:center;
+  justify-content:center;
+}
+.pause-btn-icon::before,
+.pause-btn-icon::after{
+  content:'';
+  display:block;
+  width:4px;
+  height:16px;
+  background:rgba(255,255,255,0.92);
+  border-radius:1px;
+}
 .inventory-bar{
   display:flex;
   flex-direction:row;
@@ -49,6 +86,7 @@ h1{
   right:0;
   top:10px;
   z-index:6;
+  pointer-events:none;
 }
 .inventory-slot{
   display:flex;
