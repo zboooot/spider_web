@@ -1849,7 +1849,7 @@ window.onload = function () {
 
   function _invalidateSpiderFoot(fs) {
     if (!fs) return;
-    if (wrappingTarget) cancelWrappingDueToSupportLoss();
+    if (wrappingTarget) cancelWrapping();
     liftFoot(fs, spider);
     fs.cooldown = 0;
     fs.emergencyFrames = 0;
@@ -1860,6 +1860,7 @@ window.onload = function () {
 
   function _detachObjectFromBrokenWeb(obj) {
     if (!obj || !_isWebAttachedState(obj.state) || !obj.particle) return false;
+    if (wrappingTarget === obj) cancelWrapping();
     if (!obj.stuckOnConstraint && !obj.cA && !obj.cB) return false;
     var p = obj.particle;
     var currentVx = p.pos.x - p.lastPos.x;
@@ -3536,7 +3537,7 @@ window.onload = function () {
     _wrapSplashTimer = 0;
   }
 
-  function cancelWrappingDueToSupportLoss() {
+  function cancelWrapping() {
     var obj = wrappingTarget;
     if (!obj) return;
     wrappingTarget = null;
@@ -3547,6 +3548,14 @@ window.onload = function () {
     obj.particle._noSimDrag = false;
     obj.particle.lastPos.mutableSet(obj.particle.pos);
     obj._silkLines = null;
+  }
+
+  function _syncWrappingTarget() {
+    if (!wrappingTarget) return;
+    if (thrownObjects.indexOf(wrappingTarget) === -1 || wrappingTarget.state !== 'wrapping') {
+      wrappingTarget = null;
+      pauseAndClearCurrentTarget();
+    }
   }
 
   function preserveWrappedSupport(obj) {
@@ -3622,6 +3631,7 @@ window.onload = function () {
   }
 
   function _removeThrownObjectAt(oi, obj) {
+    if (wrappingTarget === obj) cancelWrapping();
     clearSelectedWrappedPrey(obj);
     if (obj.kind === 'bug') audioEngine.stopBugBuzz(oi);
     obj.destroy(sim);
@@ -4901,6 +4911,7 @@ window.onload = function () {
     }
 
     statsTimeStart('anim');
+    _syncWrappingTarget();
     captureThrownStickPrev();
     var isPoopStunned = poopStunTimer > 0;
     var isRepairing = false; /* 标记当前是否在执行补网任务 */
