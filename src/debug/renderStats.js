@@ -385,11 +385,11 @@ export function statsGetDiagnosticMode() {
 }
 
 function _syncPanelVisibility() {
-  _panelVisible = _diagMode || _recording;
+  _panelVisible = _diagMode;
   if (_panelEl) {
     _panelEl.style.display = _panelVisible ? '' : 'none';
-    _panelEl.classList.toggle('perf-diag', _diagMode || _recording);
-    _panelEl.classList.toggle('perf-recording', _recording);
+    _panelEl.classList.toggle('perf-diag', _diagMode);
+    _panelEl.classList.toggle('perf-recording', _diagMode && _recording);
   }
 }
 
@@ -422,9 +422,7 @@ export function statsStartRecording() {
   _sec = null;
   _longTaskTotal = 0;
   _resetLiveWindow();
-  statsSetDiagnosticMode(true, false);
-  _diagModeAtStart = true;
-  if (_panelEl) _panelEl.classList.add('perf-recording');
+  _diagModeAtStart = _diagMode;
   _syncPanelVisibility();
   return true;
 }
@@ -433,7 +431,6 @@ export function statsStopRecording() {
   if (!_recording) return false;
   _flushSecondBucket();
   _recording = false;
-  if (_panelEl) _panelEl.classList.remove('perf-recording');
   _syncPanelVisibility();
   return true;
 }
