@@ -457,12 +457,12 @@ export function getObjectDef(kind, P, gameState, getWaveCfgFn, currentLevelIndex
     gravity: 3.4, wrapDur: 0
   };
   if (kind === 'boulder') return {
-    r: 7, collectRadius: 7, weight: P.caterpillarWeight,
+    r: 11, collectRadius: 11, weight: P.caterpillarWeight,
     stayFrames: Math.round(P.caterpillarReleaseSec * 60),
     gravity: P.caterpillarGravity, wrapDur: wrapDur(120)
   };
   if (kind === 'bug') return {
-    r: 9, collectRadius: 5, weight: P.flyWeight,
+    r: 14, collectRadius: 14, weight: P.flyWeight,
     stayFrames: Math.round(P.flyReleaseSec * 60),
     gravity: 0, wrapDur: wrapDur(80)
   };
@@ -555,7 +555,20 @@ export function ThrownObj(kind, W, H, sim, P, gameState, getWaveCfgFn, currentLe
   if (kind === 'boulder' || kind === 'poop' || kind === 'stone') {
     sx = W * 0.15 + Math.random() * W * 0.7; sy = -2;
     this.grav = def.gravity;
-    this.initAngle = Math.random() * Math.PI * 2; /* 随机初始角度 */
+    /* 毛虫：随机 ±45° 落点方向，图片朝向与落点方向一致
+       tiltRad > 0 → 向右落 → initAngle = -tiltRad（头朝右下）
+       渲染时 rotate(initAngle + π/2)，initAngle=0 时头朝正下 */
+    this.initAngle = 0;
+    this._mirrorX = false;
+    if (kind === 'boulder') {
+      /* 头永远朝左或右，用 scaleX=-1 镜像实现朝右，不用旋转超过90°
+         initAngle: 纯倾斜角 -π/4 ~ +π/4，渲染时 rotate(initAngle) 即可
+         _mirrorX: true=头朝右（图片水平翻转） */
+      this._mirrorX = Math.random() < 0.5;
+      var _tilt = (Math.random() * 2 - 1) * Math.PI / 4; /* -45° ~ +45° */
+      this.initAngle = _tilt;
+      svx = Math.tan(_tilt) * (def.gravity * 2.6) * (this._mirrorX ? -1 : 1);
+    }
   } else if (kind === 'bug') {
     var edge = Math.floor(Math.random() * 4);
     if (edge === 0) { sx = -20; sy = H * 0.05 + Math.random() * H * 0.9; svx = 2.2 + Math.random() * 1.2; svy = (Math.random() - 0.5) * 2; }
@@ -826,6 +839,8 @@ ThrownObj.prototype.release = function (spiderweb, webBreakFlashes, _breakFrame,
     var outwardKick = this.kind === 'boulder' ? 3.8 : 3.2;
     this.vx = (outwardX / outwardLen) * outwardKick + currentVx * 0.55;
     this.vy = (outwardY / outwardLen) * outwardKick + currentVy * 0.55 + releaseKick;
+    /* 保底向下初速，确保脱网后能飞出屏幕底部 */
+    if (this.vy < 2.0) this.vy = 2.0;
     p.lastPos.x = p.pos.x - this.vx;
     p.lastPos.y = p.pos.y - this.vy;
   }

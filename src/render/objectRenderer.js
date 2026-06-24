@@ -1,31 +1,50 @@
 import { statsDc } from '../debug/renderStats.js';
+import {
+  DEBUG_SILK_CONTOUR,
+  applyContourPhaseOffset,
+  applyPreyDeform,
+  buildContourCacheKey,
+  getPreyRenderAngle,
+  getSilkProgress,
+  getSilkShimmer,
+  getSpiralLoops,
+  getSpiralPhaseOffset,
+  getWrapDrawSize,
+  isSilkWrappedKind,
+  shouldDrawSilkForObject
+} from './preyWrapProfile.js';
+import {
+  flyImg,
+  fly01Img,
+  fly02Img,
+  wormImg,
+  worm00Img,
+  worm01Img,
+  worm02Img,
+  leafImg,
+  poopImg,
+} from '../assets/imageAssets.js';
 
-var flyImg = new Image();
-flyImg.src = '/src/assets/fly.png';
+function _invalidateSilkContourCache() {
+  _silkSpiralCache = {};
+}
 
-var fly01Img = new Image();
-fly01Img.src = '/src/assets/fly01.png';
+function _bindSilkContourImage(img) {
+  img.onload = function () {
+    _invalidateSilkContourCache();
+  };
+}
 
-var fly02Img = new Image();
-fly02Img.src = '/src/assets/fly02.png';
+_bindSilkContourImage(flyImg);
+_bindSilkContourImage(worm00Img);
+_bindSilkContourImage(poopImg);
 
-var wormImg = new Image();
-wormImg.src = '/src/assets/worm.png';
-
-var worm00Img = new Image();
-worm00Img.src = '/src/assets/worm00.png';
-
-var worm01Img = new Image();
-worm01Img.src = '/src/assets/worm01.png';
-
-var worm02Img = new Image();
-worm02Img.src = '/src/assets/worm02.png';
-
-var leafImg = new Image();
-leafImg.src = '/src/assets/leaf.png';
-
-var poopImg = new Image();
-poopImg.src = '/src/assets/poop.png';
+function getSilkContourFrame(kind) {
+  if (kind === 'bug') return flyImg;
+  if (kind === 'boulder') return worm00Img;
+  if (kind === 'poop') return poopImg;
+  return null;
+}
 
 var _priorityFlashCanvas = document.createElement('canvas');
 var _priorityFlashCtx = _priorityFlashCanvas.getContext('2d');
@@ -144,75 +163,114 @@ function _buildSpiralFromContour(contour, loops, stepsPerLoop) {
 }
 
 export function buildSilkSpiral(obj) {
-  if (obj.kind !== 'bug' && obj.kind !== 'boulder' && obj.kind !== 'poop') return null;
+  if (!isSilkWrappedKind(obj.kind)) return null;
   var r = obj.def.r;
-  var img, drawW, drawH;
-  if (obj.kind === 'bug') {
-    img = flyImg;
-    drawH = r * 4.32;
-    drawW = flyImg.complete && flyImg.naturalWidth > 0
-      ? drawH * (flyImg.naturalWidth / flyImg.naturalHeight)
-      : drawH * 0.766;
-  } else if (obj.kind === 'boulder') {
-    img = wormImg;
-    drawW = r * 6.3;
-    drawH = wormImg.complete && wormImg.naturalWidth > 0
-      ? drawW * (wormImg.naturalHeight / wormImg.naturalWidth)
-      : drawW * 1.509;
-  } else {
-    img = poopImg;
-    drawH = r * 3.2;
-    drawW = poopImg.complete && poopImg.naturalWidth > 0
-      ? drawH * (poopImg.naturalWidth / poopImg.naturalHeight)
-      : r * 2.6;
-  }
-  var cacheKey = obj.kind + '_' + Math.round(r * 10);
+  var img = getSilkContourFrame(obj.kind);
+  if (!img) return null;
+  var size = getWrapDrawSize(obj.kind, r, img);
+  var cacheKey = buildContourCacheKey(obj.kind, img, r);
   if (!_silkSpiralCache[cacheKey]) {
     if (!img.complete || img.naturalWidth === 0) return null;
-    var contour = _smoothContour(_extractContour(img, drawW, drawH, 180));
-    _silkSpiralCache[cacheKey] = contour;
+    var raw = _smoothContour(_extractContour(img, size.width, size.height, 180));
+    _silkSpiralCache[cacheKey] = applyContourPhaseOffset(raw, getSpiralPhaseOffset(obj.kind));
   }
   var contour = _silkSpiralCache[cacheKey];
-  var loops = obj.kind === 'bug' ? 10 : obj.kind === 'poop' ? 11 : 12;
-  return _buildSpiralFromContour(contour, loops, 64);
+  obj._silkContour = contour;
+  return _buildSpiralFromContour(contour, getSpiralLoops(obj.kind), 64);
+}
+
+export function ensureSilkSpiral(obj) {
+  if (!isSilkWrappedKind(obj.kind)) return;
+  if (!obj._silkSpiral) obj._silkSpiral = buildSilkSpiral(obj);
 }
 
 function getRenderedObjectAngle(obj) {
   if (obj.kind === 'boulder') {
-    var baseAngle = obj.state === 'falling' ? obj.initAngle : (obj.stuckAngle || 0);
-    return baseAngle + (obj._wrapAngle || 0) + Math.PI / 2;
+    var baseAngle = (obj.state === 'falling' || obj.state === 'falling2' || obj.state === 'sticking')
+      ? obj.initAngle : (obj.stuckAngle || 0);
+    return baseAngle + (obj._wrapAngle || 0);
   }
-  if (obj.kind === 'bug') return obj.angle + Math.PI / 2 + (obj._wrapAngle || 0);
+  if (obj.kind === 'bug') {
+    if (obj.state === 'falling' && obj._tiltAngle != null) return obj._tiltAngle;
+    if ((obj.state === 'stuck' || obj.state === 'sticking') && obj._stuckTiltAngle != null) {
+      return obj._stuckTiltAngle;
+    }
+    return obj.angle + Math.PI / 2 + (obj._wrapAngle || 0);
+  }
   if (obj.kind === 'poop') return obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6;
   return obj.angle + (obj._wrapAngle || 0);
 }
 
+function shouldMirrorObjectX(obj) {
+  if (obj.kind === 'boulder') return !!obj._mirrorX;
+  if (obj.kind === 'bug') {
+    if (obj.state === 'falling' && obj._tiltAngle != null) return !!obj._flyMirror;
+    if ((obj.state === 'stuck' || obj.state === 'sticking') && obj._stuckTiltAngle != null) {
+      return !!obj._stuckFlyMirror;
+    }
+  }
+  return false;
+}
+
 function getRenderedObjectBounds(obj) {
   var def = obj.def;
-  if (obj.kind === 'bug') {
-    var flyFrame = getAnimatedFlyImage(obj);
-    var flyH = def.r * 4.32;
-    var flyW = flyFrame.complete && flyFrame.naturalWidth > 0
-      ? flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight)
-      : def.r * 3.5;
-    return { width: flyW, height: flyH };
-  }
-  if (obj.kind === 'boulder') {
-    var wormFrame = getAnimatedWormImage(obj);
-    var wormW = def.r * 6.3;
-    var wormH = wormFrame.complete && wormFrame.naturalWidth > 0
-      ? wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth)
-      : def.r * 9.2;
-    return { width: wormW, height: wormH };
-  }
-  if (obj.kind === 'poop') {
-    var poopH = def.r * 3.2;
-    var poopW = poopImg.complete && poopImg.naturalWidth > 0
-      ? poopH * (poopImg.naturalWidth / poopImg.naturalHeight)
-      : def.r * 2.6;
-    return { width: poopW, height: poopH };
-  }
+  if (obj.kind === 'bug') return getWrapDrawSize('bug', def.r, getAnimatedFlyImage(obj));
+  if (obj.kind === 'boulder') return getWrapDrawSize('boulder', def.r, getAnimatedWormImage(obj));
+  if (obj.kind === 'poop') return getWrapDrawSize('poop', def.r, poopImg);
   return { width: def.r * 2, height: def.r * 2 };
+}
+
+function strokeSilkContour(ctx, contour, radiusOffset, strokeStyle, lineWidth, shadowBlur, shadowColor) {
+  if (!contour || !contour.length) return;
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  if (shadowBlur > 0) {
+    ctx.shadowBlur = shadowBlur;
+    ctx.shadowColor = shadowColor;
+  }
+  ctx.beginPath();
+  for (var ci = 0; ci < contour.length; ci++) {
+    var c = contour[ci];
+    var r = c.r + (radiusOffset || 0);
+    var cx = Math.cos(c.angle) * r;
+    var cy = Math.sin(c.angle) * r;
+    if (ci === 0) ctx.moveTo(cx, cy);
+    else ctx.lineTo(cx, cy);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSilkContourDebug(ctx, obj) {
+  if (!DEBUG_SILK_CONTOUR || !obj._silkContour) return;
+  strokeSilkContour(ctx, obj._silkContour, 0, 'rgba(255,48,48,0.75)', 1, 0, 'transparent');
+}
+
+function drawWrappedPreySelectionOutline(ctx, obj, pulse) {
+  ensureSilkSpiral(obj);
+  var contour = obj._silkContour;
+  if (!contour || !contour.length) return;
+  var pad = 4 + pulse * 2.5;
+  var alpha = (0.82 + pulse * 0.18).toFixed(2);
+  strokeSilkContour(
+    ctx,
+    contour,
+    pad,
+    'rgba(255, 255, 255, ' + alpha + ')',
+    4.2,
+    10,
+    'rgba(255, 255, 255, 0.5)'
+  );
+}
+
+function drawSilkOnCurrentTransform(ctx, obj) {
+  if (!shouldDrawSilkForObject(obj)) return;
+  var silkProgress = getSilkProgress(obj);
+  if (silkProgress <= 0) return;
+  drawSilkContourDebug(ctx, obj);
+  drawSilkSpiralLocal(ctx, obj, silkProgress, getSilkShimmer(obj));
 }
 
 function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
@@ -225,10 +283,10 @@ function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.lineWidth = 1.5 + glow * 0.35;
-  ctx.strokeStyle = 'rgba(255,255,255,' + (0.92 + glow * 0.06).toFixed(3) + ')';
+  ctx.strokeStyle = 'rgba(255,255,255,' + (0.78 + glow * 0.05).toFixed(3) + ')';
   if (glow > 0) {
     ctx.shadowBlur = 8 + glow * 8;
-    ctx.shadowColor = 'rgba(255,255,255,' + (0.18 + glow * 0.16).toFixed(3) + ')';
+    ctx.shadowColor = 'rgba(255,255,255,' + (0.14 + glow * 0.12).toFixed(3) + ')';
   }
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
@@ -237,7 +295,7 @@ function drawSilkSpiralLocal(ctx, obj, progress, shimmer) {
   var tip = pts[drawCount];
   ctx.beginPath();
   ctx.arc(tip.x, tip.y, 1.8, 0, 2 * Math.PI);
-  ctx.fillStyle = 'rgba(255,255,255,' + (1 - glow * 0.04).toFixed(3) + ')';
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.84 - glow * 0.04).toFixed(3) + ')';
   ctx.fill();
   ctx.restore();
 }
@@ -247,25 +305,22 @@ function drawObjectSpriteLocal(ctx, obj) {
   if (obj.kind === 'boulder') {
     var wormFrame = getAnimatedWormImage(obj);
     if (wormFrame.complete && wormFrame.naturalWidth > 0) {
-      var wormW = def.r * 6.3;
-      var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
-      ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
+      var wormSize = getWrapDrawSize('boulder', def.r, wormFrame);
+      ctx.drawImage(wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height);
     }
     return;
   }
   if (obj.kind === 'bug') {
     var flyFrame = getAnimatedFlyImage(obj);
     if (flyFrame.complete && flyFrame.naturalWidth > 0) {
-      var flyH = def.r * 4.32;
-      var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
-      ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
+      var flySize = getWrapDrawSize('bug', def.r, flyFrame);
+      ctx.drawImage(flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height);
     }
     return;
   }
   if (obj.kind === 'poop' && poopImg.complete && poopImg.naturalWidth > 0) {
-    var poopH = def.r * 3.2;
-    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
-    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    var poopSize = getWrapDrawSize('poop', def.r, poopImg);
+    ctx.drawImage(poopImg, -poopSize.width * 0.5, -poopSize.height * 0.5, poopSize.width, poopSize.height);
   }
 }
 
@@ -281,9 +336,11 @@ export function buildCollectSnapshot(obj) {
   canvas.style.height = size + 'px';
   var ctx = canvas.getContext('2d');
   ctx.translate(size * 0.5, size * 0.5);
+  applyPreyDeform(ctx, obj, 1);
+  if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
   ctx.rotate(getRenderedObjectAngle(obj));
   drawObjectSpriteLocal(ctx, obj);
-  drawSilkSpiralLocal(ctx, obj, 1);
+  drawSilkSpiralLocal(ctx, obj, 1, 0);
   return { canvas: canvas, size: size };
 }
 
@@ -312,10 +369,11 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashI
     ctx.restore();
   }
   if (poopImg.complete && poopImg.naturalWidth > 0) {
-    var poopH = r * 3.2;
-    var poopW = poopH * (poopImg.naturalWidth / poopImg.naturalHeight);
-    ctx.drawImage(poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
-    if (applyPriorityFlashImage) applyPriorityFlashImage(ctx, poopImg, -poopW * 0.5, -poopH * 0.5, poopW, poopH);
+    var poopSize = getWrapDrawSize('poop', r, poopImg);
+    ctx.drawImage(poopImg, -poopSize.width * 0.5, -poopSize.height * 0.5, poopSize.width, poopSize.height);
+    if (applyPriorityFlashImage) {
+      applyPriorityFlashImage(ctx, poopImg, -poopSize.width * 0.5, -poopSize.height * 0.5, poopSize.width, poopSize.height);
+    }
     statsDc('image');
     return;
   }
@@ -334,13 +392,16 @@ function drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, applyPriorityFlashI
 /**
  * 投掷物体绘制
  */
-export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
+export function drawThrownObjects(ctx, thrownObjects, priorityTarget, selectedWrappedPrey) {
   for (var oi = 0; oi < thrownObjects.length; oi++) {
     var obj = thrownObjects[oi], def = obj.def;
     var px = obj.particle.pos.x, py = obj.particle.pos.y;
     ctx.save(); ctx.globalAlpha = obj.alpha;
     var _isPriorityTarget = !!(priorityTarget && priorityTarget.type === 'object' && priorityTarget.obj === obj);
     var _priorityPulse = _isPriorityTarget ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
+    var _isWrappedSelected = selectedWrappedPrey === obj && obj.state === 'wrapped'
+      && (obj.kind === 'bug' || obj.kind === 'boulder');
+    var _selectionPulse = _isWrappedSelected ? (0.55 + 0.45 * Math.abs(Math.sin(obj.animT * 0.22))) : 0;
 
     function applyPriorityFlashRect(localCtx, x, y, w, h) {
       if (!_isPriorityTarget) return;
@@ -480,26 +541,17 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
     /* ── 毛毛虫 ── */
     else if (obj.kind === 'boulder') {
       ctx.save(); ctx.translate(px, py);
-      if (obj._drawStretchScale !== 1 || obj._drawStretchSquash !== 1) {
-        ctx.rotate(obj._drawStretchAngle || 0);
-        ctx.scale(obj._drawStretchScale || 1, obj._drawStretchSquash || 1);
-        ctx.rotate(-(obj._drawStretchAngle || 0));
-      }
-      if (obj._drawScaleX !== 1 || obj._drawScaleY !== 1) ctx.scale(obj._drawScaleX, obj._drawScaleY);
-      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
-      var drawAngle;
-      if (obj.state === 'falling') drawAngle = obj.initAngle;
-      else if (obj.state === 'sticking') drawAngle = obj.initAngle + (obj.stuckAngle - obj.initAngle) * obj.stickT;
-      else drawAngle = obj.stuckAngle || 0;
-      if (obj._wrapAngle) drawAngle = (drawAngle || 0) + obj._wrapAngle;
-      ctx.rotate((drawAngle || 0) + Math.PI / 2);
+      applyPreyDeform(ctx, obj, _springScale);
+      if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
+      ctx.rotate(getRenderedObjectAngle(obj));
       var wormFrame = getAnimatedWormImage(obj);
       if (wormFrame.complete && wormFrame.naturalWidth > 0) {
-        var wormW = def.r * 6.3;  // 9.0 × 0.7
-        var wormH = wormW * (wormFrame.naturalHeight / wormFrame.naturalWidth);
+        var wormSize = getWrapDrawSize('boulder', def.r, wormFrame);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
-        ctx.drawImage(wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH);
-        if (_isPriorityTarget) drawPriorityImage(ctx, wormFrame, -wormW * 0.5, -wormH * 0.5, wormW, wormH, _priorityPulse);
+        ctx.drawImage(wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height);
+        if (_isPriorityTarget) {
+          drawPriorityImage(ctx, wormFrame, -wormSize.width * 0.5, -wormSize.height * 0.5, wormSize.width, wormSize.height, _priorityPulse);
+        }
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
@@ -522,27 +574,25 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         statsDc('arc', 2);
         applyPriorityFlashRect(ctx, -def.r * 3.4, -def.r * 3.4, def.r * 6.8, def.r * 6.8);
       }
+      drawSilkOnCurrentTransform(ctx, obj);
+      if (_isWrappedSelected) drawWrappedPreySelectionOutline(ctx, obj, _selectionPulse);
       ctx.restore();
     }
 
     /* ── 苍蝇 ── */
     else if (obj.kind === 'bug') {
       ctx.save(); ctx.translate(px, py);
-      if (obj._drawStretchScale !== 1 || obj._drawStretchSquash !== 1) {
-        ctx.rotate(obj._drawStretchAngle || 0);
-        ctx.scale(obj._drawStretchScale || 1, obj._drawStretchSquash || 1);
-        ctx.rotate(-(obj._drawStretchAngle || 0));
-      }
-      if (obj._drawScaleX !== 1 || obj._drawScaleY !== 1) ctx.scale(obj._drawScaleX, obj._drawScaleY);
-      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
-      ctx.rotate(obj.angle + Math.PI / 2 + (obj._wrapAngle || 0));
+      applyPreyDeform(ctx, obj, _springScale);
+      if (shouldMirrorObjectX(obj)) ctx.scale(-1, 1);
+      ctx.rotate(getRenderedObjectAngle(obj));
       var flyFrame = getAnimatedFlyImage(obj);
       if (flyFrame.complete && flyFrame.naturalWidth > 0) {
-        var flyH = def.r * 4.32;
-        var flyW = flyH * (flyFrame.naturalWidth / flyFrame.naturalHeight);
+        var flySize = getWrapDrawSize('bug', def.r, flyFrame);
         if (_isWrapping) { ctx.shadowBlur = 28; ctx.shadowColor = '#ffe8a0'; }
-        ctx.drawImage(flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH);
-        if (_isPriorityTarget) drawPriorityImage(ctx, flyFrame, -flyW * 0.5, -flyH * 0.5, flyW, flyH, _priorityPulse);
+        ctx.drawImage(flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height);
+        if (_isPriorityTarget) {
+          drawPriorityImage(ctx, flyFrame, -flySize.width * 0.5, -flySize.height * 0.5, flySize.width, flySize.height, _priorityPulse);
+        }
         if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
         statsDc('image');
       } else {
@@ -566,6 +616,8 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
         statsDc('quad');
         applyPriorityFlashRect(ctx, -r * 3.4, -r * 2.2, r * 6.8, r * 4.4);
       }
+      drawSilkOnCurrentTransform(ctx, obj);
+      if (_isWrappedSelected) drawWrappedPreySelectionOutline(ctx, obj, _selectionPulse);
       ctx.restore();
     }
 
@@ -602,13 +654,14 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
     /* ── 大便 ── */
     else if (obj.kind === 'poop') {
       ctx.save(); ctx.translate(px, py);
-      if (_springScale !== 1.0) ctx.scale(_springScale, _springScale);
-      ctx.rotate(obj.angle * 0.45 + (obj._wrapAngle || 0) * 0.6);
+      applyPreyDeform(ctx, obj, _springScale);
+      ctx.rotate(getPreyRenderAngle(obj));
       if (_isWrapping) { ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(30,20,18,0.9)'; }
       drawPoopBlob(ctx, obj, def, applyPriorityFlashRect, function (localCtx, img, x, y, w, h) {
         if (_isPriorityTarget) drawPriorityImage(localCtx, img, x, y, w, h, _priorityPulse);
       });
       if (_isWrapping) { ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'; }
+      drawSilkOnCurrentTransform(ctx, obj);
       ctx.restore();
     }
 
@@ -619,27 +672,6 @@ export function drawThrownObjects(ctx, thrownObjects, priorityTarget) {
       ctx.strokeStyle = 'rgba(180,220,140,' + (0.55 * (1 - obj.stickT)) + ')';
       ctx.lineWidth = 2; ctx.stroke();
       statsDc('stroke');
-    }
-
-    if ((obj.state === 'wrapping' || obj.state === 'wrapped' || obj.state === 'plucking' || obj.state === 'collecting') && obj._silkSpiral && (obj.kind === 'bug' || obj.kind === 'boulder' || obj.kind === 'poop')) {
-      var silkProgress = obj.state === 'wrapping' ? obj.wrapT : 1;
-      if (silkProgress > 0) {
-        var silkShimmer = obj.state === 'wrapped'
-          ? (0.5 + 0.5 * Math.sin(obj.animT * 0.18 + (obj._popT || 0) * 0.1)) * 0.7
-          : 0;
-        ctx.save();
-        ctx.translate(px, py);
-        ctx.globalAlpha = obj.alpha;
-        if (obj._drawStretchScale !== 1 || obj._drawStretchSquash !== 1) {
-          ctx.rotate(obj._drawStretchAngle || 0);
-          ctx.scale(obj._drawStretchScale || 1, obj._drawStretchSquash || 1);
-          ctx.rotate(-(obj._drawStretchAngle || 0));
-        }
-        if (obj._drawScaleX !== 1 || obj._drawScaleY !== 1) ctx.scale(obj._drawScaleX, obj._drawScaleY);
-        ctx.rotate(getRenderedObjectAngle(obj));
-        drawSilkSpiralLocal(ctx, obj, silkProgress, silkShimmer);
-        ctx.restore();
-      }
     }
 
     ctx.restore();
